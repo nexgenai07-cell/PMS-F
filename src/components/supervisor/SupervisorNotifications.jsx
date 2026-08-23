@@ -1,142 +1,827 @@
-import { useAuth } from '../../context/AuthContext';
-import Topbar from '../shared/Topbar';
-import { Bell, CheckCheck, Inbox } from 'lucide-react';
-import { EmptyState } from '../shared/UIComponents';
-import { useOutletContext } from 'react-router-dom';
+// components/supervisor/SupervisorNotifications.jsx
+import { useState, useEffect } from 'react';
+import { useNavigate, useOutletContext } from 'react-router-dom';
+import { 
+  Bell, CheckCheck, RefreshCw, Trash2, 
+  UserPlus, FolderKanban, CheckCircle2, 
+  MessageSquare, Users, Clock, AlertCircle,
+  UserCheck, PlusCircle, X
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import toast from 'react-hot-toast';
 
-const typeColors = {
-  project_update: '#6c63ff',
-  task_complete: '#10b981',
-  comment: '#2dd4bf',
-  task_assigned: '#fbbf24',
-  project_created: '#f43f5e'
+import Topbar from '../shared/Topbar';
+import { useAuth } from '../../context/AuthContext';
+import notificationService from '../../services/notificationService';
+import projectService from '../../services/projectService';
+import taskService from '../../services/taskService';
+import teamService from '../../services/teamService';
+import userService from '../../services/userService';
+
+// Notification types and their icons
+const NOTIFICATION_ICONS = {
+  project_created: { icon: FolderKanban, color: '#818cf8' },
+  project_updated: { icon: FolderKanban, color: '#818cf8' },
+  project_deleted: { icon: FolderKanban, color: '#f87171' },
+  task_created: { icon: PlusCircle, color: '#34d399' },
+  task_updated: { icon: CheckCircle2, color: '#34d399' },
+  task_deleted: { icon: Trash2, color: '#f87171' },
+  task_assigned: { icon: UserCheck, color: '#34d399' },
+  task_completed: { icon: CheckCircle2, color: '#34d399' },
+  comment_added: { icon: MessageSquare, color: '#f59e0b' },
+  comment_pinned: { icon: MessageSquare, color: '#f59e0b' },
+  member_added: { icon: UserPlus, color: '#34d399' },
+  team_updated: { icon: Users, color: '#2dd4bf' },
+  lead_assigned: { icon: UserCheck, color: '#34d399' },
+  default: { icon: Bell, color: '#94a3b8' }
 };
 
 export default function SupervisorNotifications() {
-  const { onMenuClick } = useOutletContext(); // ✅ FIXED (moved inside)
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const { onMenuClick } = useOutletContext();
 
-  const {
-    notifications,
-    markNotifRead,
-    markAllRead,
-    unreadCount
-  } = useAuth();
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [notifications, setNotifications] = useState([]);
+  const [projects, setProjects] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [teamMembers, setTeamMembers] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [filterType, setFilterType] = useState('all');
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
+
+  // Fetch all data
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      
+      // Get all data
+      const [projectsData, tasksData, membersData, usersData, notificationsData] = await Promise.all([
+        projectService.getProjects(),
+        taskService.getTasks(),
+        teamService.getTeamMembers(),
+        userService.getUsers(),
+        notificationService.getNotifications(), // Now fetches from existing data
+      ]);
+
+      const projectsList = projectsData?.data || projectsData || [];
+      const tasksList = tasksData?.data || tasksData || [];
+      const membersList = membersData?.data || membersData || [];
+      const usersList = usersData?.data || usersData || [];
+      
+      // Get notifications (now activities from existing data)
+      let notificationsList = notificationsData?.data || [];
+
+      console.log('📊 All activities generated:', notificationsList.length);
+
+      // ─── FOR SUPERVISOR: Show ALL notifications ───
+      // Supervisors see everything - no filtering
+      const filteredNotifications = notificationsList;
+
+      console.log('📊 Supervisor notifications (all activities):', filteredNotifications.length);
+
+      setProjects(projectsList);
+      setTasks(tasksList);
+      setTeamMembers(membersList);
+      setUsers(usersList);
+      setNotifications(filteredNotifications);
+
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      toast.error('Failed to load notifications');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await fetchData();
+    toast.success('Notifications refreshed');
+  };
+
+  const markAllRead = async () => {
+    try {
+      await notificationService.markAllRead();
+      setNotifications(notifications.map(n => ({ ...n, is_read: true })));
+      toast.success('All notifications marked as read');
+    } catch (error) {
+      toast.error('Failed to mark all as read');
+    }
+  };
+
+  const markAsRead = async (id) => {
+    try {
+      await notificationService.markAsRead(id);
+      setNotifications(notifications.map(n => 
+        (n.n_id || n.id) === id ? { ...n, is_read: true } : n
+      ));
+    } catch (error) {
+      toast.error('Failed to mark as read');
+    }
+  };
+
+  const deleteNotification = async (id) => {
+    try {
+      await notificationService.deleteNotification(id);
+      setNotifications(notifications.filter(n => (n.n_id || n.id) !== id));
+      setShowDeleteConfirm(null);
+      toast.success('Notification deleted');
+    } catch (error) {
+      toast.error('Failed to delete notification');
+    }
+  };
+
+  const getNotificationIcon = (type) => {
+    const config = NOTIFICATION_ICONS[type] || NOTIFICATION_ICONS.default;
+    return config;
+  };
+
+  const getEntityName = (entityId, entityType) => {
+    if (entityType === 'project') {
+      const project = projects.find(p => Number(p.p_id || p.id) === Number(entityId));
+      return project?.p_name || project?.name || 'Unknown Project';
+    }
+    if (entityType === 'task') {
+      const task = tasks.find(t => Number(t.t_id || t.id) === Number(entityId));
+      return task?.title || 'Unknown Task';
+    }
+    if (entityType === 'user') {
+      const user = users.find(u => Number(u.id || u.u_id) === Number(entityId));
+      return user?.u_name || user?.name || 'Unknown User';
+    }
+    if (entityType === 'team_member') {
+      const member = teamMembers.find(m => Number(m.id) === Number(entityId));
+      return member?.name || 'Unknown Member';
+    }
+    return 'Unknown';
+  };
+
+  const getTimeAgo = (date) => {
+    if (!date) return '';
+    const now = new Date();
+    const past = new Date(date);
+    const diff = Math.floor((now - past) / 1000);
+    
+    if (diff < 60) return 'Just now';
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+    return past.toLocaleDateString();
+  };
+
+  // Filter notifications by type
+  const filteredNotifications = notifications.filter(n => {
+    if (filterType === 'all') return true;
+    return n.type === filterType;
+  });
+
+  // Get unique notification types for filter
+  const notificationTypes = ['all', ...new Set(notifications.map(n => n.type))];
+
+  // Get notification type label
+  const getTypeLabel = (type) => {
+    const labels = {
+      project_created: 'Project Created',
+      project_updated: 'Project Updated',
+      project_deleted: 'Project Deleted',
+      task_created: 'Task Created',
+      task_updated: 'Task Updated',
+      task_deleted: 'Task Deleted',
+      task_assigned: 'Task Assigned',
+      task_completed: 'Task Completed',
+      comment_added: 'Comment Added',
+      comment_pinned: 'Comment Pinned',
+      member_added: 'Member Added',
+      team_updated: 'Team Updated',
+      lead_assigned: 'Lead Assigned',
+    };
+    return labels[type] || type || 'Notification';
+  };
+
+  if (loading) {
+    return (
+      <div>
+        <Topbar title="Notifications" onMenuClick={onMenuClick} />
+        <div className="page-container">
+          <div className="loading-spinner-wrapper">
+            <div className="loading-spinner" />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
-
       <Topbar
         title="Notifications"
         onMenuClick={onMenuClick}
         actions={
-          unreadCount > 0 && (
-            <button
-              className="btn btn-secondary btn-sm"
-              onClick={markAllRead}
+          <div className="topbar-actions">
+            <button 
+              className="btn btn-secondary btn-sm refresh-btn" 
+              onClick={handleRefresh}
+              disabled={refreshing}
+              aria-label={refreshing ? 'Refreshing notifications' : 'Refresh notifications'}
+              title="Refresh"
             >
-              <CheckCheck size={14} /> Mark all read
+              <RefreshCw size={14} className={refreshing ? 'spin' : ''} />
+              <span className="btn-label">{refreshing ? 'Refreshing…' : 'Refresh'}</span>
             </button>
-          )
+            {notifications.length > 0 && (
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={markAllRead}
+                aria-label="Mark all notifications as read"
+                title="Mark All Read"
+              >
+                <CheckCheck size={14} />
+                <span className="btn-label">Mark All Read</span>
+              </button>
+            )}
+          </div>
         }
       />
 
       <div className="page-container">
-
-        {notifications.length === 0 ? (
-          <EmptyState
-            icon={Inbox}
-            title="All caught up!"
-            desc="No notifications yet. Updates from your team will appear here."
-          />
-        ) : (
-          <div
-            style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
-            className="stagger-children"
-          >
-            {notifications.map(n => (
-              <div
-                key={n.n_id}
-                className="card animate-fade-in"
-                onClick={() => markNotifRead(n.n_id)}
-                style={{
-                  padding: '16px 20px',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  gap: 14,
-                  alignItems: 'flex-start',
-                  background: n.is_read
-                    ? 'var(--bg-card)'
-                    : 'rgba(108,99,255,0.05)',
-                  borderColor: n.is_read
-                    ? 'var(--border-subtle)'
-                    : 'var(--border-active)'
-                }}
-              >
-
-                {/* ICON */}
-                <div
-                  style={{
-                    width: 38,
-                    height: 38,
-                    borderRadius: '50%',
-                    background: `${typeColors[n.type] || '#6c63ff'}18`,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    flexShrink: 0
-                  }}
+        {/* Filter Bar */}
+        {notifications.length > 0 && (
+          <div className="filter-bar">
+            <div className="filter-scroll">
+              {notificationTypes.map((type) => (
+                <button
+                  key={type}
+                  className={`filter-btn ${filterType === type ? 'active' : ''}`}
+                  onClick={() => setFilterType(type)}
                 >
-                  <Bell
-                    size={16}
-                    style={{ color: typeColors[n.type] || '#6c63ff' }}
-                  />
-                </div>
-
-                {/* CONTENT */}
-                <div style={{ flex: 1 }}>
-                  <p
-                    style={{
-                      fontSize: 14,
-                      color: n.is_read
-                        ? 'var(--text-secondary)'
-                        : 'var(--text-primary)',
-                      lineHeight: 1.5
-                    }}
-                  >
-                    {n.message}
-                  </p>
-
-                  <p
-                    style={{
-                      fontSize: 12,
-                      color: 'var(--text-muted)',
-                      marginTop: 4
-                    }}
-                  >
-                    {n.created_at}
-                  </p>
-                </div>
-
-                {/* UNREAD DOT */}
-                {!n.is_read && (
-                  <div
-                    style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: '50%',
-                      background: 'var(--accent-primary)',
-                      flexShrink: 0,
-                      marginTop: 4
-                    }}
-                  />
-                )}
-
-              </div>
-            ))}
+                  {type === 'all' ? 'All' : getTypeLabel(type)}
+                  {type !== 'all' && (
+                    <span className="filter-count">
+                      {notifications.filter(n => n.type === type).length}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
+        {notifications.length === 0 ? (
+          <div className="empty-state card">
+            <Bell size={48} className="empty-icon" />
+            <h3>No activities yet</h3>
+            <p>Activities from projects, tasks, comments, and team members will appear here.</p>
+          </div>
+        ) : filteredNotifications.length === 0 ? (
+          <div className="empty-state card">
+            <Bell size={48} className="empty-icon" />
+            <h3>No {filterType} activities</h3>
+            <p>Try selecting a different filter.</p>
+          </div>
+        ) : (
+          <div className="notifications-list">
+            <AnimatePresence>
+              {filteredNotifications.map((notification) => {
+                const id = notification.n_id || notification.id;
+                const isRead = notification.is_read;
+                const { icon: Icon, color } = getNotificationIcon(notification.type);
+                const timeAgo = getTimeAgo(notification.created_at);
+                const message = notification.message || '';
+                const typeLabel = getTypeLabel(notification.type);
+
+                return (
+                  <motion.div
+                    key={id}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className={`notification-item card ${isRead ? 'read' : 'unread'}`}
+                    onClick={() => !isRead && markAsRead(id)}
+                  >
+                    <div className="notification-icon" style={{ background: `${color}20`, color }}>
+                      <Icon size={18} />
+                    </div>
+                    <div className="notification-content">
+                      <div className="notification-header">
+                        <span className="notification-type" style={{ color }}>
+                          {typeLabel}
+                        </span>
+                        <span className="notification-time">{timeAgo}</span>
+                      </div>
+                      <p className="notification-message">{message}</p>
+                      {notification.entity_type && notification.entity_id && (
+                        <span className="notification-entity-tag">
+                          {notification.entity_type === 'project' && <FolderKanban size={12} />}
+                          {notification.entity_type === 'task' && <CheckCircle2 size={12} />}
+                          {notification.entity_type === 'user' && <Users size={12} />}
+                          {notification.entity_type === 'team_member' && <UserPlus size={12} />}
+                          {getEntityName(notification.entity_id, notification.entity_type)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="notification-actions">
+                      {!isRead && (
+                        <span className="unread-dot" />
+                      )}
+                      <button
+                        className="delete-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowDeleteConfirm(id);
+                        }}
+                        title="Delete"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </AnimatePresence>
+          </div>
+        )}
       </div>
+
+      {/* Delete Confirm Modal */}
+      <AnimatePresence>
+        {showDeleteConfirm !== null && (
+          <motion.div 
+            className="modal-overlay" 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowDeleteConfirm(null)}
+          >
+            <motion.div 
+              className="modal-box confirm-box"
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <AlertCircle size={40} style={{ color: '#f87171', marginBottom: 12 }} />
+              <h3 className="confirm-title">Delete Notification?</h3>
+              <p className="confirm-desc">This action cannot be undone. The notification will be permanently removed.</p>
+              <div className="modal-footer" style={{ justifyContent: 'center' }}>
+                <button className="btn btn-danger btn-sm" onClick={() => deleteNotification(showDeleteConfirm)}>
+                  <Trash2 size={14} /> Yes, Delete
+                </button>
+                <button className="btn btn-secondary btn-sm" onClick={() => setShowDeleteConfirm(null)}>
+                  Cancel
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <style>{`
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+        .spin {
+          animation: spin 1s linear infinite;
+        }
+
+        .loading-spinner-wrapper {
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          height: 400px;
+        }
+
+        .loading-spinner {
+          width: 40px;
+          height: 40px;
+          border: 3px solid var(--border-subtle);
+          border-top-color: var(--accent-primary);
+          border-radius: 50%;
+          animation: spin 0.8s linear infinite;
+        }
+
+        /* Action buttons in the Topbar. Row-based at every size — never
+           stacks into a column — and the label collapses to an
+           icon-only button on narrow screens so it matches the visual
+           weight of the Topbar's own icon buttons instead of fighting
+           them for space. */
+        .topbar-actions {
+          display: flex;
+          align-items: center;
+          flex-wrap: nowrap;
+          gap: 8px;
+          min-width: 0;
+        }
+
+        .refresh-btn {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
+        .page-container {
+          padding: 20px 24px;
+          max-width: 900px;
+          margin: 0 auto;
+        }
+
+        /* Filter Bar */
+        .filter-bar {
+          margin-bottom: 20px;
+          overflow-x: auto;
+          scrollbar-width: none;
+        }
+
+        .filter-bar::-webkit-scrollbar {
+          display: none;
+        }
+
+        .filter-scroll {
+          display: flex;
+          gap: 8px;
+          padding-bottom: 4px;
+        }
+
+        .filter-btn {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          padding: 6px 14px;
+          border-radius: 20px;
+          border: 1px solid var(--border-subtle);
+          background: var(--bg-secondary);
+          color: var(--text-secondary);
+          font-size: 12px;
+          font-weight: 500;
+          cursor: pointer;
+          white-space: nowrap;
+          transition: all 0.15s;
+        }
+
+        .filter-btn:hover {
+          border-color: var(--border-default);
+          color: var(--text-primary);
+        }
+
+        .filter-btn.active {
+          background: var(--accent-primary);
+          color: #fff;
+          border-color: var(--accent-primary);
+        }
+
+        .filter-btn .filter-count {
+          font-size: 10px;
+          background: var(--bg-card);
+          color: var(--text-muted);
+          padding: 0 6px;
+          border-radius: 10px;
+          min-width: 18px;
+          text-align: center;
+        }
+
+        .filter-btn.active .filter-count {
+          background: rgba(255,255,255,0.2);
+          color: #fff;
+        }
+
+        /* Empty State */
+        .empty-state {
+          text-align: center;
+          padding: 60px 20px;
+        }
+
+        .empty-icon {
+          color: var(--text-muted);
+          margin-bottom: 16px;
+          opacity: 0.3;
+        }
+
+        .empty-state h3 {
+          font-size: 18px;
+          font-weight: 700;
+          color: var(--text-primary);
+          margin-bottom: 8px;
+        }
+
+        .empty-state p {
+          color: var(--text-muted);
+          font-size: 14px;
+        }
+
+        /* Notifications List */
+        .notifications-list {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        .notification-item {
+          display: flex;
+          align-items: flex-start;
+          gap: 14px;
+          padding: 14px 18px;
+          cursor: pointer;
+          transition: all 0.15s;
+          position: relative;
+        }
+
+        .notification-item:hover {
+          border-color: var(--border-default);
+        }
+
+        .notification-item.unread {
+          border-left: 3px solid var(--accent-primary);
+          background: color-mix(in srgb, var(--accent-primary) 4%, var(--bg-card));
+        }
+
+        .notification-item.read {
+          border-left: 3px solid transparent;
+          opacity: 0.7;
+        }
+
+        .notification-item.read:hover {
+          opacity: 0.9;
+        }
+
+        .notification-icon {
+          width: 36px;
+          height: 36px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+
+        .notification-content {
+          flex: 1;
+          min-width: 0;
+        }
+
+        .notification-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          margin-bottom: 4px;
+          flex-wrap: wrap;
+        }
+
+        .notification-type {
+          font-size: 11px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.3px;
+        }
+
+        .notification-time {
+          font-size: 11px;
+          color: var(--text-muted);
+        }
+
+        .notification-message {
+          font-size: 13px;
+          color: var(--text-secondary);
+          line-height: 1.5;
+          margin: 0;
+        }
+
+        .notification-entity-tag {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          margin-top: 6px;
+          padding: 2px 10px;
+          border-radius: 12px;
+          font-size: 10px;
+          color: var(--text-muted);
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-subtle);
+        }
+
+        .notification-actions {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-shrink: 0;
+        }
+
+        .unread-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: var(--accent-primary);
+        }
+
+        .delete-btn {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 4px;
+          border: none;
+          border-radius: 6px;
+          background: transparent;
+          color: var(--text-muted);
+          cursor: pointer;
+          transition: all 0.14s;
+          opacity: 0.5;
+        }
+
+        .notification-item:hover .delete-btn {
+          opacity: 1;
+        }
+
+        .delete-btn:hover {
+          color: #f87171;
+          background: rgba(248, 113, 113, 0.1);
+        }
+
+        /* Modal */
+        .modal-overlay {
+          position: fixed;
+          inset: 0;
+          background: rgba(0,0,0,0.6);
+          backdrop-filter: blur(4px);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 1000;
+          padding: 16px;
+        }
+
+        .modal-box {
+          background: var(--bg-card);
+          border: 1px solid var(--border-default);
+          border-radius: 20px;
+          width: 100%;
+          max-width: 400px;
+          max-height: 90vh;
+          overflow-y: auto;
+          box-shadow: 0 24px 60px rgba(0,0,0,0.3);
+        }
+
+        .confirm-box {
+          text-align: center;
+          padding: 32px 28px 24px;
+        }
+
+        .confirm-title {
+          font-size: 18px;
+          font-weight: 800;
+          color: var(--text-primary);
+          margin: 0 0 6px;
+        }
+
+        .confirm-desc {
+          font-size: 13px;
+          color: var(--text-muted);
+          margin: 0 0 16px;
+          line-height: 1.6;
+        }
+
+        .modal-footer {
+          display: flex;
+          gap: 10px;
+          justify-content: center;
+        }
+
+        .btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+          padding: 8px 16px;
+          border-radius: 8px;
+          font-size: 12px;
+          font-weight: 600;
+          cursor: pointer;
+          border: 1px solid transparent;
+          transition: all 0.15s;
+          white-space: nowrap;
+          flex-shrink: 0;
+          -webkit-tap-highlight-color: transparent;
+          touch-action: manipulation;
+        }
+
+        .btn-primary {
+          background: var(--accent-primary);
+          color: #fff;
+        }
+
+        .btn-primary:hover {
+          opacity: 0.85;
+        }
+
+        .btn-secondary {
+          background: var(--bg-secondary);
+          color: var(--text-primary);
+          border: 1px solid var(--border-default);
+        }
+
+        .btn-secondary:hover {
+          border-color: var(--accent-primary);
+        }
+
+        .btn-danger {
+          background: rgba(239, 68, 68, 0.1);
+          color: #ef4444;
+          border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+
+        .btn-danger:hover {
+          background: rgba(239, 68, 68, 0.2);
+        }
+
+        .btn-sm {
+          padding: 6px 12px;
+          font-size: 11px;
+        }
+
+        @media (max-width: 768px) {
+          .page-container {
+            padding: 14px 16px;
+          }
+
+          .notification-item {
+            padding: 12px 14px;
+          }
+
+          .filter-scroll {
+            gap: 6px;
+          }
+
+          .filter-btn {
+            padding: 4px 10px;
+            font-size: 11px;
+          }
+
+          .notification-icon {
+            width: 30px;
+            height: 30px;
+          }
+
+          .notification-icon svg {
+            width: 14px;
+            height: 14px;
+          }
+        }
+
+        /* Below this width, drop the button text and switch the two
+           topbar action buttons to compact square icon buttons that
+           match the Topbar's own icon-button sizing, so the header
+           stays on one row instead of wrapping awkwardly. */
+        @media (max-width: 560px) {
+          .topbar-actions .btn {
+            width: 32px;
+            height: 32px;
+            padding: 0;
+            border-radius: 8px;
+          }
+
+          .topbar-actions .btn-label {
+            display: none;
+          }
+        }
+
+        @media (max-width: 400px) {
+          .topbar-actions .btn {
+            width: 28px;
+            height: 28px;
+            border-radius: 7px;
+          }
+        }
+
+        @media (max-width: 480px) {
+          .page-container {
+            padding: 10px 12px;
+          }
+
+          .notification-item {
+            padding: 10px 12px;
+            gap: 10px;
+          }
+
+          .notification-message {
+            font-size: 12px;
+          }
+        }
+
+        /* Comfortable tap targets on touch devices even where the
+           icon-only buttons are visually small for density. */
+        @media (hover: none) and (pointer: coarse) {
+          .topbar-actions .btn {
+            width: 40px !important;
+            height: 40px !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

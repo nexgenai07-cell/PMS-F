@@ -1,5 +1,8 @@
 // components/supervisor/SupervisorDashboard.jsx
-import { useState } from "react";
+import { useState, useEffect, useMemo } from "react";
+import { useNavigate, useOutletContext } from "react-router-dom";
+import { useAuth } from "../../context/AuthContext";
+import toast from "react-hot-toast";
 
 import {
   BarChart,
@@ -11,746 +14,1513 @@ import {
   PieChart,
   Pie,
   Cell,
-  Legend,
   AreaChart,
-  Area
+  Area,
+  CartesianGrid
 } from "recharts";
 
 import {
   FolderKanban,
   Users,
   CheckCircle2,
-  Activity
+  Activity,
+  RefreshCw,
+  TrendingUp,
+  Award,
+  UserCheck,
+  Target,
+  Clock,
+  BarChart3,
+  PieChart as PieChartIcon,
+  ArrowUpRight,
+  ArrowDownRight,
+  Minus,
+  Zap,
+  Timer
 } from "lucide-react";
 
 import Topbar from "../shared/Topbar";
-import StatCard from "../shared/StatCard";
-
-import {
-  PROJECTS,
-  TASKS,
-  TEAM_MEMBERS,
-  getProjectProgress,
-  getUserById,
-  priorityConfig,
-  statusConfig
-} from "../../data/mockData";
-
 import {
   PriorityBadge,
   StatusBadge,
   ProgressRing
 } from "../shared/UIComponents";
+import { getGreeting } from '../../utils/greeting';
 
-import { useOutletContext } from "react-router-dom";
+import projectService from "../../services/projectService";
+import taskService from "../../services/taskService";
+import teamService from "../../services/teamService";
+import userService from "../../services/userService";
 
+// Colors resolve through the app's theme variables so charts stay
+// correct in both light and dark mode instead of hardcoded hex.
+const getStatusColor = (status) => {
+  const colors = {
+    active: "var(--accent-primary)",
+    "in-progress": "var(--accent-primary)",
+    "in_progress": "var(--accent-primary)",
+    todo: "var(--text-muted)",
+    pending: "var(--text-muted)",
+    review: "var(--accent-amber)",
+    done: "var(--accent-emerald)",
+    completed: "var(--accent-emerald)",
+    close: "var(--accent-emerald)",
+    "on-hold": "var(--accent-amber)",
+    "on_hold": "var(--accent-amber)",
+    cancelled: "var(--accent-rose)",
+    planning: "var(--text-muted)"
+  };
+  return colors[status?.toLowerCase()] || "var(--accent-primary)";
+};
+
+const getPriorityColor = (priority) => {
+  const colors = {
+    low: "var(--accent-emerald)",
+    medium: "var(--accent-amber)",
+    high: "var(--accent-rose)",
+    critical: "var(--accent-secondary)"
+  };
+  return colors[priority?.toLowerCase()] || "var(--accent-primary)";
+};
+
+const isDone = (t) => t.status === "done" || t.status === "completed" || t.status === "close";
+const isInProgress = (t) => t.status === "in-progress" || t.status === "in_progress";
+
+const daysAgo = (n, from = new Date()) => {
+  const d = new Date(from);
+  d.setDate(d.getDate() - n);
+  return d;
+};
+
+// Percent change between two period counts, without inventing numbers
+// when there's nothing to compare against.
+const computeTrend = (current, previous) => {
+  if (previous === 0 && current === 0) return { dir: "flat", percent: 0 };
+  if (previous === 0) return { dir: "up", percent: 100 };
+  const change = Math.round(((current - previous) / previous) * 100);
+  if (change === 0) return { dir: "flat", percent: 0 };
+  return { dir: change > 0 ? "up" : "down", percent: Math.abs(change) };
+};
+
+const dateOf = (item) => new Date(item.created_at || item.start_date || item.updated_at || Date.now());
+
+// Build task-activity series at daily / weekly / monthly granularity.
+const buildTrendData = (allTasks, range) => {
+  const now = new Date();
+
+  if (range === "week") {
+    const out = [];
+    for (let i = 6; i >= 0; i--) {
+      const day = daysAgo(i, now);
+      const dayTasks = allTasks.filter(t => dateOf(t).toDateString() === day.toDateString());
+      out.push({
+        label: day.toLocaleDateString(undefined, { weekday: "short" }),
+        created: dayTasks.length,
+        completed: dayTasks.filter(isDone).length
+      });
+    }
+    return out;
+  }
+
+  if (range === "year") {
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const currentMonth = now.getMonth();
+    const out = [];
+    for (let i = 11; i >= 0; i--) {
+      const idx = (currentMonth - i + 12) % 12;
+      const monthTasks = allTasks.filter(t => dateOf(t).getMonth() === idx);
+      out.push({
+        label: months[idx],
+        created: monthTasks.length,
+        completed: monthTasks.filter(isDone).length
+      });
+    }
+    return out;
+  }
+
+  // "month" — last 4 weekly buckets
+  const out = [];
+  for (let i = 3; i >= 0; i--) {
+    const end = daysAgo(i * 7, now);
+    const start = daysAgo(i * 7 + 6, now);
+    const weekTasks = allTasks.filter(t => {
+      const d = dateOf(t);
+      return d >= start && d <= end;
+    });
+    out.push({
+      label: `Wk ${4 - i}`,
+      created: weekTasks.length,
+      completed: weekTasks.filter(isDone).length
+    });
+  }
+  return out;
+};
+
+// ─── Custom Chart Tooltip ───
+const CustomTooltip = ({ active, payload, label }) =>
+  active && payload?.length ? (
+    <div className="chart-tooltip">
+      <p className="chart-tooltip-label">{label}</p>
+      {payload.map((p, i) => (
+        <p key={i} className="chart-tooltip-item" style={{ color: p.color || p.fill }}>
+          {p.name || p.dataKey}: {p.value}
+        </p>
+      ))}
+    </div>
+  ) : null;
+
+const TrendPill = ({ trend }) => {
+  if (trend.dir === "flat") {
+    return (
+      <div className="stat-card-trend flat">
+        <Minus size={14} />
+        <span>Flat</span>
+      </div>
+    );
+  }
+  const Icon = trend.dir === "up" ? ArrowUpRight : ArrowDownRight;
+  return (
+    <div className={`stat-card-trend ${trend.dir}`}>
+      <Icon size={14} />
+      <span>{trend.percent}%</span>
+    </div>
+  );
+};
+
+// ─── Main Component ───
 export default function SupervisorDashboard() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
   const { onMenuClick } = useOutletContext();
 
-  const totalProjects = PROJECTS.filter((p) => !p.is_deleted).length;
-  const activeProjects = PROJECTS.filter(
-    (p) => p.status === "in-progress"
-  ).length;
-
-  const totalTasks = TASKS.filter((t) => !t.is_deleted).length;
-  const doneTasks = TASKS.filter(
-    (t) => t.status === "done" && !t.is_deleted
-  ).length;
-
-  const completionPercent =
-    totalTasks === 0 ? 0 : Math.round((doneTasks / totalTasks) * 100);
-
+  // State
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [projects, setProjects] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [teamMembers, setTeamMembers] = useState([]);
+  const [users, setUsers] = useState([]);
   const [activeIndex, setActiveIndex] = useState(null);
+  const [timeRange, setTimeRange] = useState("month");
 
-  const statusData = Object.entries(
-    PROJECTS.reduce((acc, p) => {
-      acc[p.status] = (acc[p.status] || 0) + 1;
-      return acc;
-    }, {})
-  ).map(([name, value]) => ({
-    name: statusConfig[name]?.label || name,
-    value,
-    fill: statusConfig[name]?.color || "#6366f1"
-  }));
-
-  const priorityData = Object.entries(
-    PROJECTS.reduce((acc, p) => {
-      acc[p.priority] = (acc[p.priority] || 0) + 1;
-      return acc;
-    }, {})
-  ).map(([name, value]) => ({
-    name: priorityConfig[name]?.label || name,
-    value,
-    fill: priorityConfig[name]?.color || "#6366f1"
-  }));
-
-  const taskTrendData = [
-    { month: "Jan", completed: 8, created: 12 },
-    { month: "Feb", completed: 14, created: 16 },
-    { month: "Mar", completed: 11, created: 10 },
-    { month: "Apr", completed: 19, created: 15 },
-    { month: "May", completed: 7, created: 9 },
-    { month: "Jun", completed: 13, created: 14 }
-  ];
-
-  const teamProductivity = TEAM_MEMBERS.map((tm) => {
-    const tasks = TASKS.filter((t) => t.assign_to === tm.tm_id);
-
-    return {
-      name: tm.name.split(" ")[0],
-      tasks: tasks.length,
-      completed: tasks.filter((t) => t.status === "done").length
-    };
+  // Stats
+  const [stats, setStats] = useState({
+    totalProjects: 0,
+    activeProjects: 0,
+    totalTasks: 0,
+    doneTasks: 0,
+    completionPercent: 0,
+    totalMembers: 0,
+    totalLeads: 0,
+    inProgressTasks: 0,
+    onTimeRate: 0,
+    avgCompletionDays: 0
   });
 
-  // TOOLTIP
-  const TT = ({ active, payload, label }) =>
-    active && payload?.length ? (
-      <div
-        style={{
-          background: "var(--bg-card)",
-          border: "1px solid var(--border-default)",
-          borderRadius: 10,
-          padding: "10px 14px",
-          fontSize: 13
-        }}
-      >
-        <p style={{ marginBottom: 6, fontWeight: 700 }}>{label}</p>
+  const [trends, setTrends] = useState({
+    projects: { dir: "flat", percent: 0 },
+    doneTasks: { dir: "flat", percent: 0 },
+    inProgressTasks: { dir: "flat", percent: 0 },
+    completionPercent: { dir: "flat", percent: 0 }
+  });
 
-        {payload.map((p, i) => (
-          <p key={i} style={{ color: p.color }}>
-            {p.name || p.dataKey}: {p.value}
-          </p>
-        ))}
+  // Chart data
+  const [statusData, setStatusData] = useState([]);
+  const [priorityData, setPriorityData] = useState([]);
+  const [teamProductivity, setTeamProductivity] = useState([]);
+  const [projectHealth, setProjectHealth] = useState([]);
+  const [recentActivity, setRecentActivity] = useState([]);
+
+  useEffect(() => {
+    fetchDashboardData();
+  }, []);
+
+  // Recompute the trend chart whenever the range toggle changes,
+  // without re-fetching from the API.
+  const taskTrendData = useMemo(() => buildTrendData(tasks, timeRange), [tasks, timeRange]);
+
+  const fetchDashboardData = async () => {
+    try {
+      setLoading(true);
+
+      const [projectsData, tasksData, membersData, usersData] = await Promise.all([
+        projectService.getProjects(),
+        taskService.getTasks(),
+        teamService.getTeamMembers(),
+        userService.getUsers(),
+      ]);
+
+      const allProjects = projectsData?.data || projectsData || [];
+      const allTasks = tasksData?.data || tasksData || [];
+      const allMembers = membersData?.data || membersData || [];
+      const allUsers = usersData?.data || usersData || [];
+
+      setProjects(allProjects);
+      setTasks(allTasks);
+      setTeamMembers(allMembers);
+      setUsers(allUsers);
+
+      // ─── Calculate Stats ───
+      const totalProjects = allProjects.length;
+      const activeProjects = allProjects.filter(p =>
+        p.status === "active" || p.status === "in-progress" || p.status === "in_progress"
+      ).length;
+      const totalTasks = allTasks.length;
+      const doneTasks = allTasks.filter(isDone).length;
+      const inProgressTasks = allTasks.filter(isInProgress).length;
+      const completionPercent = totalTasks === 0 ? 0 : Math.round((doneTasks / totalTasks) * 100);
+
+      const leads = allUsers.filter(u =>
+        u.role?.toLowerCase() === 'member' || u.role?.toLowerCase() === 'lead'
+      ).length;
+
+      // On-time rate
+      const completedTasks = allTasks.filter(isDone);
+      const onTime = completedTasks.filter(t =>
+        t.due_date && new Date(t.due_date) >= new Date(t.updated_at || t.start_date || t.created_at)
+      ).length;
+      const onTimeRate = completedTasks.length === 0 ? 0 : Math.round((onTime / completedTasks.length) * 100);
+
+      // Average completion time, computed from actual created→completed dates
+      const timedCompletions = completedTasks.filter(t => t.created_at && t.updated_at);
+      const avgCompletionDays = timedCompletions.length === 0 ? 0 : (
+        timedCompletions.reduce((sum, t) => {
+          const diff = (new Date(t.updated_at) - new Date(t.created_at)) / (1000 * 60 * 60 * 24);
+          return sum + Math.max(diff, 0);
+        }, 0) / timedCompletions.length
+      ).toFixed(1);
+
+      setStats({
+        totalProjects,
+        activeProjects,
+        totalTasks,
+        doneTasks,
+        completionPercent,
+        totalMembers: allMembers.length,
+        totalLeads: leads,
+        inProgressTasks,
+        onTimeRate,
+        avgCompletionDays
+      });
+
+      // ─── Trends: this week vs the prior week, from real timestamps ───
+      const now = new Date();
+      const weekStart = daysAgo(6, now);
+      const prevWeekEnd = daysAgo(7, now);
+      const prevWeekStart = daysAgo(13, now);
+
+      const inRange = (item, start, end) => {
+        const d = dateOf(item);
+        return d >= start && d <= end;
+      };
+
+      const projectsThisWeek = allProjects.filter(p => inRange(p, weekStart, now)).length;
+      const projectsPrevWeek = allProjects.filter(p => inRange(p, prevWeekStart, prevWeekEnd)).length;
+
+      const doneThisWeek = completedTasks.filter(t => {
+        const d = new Date(t.updated_at || t.created_at);
+        return d >= weekStart && d <= now;
+      }).length;
+      const donePrevWeek = completedTasks.filter(t => {
+        const d = new Date(t.updated_at || t.created_at);
+        return d >= prevWeekStart && d <= prevWeekEnd;
+      }).length;
+
+      const inProgThisWeek = allTasks.filter(t => isInProgress(t) && inRange(t, weekStart, now)).length;
+      const inProgPrevWeek = allTasks.filter(t => isInProgress(t) && inRange(t, prevWeekStart, prevWeekEnd)).length;
+
+      const tasksThisWeek = allTasks.filter(t => inRange(t, weekStart, now));
+      const tasksPrevWeek = allTasks.filter(t => inRange(t, prevWeekStart, prevWeekEnd));
+      const completionThisWeek = tasksThisWeek.length === 0 ? 0 : Math.round((tasksThisWeek.filter(isDone).length / tasksThisWeek.length) * 100);
+      const completionPrevWeek = tasksPrevWeek.length === 0 ? 0 : Math.round((tasksPrevWeek.filter(isDone).length / tasksPrevWeek.length) * 100);
+
+      setTrends({
+        projects: computeTrend(projectsThisWeek, projectsPrevWeek),
+        doneTasks: computeTrend(doneThisWeek, donePrevWeek),
+        inProgressTasks: computeTrend(inProgThisWeek, inProgPrevWeek),
+        completionPercent: computeTrend(completionThisWeek, completionPrevWeek)
+      });
+
+      // ─── Status Data ───
+      const statusCounts = allProjects.reduce((acc, p) => {
+        const status = p.status || "planning";
+        acc[status] = (acc[status] || 0) + 1;
+        return acc;
+      }, {});
+      setStatusData(Object.entries(statusCounts).map(([name, value]) => ({
+        name: name.charAt(0).toUpperCase() + name.slice(1).replace(/_/g, " ").replace(/-/g, " "),
+        value,
+        fill: getStatusColor(name)
+      })));
+
+      // ─── Priority Data ───
+      const priorityCounts = allProjects.reduce((acc, p) => {
+        const priority = p.priority || "medium";
+        acc[priority] = (acc[priority] || 0) + 1;
+        return acc;
+      }, {});
+      setPriorityData(Object.entries(priorityCounts).map(([name, value]) => ({
+        name: name.charAt(0).toUpperCase() + name.slice(1),
+        value,
+        fill: getPriorityColor(name)
+      })));
+
+      // ─── Team Productivity ───
+      const productivityData = allMembers.slice(0, 8).map(member => {
+        const memberId = member.id;
+        const memberTasks = allTasks.filter(t =>
+          t.assign_to === memberId ||
+          t.assignedTo === memberId
+        );
+        const completed = memberTasks.filter(isDone).length;
+        return {
+          name: (member.name || "?").split(" ")[0],
+          tasks: memberTasks.length,
+          completed: completed,
+          progress: memberTasks.length === 0 ? 0 : Math.round((completed / memberTasks.length) * 100)
+        };
+      });
+      setTeamProductivity(productivityData);
+
+      // ─── Project Health ───
+      const healthData = allProjects.slice(0, 8).map(project => {
+        const projectId = project.p_id || project.id;
+        const projectTasks = allTasks.filter(t => {
+          const taskProjectId = t.p_id || t.p;
+          return taskProjectId === projectId;
+        });
+        const done = projectTasks.filter(isDone).length;
+        const progress = projectTasks.length === 0 ? 0 : Math.round((done / projectTasks.length) * 100);
+        const lead = allUsers.find(u => (u.id || u.u_id) === (project.created_by || project.lead_id));
+
+        return {
+          ...project,
+          progress,
+          done,
+          total: projectTasks.length,
+          lead: lead?.u_name || lead?.name || "Unassigned"
+        };
+      });
+      setProjectHealth(healthData);
+
+      // ─── Recent Activity ───
+      const recent = [...allTasks]
+        .sort((a, b) => new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at))
+        .slice(0, 5)
+        .map(t => ({
+          id: t.t_id || t.id,
+          title: t.title,
+          status: t.status,
+          updated: t.updated_at || t.created_at,
+          user: t.assignee_name || "System"
+        }));
+      setRecentActivity(recent);
+
+    } catch (error) {
+      console.error("Failed to fetch dashboard data:", error);
+      toast.error("Failed to load dashboard data");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await fetchDashboardData();
+    toast.success("Dashboard refreshed");
+  };
+
+  // ─── Loading State ───
+  if (loading) {
+    return (
+      <div>
+        <Topbar title="Supervisor Dashboard" onMenuClick={onMenuClick} />
+        <div className="page-container">
+          <div className="loading-spinner-wrapper">
+            <div className="loading-spinner" />
+            <p>Loading dashboard...</p>
+          </div>
+        </div>
       </div>
-    ) : null;
+    );
+  }
 
   return (
     <div>
       <Topbar
-        title="Supervisor Dashboard"
-        onMenuClick={onMenuClick}
-      />
+  title={
+    <span className="greeting-text">
+      {getGreeting()}, {user?.u_name?.split(' ')[0] || 'User'}
+      <span className="greeting-wave">👋</span>
+    </span>
+  }
+  onMenuClick={onMenuClick}
+  actions={
+    <button 
+      className="btn btn-secondary btn-sm refresh-btn" 
+      onClick={handleRefresh}
+      disabled={refreshing}
+    >
+      <RefreshCw size={14} className={refreshing ? 'spin' : ''} />
+      {refreshing ? 'Refreshing...' : 'Refresh'}
+    </button>
+  }
+/>
 
       <div className="page-container supervisor-dashboard">
-        {/* STATS */}
-        <div
-          className="dashboard-stats-grid stagger-children"
-          style={{ marginBottom: 28 }}
-        >
-          <StatCard
-            label="Total Projects"
-            value={totalProjects}
-            icon={FolderKanban}
-            colorKey="purple"
-            change={12}
-            to="/supervisor/projects"
-          />
 
-          <StatCard
-            label="Active Projects"
-            value={activeProjects}
-            icon={Activity}
-            colorKey="teal"
-            sub="Currently in progress"
-            to="/supervisor/projects"
-          />
+        {/* ─── QUICK STATS ─── */}
+        <div className="stats-grid">
+          <div className="stat-card-modern">
+            <div className="stat-card-icon purple">
+              <FolderKanban size={20} />
+            </div>
+            <div className="stat-card-content">
+              <span className="stat-card-value">{stats.totalProjects}</span>
+              <span className="stat-card-label">Total Projects</span>
+            </div>
+            <TrendPill trend={trends.projects} />
+          </div>
 
-          <StatCard
-            label="Team Members"
-            value={TEAM_MEMBERS.length}
-            icon={Users}
-            colorKey="amber"
-            change={8}
-            to="/supervisor/teams"
-          />
+          <div className="stat-card-modern">
+            <div className="stat-card-icon emerald">
+              <CheckCircle2 size={20} />
+            </div>
+            <div className="stat-card-content">
+              <span className="stat-card-value">{stats.doneTasks}</span>
+              <span className="stat-card-label">Tasks Completed</span>
+            </div>
+            <TrendPill trend={trends.doneTasks} />
+          </div>
 
-          <StatCard
-            label="Tasks Done"
-            value={`${doneTasks}/${totalTasks}`}
-            icon={CheckCircle2}
-            colorKey="emerald"
-            sub={`${completionPercent}% completion`}
-            to="/supervisor/projects"
-          />
+          <div className="stat-card-modern">
+            <div className="stat-card-icon amber">
+              <Clock size={20} />
+            </div>
+            <div className="stat-card-content">
+              <span className="stat-card-value">{stats.inProgressTasks}</span>
+              <span className="stat-card-label">In Progress</span>
+            </div>
+            <TrendPill trend={trends.inProgressTasks} />
+          </div>
+
+          <div className="stat-card-modern">
+            <div className="stat-card-icon teal">
+              <Award size={20} />
+            </div>
+            <div className="stat-card-content">
+              <span className="stat-card-value">{stats.completionPercent}%</span>
+              <span className="stat-card-label">Completion Rate</span>
+            </div>
+            <TrendPill trend={trends.completionPercent} />
+          </div>
         </div>
 
-        {/* ROW 1 */}
-        <div
-          className="dashboard-grid-2"
-          style={{ marginBottom: 20 }}
-        >
-          {/* AREA CHART */}
-          <div className="card dashboard-card">
-            <h3 className="dashboard-title">
-              Task Completion Trend
-            </h3>
+        {/* ─── SECONDARY STATS ─── */}
+        <div className="stats-grid-secondary">
+          <div className="stat-card-mini">
+            <Users size={16} className="stat-mini-icon" />
+            <div>
+              <span className="stat-mini-value">{stats.totalMembers}</span>
+              <span className="stat-mini-label">Team Members</span>
+            </div>
+          </div>
+          <div className="stat-card-mini">
+            <UserCheck size={16} className="stat-mini-icon" />
+            <div>
+              <span className="stat-mini-value">{stats.totalLeads}</span>
+              <span className="stat-mini-label">Leads</span>
+            </div>
+          </div>
+          <div className="stat-card-mini">
+            <Target size={16} className="stat-mini-icon" />
+            <div>
+              <span className="stat-mini-value">{stats.onTimeRate}%</span>
+              <span className="stat-mini-label">On-Time Rate</span>
+            </div>
+          </div>
+          <div className="stat-card-mini">
+            <Activity size={16} className="stat-mini-icon" />
+            <div>
+              <span className="stat-mini-value">{stats.activeProjects}</span>
+              <span className="stat-mini-label">Active Projects</span>
+            </div>
+          </div>
+          <div className="stat-card-mini">
+            <Timer size={16} className="stat-mini-icon" />
+            <div>
+              <span className="stat-mini-value">{stats.avgCompletionDays}d</span>
+              <span className="stat-mini-label">Avg. Completion</span>
+            </div>
+          </div>
+        </div>
 
-            <div className="chart-wrapper">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={taskTrendData}>
-                  <XAxis dataKey="month" fontSize={11.5} />
-                  <YAxis fontSize={11.5} />
-                  <Tooltip content={<TT />} />
-                  <Legend />
-
-                  <Area
-                    type="monotone"
-                    dataKey="completed"
-                    stroke="#6366f1"
-                    fillOpacity={0.2}
-                    fill="#6366f1"
-                  />
-
-                  <Area
-                    type="monotone"
-                    dataKey="created"
-                    stroke="#2dd4bf"
-                    fillOpacity={0.2}
-                    fill="#2dd4bf"
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
+        {/* ─── CHARTS ROW 1 ─── */}
+        <div className="charts-row">
+          {/* Task Trend */}
+          <div className="chart-card">
+            <div className="chart-card-header">
+              <h3 className="chart-card-title">
+                <TrendingUp size={16} />
+                Task Activity
+              </h3>
+              <div className="chart-card-actions">
+                <button
+                  type="button"
+                  className={`time-btn ${timeRange === 'week' ? 'active' : ''}`}
+                  onClick={() => setTimeRange('week')}
+                >
+                  Week
+                </button>
+                <button
+                  type="button"
+                  className={`time-btn ${timeRange === 'month' ? 'active' : ''}`}
+                  onClick={() => setTimeRange('month')}
+                >
+                  Month
+                </button>
+                <button
+                  type="button"
+                  className={`time-btn ${timeRange === 'year' ? 'active' : ''}`}
+                  onClick={() => setTimeRange('year')}
+                >
+                  Year
+                </button>
+              </div>
+            </div>
+            <div className="chart-container">
+              {taskTrendData.every(d => d.created === 0) ? (
+                <div className="chart-empty">No task activity in this period</div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={taskTrendData}>
+                    <defs>
+                      <linearGradient id="createdGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="var(--accent-primary)" stopOpacity={0.3} />
+                        <stop offset="95%" stopColor="var(--accent-primary)" stopOpacity={0} />
+                      </linearGradient>
+                      <linearGradient id="completedGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="var(--accent-emerald)" stopOpacity={0.3} />
+                        <stop offset="95%" stopColor="var(--accent-emerald)" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" vertical={false} opacity={0.5} />
+                    <XAxis dataKey="label" fontSize={11} stroke="var(--text-muted)" tickLine={false} axisLine={false} />
+                    <YAxis fontSize={11} stroke="var(--text-muted)" tickLine={false} axisLine={false} allowDecimals={false} />
+                    <Tooltip content={<CustomTooltip />} />
+                    <Area
+                      type="monotone"
+                      dataKey="created"
+                      name="Created"
+                      stroke="var(--accent-primary)"
+                      strokeWidth={2}
+                      fillOpacity={1}
+                      fill="url(#createdGradient)"
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="completed"
+                      name="Completed"
+                      stroke="var(--accent-emerald)"
+                      strokeWidth={2}
+                      fillOpacity={1}
+                      fill="url(#completedGradient)"
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              )}
             </div>
           </div>
 
-          {/* PIE CHART */}
-          <div className="card dashboard-card">
-            <h3 className="dashboard-title">
-              Project Status
-            </h3>
-
-            <div className="status-layout">
-              {/* PIE */}
-              <div className="status-chart">
+          {/* Project Status Pie */}
+          <div className="chart-card">
+            <div className="chart-card-header">
+              <h3 className="chart-card-title">
+                <PieChartIcon size={16} />
+                Project Status
+              </h3>
+              <span className="chart-badge">{statusData.reduce((a, b) => a + b.value, 0)} total</span>
+            </div>
+            <div className="pie-chart-wrapper">
+              <div className="pie-chart-container">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie
-  data={statusData}
-  innerRadius="45%"
-  outerRadius="75%"
-  paddingAngle={3}
-  dataKey="value"
-  cx="50%"
-  cy="50%"
-  onMouseEnter={(_, index) => setActiveIndex(index)}
-  onMouseLeave={() => setActiveIndex(null)}
->
-                      {statusData.map((entry, index) => (
+                      data={statusData.length > 0 ? statusData : [{ name: "No Data", value: 1, fill: "var(--text-muted)" }]}
+                      innerRadius="50%"
+                      outerRadius="80%"
+                      paddingAngle={2}
+                      dataKey="value"
+                      cx="50%"
+                      cy="50%"
+                      onMouseEnter={(_, index) => setActiveIndex(index)}
+                      onMouseLeave={() => setActiveIndex(null)}
+                    >
+                      {(statusData.length > 0 ? statusData : [{ name: "No Data", value: 1, fill: "var(--text-muted)" }]).map((entry, index) => (
                         <Cell
                           key={index}
                           fill={entry.fill}
                           style={{
-                            opacity:
-                              activeIndex === null ||
-                              activeIndex === index
-                                ? 1
-                                : 0.4,
-                            transform:
-                              activeIndex === index
-                                ? "scale(1.05)"
-                                : "scale(1)",
+                            opacity: activeIndex === null || activeIndex === index ? 1 : 0.5,
+                            transform: activeIndex === index ? "scale(1.04)" : "scale(1)",
                             transformOrigin: "center",
-                            transition: "all 0.25s ease"
+                            transition: "all 0.3s ease"
                           }}
                         />
                       ))}
                     </Pie>
-
-                    <Tooltip content={<TT />} />
+                    <Tooltip content={<CustomTooltip />} />
                   </PieChart>
                 </ResponsiveContainer>
-
-                {/* CENTER */}
-                <div className="pie-center">
-                  <p className="pie-total">
-                    {statusData.reduce(
-                      (a, b) => a + b.value,
-                      0
-                    )}
-                  </p>
-
-                  <p className="pie-label">
-                    Total Projects
-                  </p>
+                <div className="pie-center-label">
+                  <span className="pie-center-value">{statusData.reduce((a, b) => a + b.value, 0)}</span>
+                  <span className="pie-center-text">Projects</span>
                 </div>
               </div>
-
-              {/* LEGEND */}
-              <div className="status-legend">
-                {statusData.map((s, i) => {
-                  const total = statusData.reduce(
-                    (a, b) => a + b.value,
-                    0
-                  );
-
-                  const percent = total
-                    ? Math.round((s.value / total) * 100)
-                    : 0;
-
+              <div className="pie-legend">
+                {statusData.length > 0 ? statusData.map((s, i) => {
+                  const total = statusData.reduce((a, b) => a + b.value, 0);
+                  const percent = total ? Math.round((s.value / total) * 100) : 0;
                   return (
-                    <div
+                    <button
+                      type="button"
                       key={i}
                       onMouseEnter={() => setActiveIndex(i)}
-                      onMouseLeave={() =>
-                        setActiveIndex(null)
-                      }
-                      className="legend-item"
+                      onMouseLeave={() => setActiveIndex(null)}
+                      onFocus={() => setActiveIndex(i)}
+                      onBlur={() => setActiveIndex(null)}
+                      className="pie-legend-item"
                     >
-                      <div
-                        className="legend-dot"
-                        style={{
-                          background: s.fill
-                        }}
-                      />
-
-                      <span className="legend-name">
-                        {s.name}
-                      </span>
-
-                      <span className="legend-value">
-                        {s.value} ({percent}%)
-                      </span>
-                    </div>
+                      <span className="pie-legend-dot" style={{ background: s.fill }} />
+                      <span className="pie-legend-name">{s.name}</span>
+                      <span className="pie-legend-value">{percent}%</span>
+                    </button>
                   );
-                })}
+                }) : (
+                  <div className="pie-legend-empty">No data available</div>
+                )}
               </div>
             </div>
           </div>
         </div>
 
-        {/* ROW 2 */}
-        <div
-          className="dashboard-grid-2"
-          style={{ marginBottom: 20 }}
-        >
-          {/* PRODUCTIVITY */}
-          <div className="card dashboard-card">
-            <h3 className="dashboard-title">
-              Team Productivity
-            </h3>
-
-            <div className="chart-wrapper">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={teamProductivity}>
-                  <XAxis dataKey="name" fontSize={11.5} />
-                  <YAxis fontSize={11.5} />
-                  <Tooltip content={<TT />} />
-
-                  <Bar dataKey="tasks" fill="#6366f1" />
-                  <Bar
-                    dataKey="completed"
-                    fill="#10b981"
-                  />
-                </BarChart>
-              </ResponsiveContainer>
+        {/* ─── CHARTS ROW 2 ─── */}
+        <div className="charts-row">
+          {/* Team Productivity */}
+          <div className="chart-card">
+            <div className="chart-card-header">
+              <h3 className="chart-card-title">
+                <Users size={16} />
+                Team Productivity
+              </h3>
+              <span className="chart-badge">Top performers</span>
+            </div>
+            <div className="chart-container">
+              {teamProductivity.length === 0 ? (
+                <div className="chart-empty">No team members yet</div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={teamProductivity}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" vertical={false} opacity={0.5} />
+                    <XAxis dataKey="name" fontSize={11} stroke="var(--text-muted)" tickLine={false} axisLine={false} />
+                    <YAxis fontSize={11} stroke="var(--text-muted)" tickLine={false} axisLine={false} allowDecimals={false} />
+                    <Tooltip content={<CustomTooltip />} />
+                    <Bar dataKey="tasks" name="Assigned" fill="var(--accent-primary)" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="completed" name="Completed" fill="var(--accent-emerald)" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
             </div>
           </div>
 
-          {/* PRIORITY */}
-          <div className="card dashboard-card">
-            <h3 className="dashboard-title">
-              Priority Distribution
-            </h3>
-
-            <div className="chart-wrapper">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  data={priorityData}
-                  layout="vertical"
-                >
-                  <XAxis
-                    type="number"
-                    fontSize={11.5}
-                  />
-
-                  <YAxis
-                    dataKey="name"
-                    type="category"
-                    fontSize={11.5}
-                    width={70}
-                  />
-
-                  <Tooltip content={<TT />} />
-
-                  <Bar dataKey="value">
-                    {priorityData.map((e, i) => (
-                      <Cell key={i} fill={e.fill} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+          {/* Priority Distribution */}
+          <div className="chart-card">
+            <div className="chart-card-header">
+              <h3 className="chart-card-title">
+                <BarChart3 size={16} />
+                Priority Distribution
+              </h3>
+              <span className="chart-badge">By project</span>
+            </div>
+            <div className="chart-container">
+              {priorityData.length === 0 ? (
+                <div className="chart-empty">No projects yet</div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={priorityData} layout="vertical">
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" horizontal={false} opacity={0.5} />
+                    <XAxis type="number" fontSize={11} stroke="var(--text-muted)" tickLine={false} axisLine={false} allowDecimals={false} />
+                    <YAxis dataKey="name" type="category" fontSize={11} stroke="var(--text-muted)" tickLine={false} axisLine={false} width={60} />
+                    <Tooltip content={<CustomTooltip />} />
+                    <Bar dataKey="value" name="Projects" radius={[0, 6, 6, 0]}>
+                      {priorityData.map((e, i) => (
+                        <Cell key={i} fill={e.fill} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
             </div>
           </div>
         </div>
 
-        {/* PROJECT HEALTH */}
-        <div
-          className="card dashboard-card"
-          style={{ marginBottom: 20 }}
-        >
-          <h3 className="dashboard-title">
-            All Projects Health
-          </h3>
+        {/* ─── PROJECT HEALTH & RECENT ACTIVITY ─── */}
+        <div className="dashboard-bottom">
+          {/* Project Health */}
+          <div className="health-card">
+            <div className="health-card-header">
+              <h3 className="health-card-title">
+                <FolderKanban size={16} />
+                Project Health
+              </h3>
+              <button
+                type="button"
+                className="view-all-btn"
+                onClick={() => navigate('/supervisor/projects')}
+              >
+                View all →
+              </button>
+            </div>
 
-          <div className="project-health-list">
-            {PROJECTS.map((project) => {
-              const progress = getProjectProgress(
-                project.p_id
-              );
+            <div className="health-list">
+              {projectHealth.length === 0 ? (
+                <div className="health-empty">No projects yet.</div>
+              ) : (
+                projectHealth.map((project) => {
+                  const progress = project.progress || 0;
+                  const hc = progress >= 70 ? "var(--accent-emerald)" : progress >= 40 ? "var(--accent-amber)" : "var(--accent-rose)";
 
-              const lead = getUserById(
-                project.created_by
-              );
-
-              const tasks = TASKS.filter(
-                (t) =>
-                  t.p_id === project.p_id &&
-                  !t.is_deleted
-              );
-
-              const done = tasks.filter(
-                (t) => t.status === "done"
-              ).length;
-
-              const hc =
-                progress >= 70
-                  ? "#10b981"
-                  : progress >= 40
-                  ? "#f59e0b"
-                  : "#f43f5e";
-
-              return (
-                <div
-                  key={project.p_id}
-                  className="project-health-item"
-                >
-                  {/* PROGRESS */}
-                  <div
-                    style={{
-                      position: "relative",
-                      width: 48,
-                      height: 48,
-                      flexShrink: 0
-                    }}
-                  >
-                    <ProgressRing
-                      progress={progress}
-                      size={48}
-                      strokeWidth={4}
-                      color={hc}
-                    />
-
-                    <div
-                      style={{
-                        position: "absolute",
-                        inset: 0,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        fontSize: 11,
-                        fontWeight: 700,
-                        color: hc
-                      }}
+                  return (
+                    <button
+                      type="button"
+                      key={project.p_id || project.id}
+                      className="health-item"
+                      onClick={() => navigate(`/supervisor/projects/${project.p_id || project.id}`)}
                     >
-                      {progress}%
+                      <div className="health-progress">
+                        <ProgressRing progress={progress} size={44} strokeWidth={4} color={hc} />
+                        <span className="health-progress-text" style={{ color: hc }}>{progress}%</span>
+                      </div>
+
+                      <div className="health-info">
+                        <p className="health-name">{project.p_name || project.name}</p>
+                        <p className="health-sub">
+                          Lead: {project.lead || "Unassigned"} · {project.done}/{project.total} tasks
+                        </p>
+                      </div>
+
+                      <div className="health-badges">
+                        <PriorityBadge priority={project.priority} />
+                        <StatusBadge status={project.status} />
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {/* Recent Activity */}
+          <div className="activity-card">
+            <div className="activity-card-header">
+              <h3 className="activity-card-title">
+                <Zap size={16} />
+                Recent Activity
+              </h3>
+              <span className="activity-badge">Live</span>
+            </div>
+
+            <div className="activity-list">
+              {recentActivity.length === 0 ? (
+                <div className="activity-empty">No recent activity</div>
+              ) : (
+                recentActivity.map((item) => (
+                  <div key={item.id} className="activity-item">
+                    <div className="activity-dot" style={{ background: getStatusColor(item.status) }} />
+                    <div className="activity-content">
+                      <p className="activity-text">{item.title}</p>
+                      <div className="activity-meta">
+                        <span className="activity-status">
+                          <StatusBadge status={item.status} />
+                        </span>
+                        <span className="activity-time">
+                          {item.updated ? new Date(item.updated).toLocaleDateString() : 'Recently'}
+                        </span>
+                      </div>
                     </div>
                   </div>
-
-                  <div className="project-info">
-                    <p className="project-name">
-                      {project.p_name}
-                    </p>
-
-                    <p className="project-sub">
-                      Lead: {lead?.u_name} · {done}/
-                      {tasks.length} tasks
-                    </p>
-                  </div>
-
-                  <div className="project-badges">
-                    <PriorityBadge
-                      priority={project.priority}
-                    />
-
-                    <StatusBadge
-                      status={project.status}
-                    />
-                  </div>
-                </div>
-              );
-            })}
+                ))
+              )}
+            </div>
           </div>
         </div>
+
       </div>
 
-      {/* RESPONSIVE CSS */}
       <style>{`
-        .dashboard-stats-grid{
-          display:grid;
-          grid-template-columns:repeat(4,1fr);
-          gap:20px;
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+        .spin { animation: spin 1s linear infinite; }
+
+        .loading-spinner-wrapper {
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          align-items: center;
+          gap: 12px;
+          height: 400px;
+          color: var(--text-muted);
         }
 
-        .dashboard-grid-2{
-          display:grid;
-          grid-template-columns:repeat(2,1fr);
-          gap:20px;
+        .loading-spinner {
+          width: 40px;
+          height: 40px;
+          border: 3px solid var(--border-subtle);
+          border-top-color: var(--accent-primary);
+          border-radius: 50%;
+          animation: spin 0.8s linear infinite;
         }
 
-        .dashboard-card{
-          padding:22px;
-          overflow:hidden;
+        .greeting-text {
+          display: flex;
+          align-items: center;
+          gap: 8px;
         }
 
-        .dashboard-title{
-          font-size:15px;
-          font-weight:800;
-          margin-bottom:18px;
+        .greeting-wave {
+          font-size: 20px;
         }
 
-        .chart-wrapper{
-          width:100%;
-          height:240px;
+        .topbar-actions {
+          display: flex;
+          align-items: center;
+          gap: 10px;
         }
 
-        .status-layout{
-          display:flex;
-          align-items:center;
-          gap:24px;
+        .refresh-btn {
+          display: flex;
+          align-items: center;
+          gap: 6px;
         }
 
-        .status-chart {
-  position: relative;
-  flex: 1;
-  min-width: 180px;   /* 👈 prevents collapse */
-  aspect-ratio: 1 / 1; /* 👈 keeps it perfectly square */
-}
-
-        .pie-center{
-          position:absolute;
-          inset:0;
-          display:flex;
-          align-items:center;
-          justify-content:center;
-          flex-direction:column;
-          pointer-events:none;
+        /* ─── STATS GRID ─── */
+        .stats-grid {
+          display: grid;
+          grid-template-columns: repeat(4, 1fr);
+          gap: 16px;
+          margin-bottom: 16px;
         }
 
-        .pie-total{
-          font-size:20px;
-          font-weight:900;
+        .stat-card-modern {
+          display: flex;
+          align-items: center;
+          gap: 14px;
+          padding: 18px 20px;
+          background: var(--bg-card);
+          border: 1px solid var(--border-subtle);
+          border-radius: 14px;
+          transition: all 0.2s ease;
+          position: relative;
         }
 
-        .pie-label{
-          font-size:11px;
-          color:var(--text-muted);
+        .stat-card-modern:hover {
+          border-color: var(--accent-primary);
+          transform: translateY(-2px);
+          box-shadow: var(--shadow-md);
         }
 
-        .status-legend{
-          min-width:160px;
-          display:flex;
-          flex-direction:column;
-          gap:10px;
+        .stat-card-icon {
+          width: 44px;
+          height: 44px;
+          border-radius: 12px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
         }
 
-        .legend-item{
-          display:flex;
-          align-items:center;
-          gap:10px;
-          cursor:pointer;
-          padding:6px 8px;
-          border-radius:8px;
-          transition:0.2s;
+        .stat-card-icon.purple { background: color-mix(in srgb, var(--accent-primary) 14%, transparent); color: var(--accent-primary); }
+        .stat-card-icon.emerald { background: color-mix(in srgb, var(--accent-emerald) 14%, transparent); color: var(--accent-emerald); }
+        .stat-card-icon.amber { background: color-mix(in srgb, var(--accent-amber) 14%, transparent); color: var(--accent-amber); }
+        .stat-card-icon.teal { background: color-mix(in srgb, var(--accent-teal) 14%, transparent); color: var(--accent-teal); }
+
+        .stat-card-content {
+          flex: 1;
         }
 
-        .legend-item:hover{
-          background:var(--bg-secondary);
+        .stat-card-value {
+          display: block;
+          font-size: 24px;
+          font-weight: 800;
+          color: var(--text-primary);
+          line-height: 1.2;
         }
 
-        .legend-dot{
-          width:10px;
-          height:10px;
-          border-radius:3px;
-          flex-shrink:0;
+        .stat-card-label {
+          font-size: 12px;
+          color: var(--text-muted);
+          font-weight: 500;
         }
 
-        .legend-name{
-          font-size:12px;
-          color:var(--text-secondary);
+        .stat-card-trend {
+          display: flex;
+          align-items: center;
+          gap: 2px;
+          font-size: 11px;
+          font-weight: 700;
+          padding: 2px 8px;
+          border-radius: 20px;
+          flex-shrink: 0;
         }
 
-        .legend-value{
-          margin-left:auto;
-          font-size:12px;
-          font-weight:700;
-          white-space:nowrap;
+        .stat-card-trend.up { background: color-mix(in srgb, var(--accent-emerald) 14%, transparent); color: var(--accent-emerald); }
+        .stat-card-trend.down { background: color-mix(in srgb, var(--accent-rose) 14%, transparent); color: var(--accent-rose); }
+        .stat-card-trend.flat { background: color-mix(in srgb, var(--text-muted) 14%, transparent); color: var(--text-muted); }
+
+        /* ─── SECONDARY STATS ─── */
+        .stats-grid-secondary {
+          display: grid;
+          grid-template-columns: repeat(5, 1fr);
+          gap: 12px;
+          margin-bottom: 24px;
         }
 
-        .project-health-list{
-          display:flex;
-          flex-direction:column;
-          gap:12px;
+        .stat-card-mini {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 12px 16px;
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-subtle);
+          border-radius: 10px;
         }
 
-        .project-health-item{
-          display:flex;
-          align-items:center;
-          gap:14px;
-          padding:14px;
-          background:var(--bg-secondary);
-          border-radius:var(--radius-md);
-          border:1px solid var(--border-subtle);
-          flex-wrap:wrap;
+        .stat-mini-icon {
+          color: var(--text-muted);
+          flex-shrink: 0;
         }
 
-        .project-info{
-          flex:1;
-          min-width:220px;
+        .stat-mini-value {
+          display: block;
+          font-size: 16px;
+          font-weight: 700;
+          color: var(--text-primary);
+          line-height: 1.2;
         }
 
-        .project-name{
-          font-weight:700;
-          word-break:break-word;
+        .stat-mini-label {
+          font-size: 11px;
+          color: var(--text-muted);
         }
 
-        .project-sub{
-          font-size:11.5px;
-          color:var(--text-secondary);
-          margin-top:3px;
+        /* ─── CHARTS ─── */
+        .charts-row {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 16px;
+          margin-bottom: 20px;
         }
 
-        .project-badges{
-          display:flex;
-          align-items:center;
-          gap:8px;
-          flex-wrap:wrap;
+        .chart-card {
+          background: var(--bg-card);
+          border: 1px solid var(--border-subtle);
+          border-radius: 14px;
+          padding: 20px;
+          transition: all 0.2s ease;
         }
 
-        /* =========================
-           RESPONSIVE
-        ========================= */
+        .chart-card:hover {
+          border-color: var(--border-default);
+        }
 
-        @media (max-width:768px){
+        .chart-card-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-bottom: 16px;
+          gap: 10px;
+        }
 
-  .status-chart{
-    height:220px;
-  }
+        .chart-card-title {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 14px;
+          font-weight: 700;
+          color: var(--text-primary);
+        }
 
-}
+        .chart-card-actions {
+          display: flex;
+          gap: 4px;
+          background: var(--bg-secondary);
+          padding: 3px;
+          border-radius: 8px;
+        }
 
-@media (max-width:480px){
+        .time-btn {
+          padding: 4px 12px;
+          border: none;
+          border-radius: 6px;
+          font-size: 11px;
+          font-weight: 600;
+          color: var(--text-muted);
+          background: transparent;
+          cursor: pointer;
+          transition: all 0.15s;
+        }
 
-  .status-chart{
-    height:200px;
-  }
+        .time-btn:hover {
+          color: var(--text-primary);
+        }
 
-}
-@media (max-width:900px){
-  .status-layout{
-    flex-direction:column;
-    align-items:center;
-  }
+        .time-btn.active {
+          background: var(--accent-primary);
+          color: #fff;
+        }
 
-  .status-chart{
-    width:100%;
-    max-width:260px; /* keeps it clean */
-  }
-}
-        @media (max-width:1200px){
+        .chart-badge {
+          font-size: 11px;
+          font-weight: 600;
+          color: var(--text-muted);
+          background: var(--bg-secondary);
+          padding: 3px 10px;
+          border-radius: 20px;
+          flex-shrink: 0;
+        }
 
-          .dashboard-stats-grid{
-            grid-template-columns:repeat(2,1fr);
+        .chart-container {
+          width: 100%;
+          height: 200px;
+        }
+
+        .chart-empty {
+          height: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 13px;
+          color: var(--text-muted);
+        }
+
+        /* ─── PIE CHART ─── */
+        .pie-chart-wrapper {
+          display: flex;
+          align-items: center;
+          gap: 20px;
+        }
+
+        .pie-chart-container {
+          position: relative;
+          width: 180px;
+          height: 180px;
+          flex-shrink: 0;
+        }
+
+        .pie-center-label {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          pointer-events: none;
+        }
+
+        .pie-center-value {
+          font-size: 24px;
+          font-weight: 900;
+          color: var(--text-primary);
+          line-height: 1;
+        }
+
+        .pie-center-text {
+          font-size: 10px;
+          color: var(--text-muted);
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+
+        .pie-legend {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          min-width: 100px;
+        }
+
+        .pie-legend-item {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 4px 8px;
+          border-radius: 6px;
+          cursor: pointer;
+          transition: background 0.15s;
+          border: none;
+          background: transparent;
+          width: 100%;
+          text-align: left;
+          font-family: inherit;
+        }
+
+        .pie-legend-item:hover,
+        .pie-legend-item:focus-visible {
+          background: var(--bg-secondary);
+          outline: none;
+        }
+
+        .pie-legend-dot {
+          width: 10px;
+          height: 10px;
+          border-radius: 3px;
+          flex-shrink: 0;
+        }
+
+        .pie-legend-name {
+          flex: 1;
+          font-size: 12px;
+          color: var(--text-secondary);
+        }
+
+        .pie-legend-value {
+          font-size: 12px;
+          font-weight: 700;
+          color: var(--text-primary);
+        }
+
+        .pie-legend-empty {
+          font-size: 12px;
+          color: var(--text-muted);
+          padding: 8px 0;
+        }
+
+        /* ─── CHART TOOLTIP ─── */
+        .chart-tooltip {
+          background: var(--bg-card);
+          border: 1px solid var(--border-default);
+          border-radius: 10px;
+          padding: 10px 14px;
+          box-shadow: var(--shadow-md);
+        }
+
+        .chart-tooltip-label {
+          font-weight: 700;
+          font-size: 13px;
+          color: var(--text-primary);
+          margin-bottom: 4px;
+        }
+
+        .chart-tooltip-item {
+          font-size: 12px;
+          color: var(--text-secondary);
+          margin: 2px 0;
+        }
+
+        /* ─── BOTTOM SECTION ─── */
+        .dashboard-bottom {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 16px;
+        }
+
+        /* Health Card */
+        .health-card {
+          background: var(--bg-card);
+          border: 1px solid var(--border-subtle);
+          border-radius: 14px;
+          padding: 20px;
+        }
+
+        .health-card-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-bottom: 16px;
+        }
+
+        .health-card-title {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 14px;
+          font-weight: 700;
+          color: var(--text-primary);
+        }
+
+        .view-all-btn {
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--text-muted);
+          background: none;
+          border: none;
+          cursor: pointer;
+          transition: color 0.15s;
+        }
+
+        .view-all-btn:hover {
+          color: var(--accent-primary);
+        }
+
+        .health-list {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          max-height: 320px;
+          overflow-y: auto;
+        }
+
+        .health-item {
+          display: flex;
+          align-items: center;
+          gap: 14px;
+          padding: 10px 14px;
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-subtle);
+          border-radius: 10px;
+          cursor: pointer;
+          transition: all 0.15s;
+          width: 100%;
+          text-align: left;
+          font-family: inherit;
+          color: inherit;
+        }
+
+        .health-item:hover,
+        .health-item:focus-visible {
+          border-color: var(--accent-primary);
+          background: var(--bg-card);
+          outline: none;
+        }
+
+        .health-progress {
+          position: relative;
+          width: 44px;
+          height: 44px;
+          flex-shrink: 0;
+        }
+
+        .health-progress-text {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 10px;
+          font-weight: 700;
+        }
+
+        .health-info {
+          flex: 1;
+          min-width: 0;
+        }
+
+        .health-name {
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--text-primary);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .health-sub {
+          font-size: 11px;
+          color: var(--text-muted);
+        }
+
+        .health-badges {
+          display: flex;
+          gap: 6px;
+          flex-shrink: 0;
+        }
+
+        .health-empty {
+          text-align: center;
+          padding: 30px 0;
+          color: var(--text-muted);
+          font-size: 13px;
+        }
+
+        /* Activity Card */
+        .activity-card {
+          background: var(--bg-card);
+          border: 1px solid var(--border-subtle);
+          border-radius: 14px;
+          padding: 20px;
+        }
+
+        .activity-card-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-bottom: 16px;
+        }
+
+        .activity-card-title {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 14px;
+          font-weight: 700;
+          color: var(--text-primary);
+        }
+
+        .activity-badge {
+          font-size: 10px;
+          font-weight: 700;
+          text-transform: uppercase;
+          color: var(--accent-emerald);
+          background: color-mix(in srgb, var(--accent-emerald) 14%, transparent);
+          padding: 2px 10px;
+          border-radius: 20px;
+          animation: pulse-dot 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse-dot {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+
+        .activity-list {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          max-height: 320px;
+          overflow-y: auto;
+        }
+
+        .activity-item {
+          display: flex;
+          align-items: flex-start;
+          gap: 12px;
+          padding: 10px 14px;
+          background: var(--bg-secondary);
+          border-radius: 10px;
+          border: 1px solid var(--border-subtle);
+        }
+
+        .activity-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          flex-shrink: 0;
+          margin-top: 6px;
+        }
+
+        .activity-content {
+          flex: 1;
+          min-width: 0;
+        }
+
+        .activity-text {
+          font-size: 13px;
+          font-weight: 500;
+          color: var(--text-primary);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .activity-meta {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin-top: 4px;
+        }
+
+        .activity-status {
+          display: inline-flex;
+        }
+
+        .activity-time {
+          font-size: 11px;
+          color: var(--text-muted);
+        }
+
+        .activity-empty {
+          text-align: center;
+          padding: 30px 0;
+          color: var(--text-muted);
+          font-size: 13px;
+        }
+
+        /* ─── RESPONSIVE ─── */
+        @media (max-width: 1200px) {
+          .stats-grid {
+            grid-template-columns: repeat(2, 1fr);
           }
-
-          // .status-layout{
-          //   flex-direction:column;
-          // }
-
-          .status-legend{
-            width:100%;
-            min-width:unset;
+          .stats-grid-secondary {
+            grid-template-columns: repeat(3, 1fr);
           }
         }
 
-        @media (max-width:992px){
-
-          .dashboard-grid-2{
-            grid-template-columns:1fr;
+        @media (max-width: 992px) {
+          .charts-row {
+            grid-template-columns: 1fr;
           }
-
-          .dashboard-card{
-            padding:18px;
+          .dashboard-bottom {
+            grid-template-columns: 1fr;
           }
         }
 
-        @media (max-width:768px){
-
-          .page-container.supervisor-dashboard{
-            padding:16px;
+        @media (max-width: 768px) {
+          .stats-grid {
+            grid-template-columns: 1fr 1fr;
           }
-
-          .dashboard-stats-grid{
-            grid-template-columns:1fr;
+          .stats-grid-secondary {
+            grid-template-columns: 1fr 1fr;
           }
-
-          .chart-wrapper{
-            height:220px;
+          .pie-chart-wrapper {
+            flex-direction: column;
           }
-
-          .dashboard-title{
-            font-size:14px;
+          .pie-chart-container {
+            width: 140px;
+            height: 140px;
           }
-
-          .project-health-item{
-            align-items:flex-start;
+          .chart-card {
+            padding: 16px;
           }
-
-          .project-badges{
-            width:100%;
-            margin-top:8px;
+          .chart-container {
+            height: 160px;
+          }
+          .health-item {
+            flex-wrap: wrap;
+          }
+          .health-badges {
+            width: 100%;
+            margin-top: 4px;
           }
         }
 
-        @media (max-width:480px){
-
-          .page-container.supervisor-dashboard{
-            padding:12px;
+        @media (max-width: 480px) {
+          .stats-grid {
+            grid-template-columns: 1fr;
           }
-
-          .dashboard-card{
-            padding:14px;
-            border-radius:14px;
+          .stats-grid-secondary {
+            grid-template-columns: 1fr;
           }
-
-          .chart-wrapper{
-            height:200px;
+          .stat-card-modern {
+            padding: 14px 16px;
           }
-
-          .pie-total{
-            font-size:18px;
+          .stat-card-value {
+            font-size: 20px;
           }
-
-          .legend-item{
-            gap:8px;
-            padding:5px 6px;
+          .chart-card-header {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 8px;
           }
-
-          .legend-name,
-          .legend-value{
-            font-size:11px;
+          .page-container.supervisor-dashboard {
+            padding: 10px;
           }
-
-          .project-info{
-            min-width:100%;
+          .health-item {
+            padding: 8px 12px;
           }
-
-          .project-name{
-            font-size:13px;
-          }
-
-          .project-sub{
-            font-size:11px;
+          .activity-item {
+            padding: 8px 12px;
           }
         }
       `}</style>

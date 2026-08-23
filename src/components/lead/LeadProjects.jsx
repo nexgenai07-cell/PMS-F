@@ -1,25 +1,16 @@
 // components/lead/LeadProjects.jsx
-
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, useOutletContext } from 'react-router-dom';
 import {
   Search, FolderOpen, Plus, Pencil, Trash2,
-  X, ListTodo, Milestone, Flag, ChevronDown,
-  BarChart2, Pin, PinOff, Eye, Users, UserPlus, Check
+  X, ListTodo, Milestone, ChevronDown,
+  Users, Check, RefreshCw, Filter, Flag,
+  Clock, Calendar, ArrowUpRight, TrendingUp,
+  Crown, UserPlus, UserCheck
 } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 
 import Topbar from '../shared/Topbar';
-import {
-  PROJECTS,
-  TASKS as INITIAL_TASKS,
-  P_TEAMS,
-  TEAM_MEMBERS,
-  getProjectProgress,
-  getUserById,
-  priorityConfig,
-  statusConfig
-} from '../../data/mockData';
-
 import {
   PriorityBadge,
   StatusBadge,
@@ -27,62 +18,71 @@ import {
   EmptyState
 } from '../shared/UIComponents';
 
-const PRIORITY_OPTIONS = ['low', 'medium', 'high', 'critical'];
-const STATUS_OPTIONS   = ['todo', 'in_progress', 'review', 'done'];
+import projectService from '../../services/projectService';
+import taskService from '../../services/taskService';
+import teamService from '../../services/teamService';
+import userService from '../../services/userService';
+import projectTeamService from '../../services/projectTeamService';
+import { useAuth } from '../../context/AuthContext';
+import toast from 'react-hot-toast';
 
-const progressFromStatus = (s) =>
-  s === 'done' ? 100 : s === 'review' ? 75 : s === 'in_progress' ? 50 : 0;
+const PRIORITY_OPTIONS = ['low', 'medium', 'high', 'critical'];
+const STATUS_OPTIONS = ['planning', 'active', 'on_hold', 'completed', 'cancelled'];
 
 /* ─── Multi-member picker ─── */
-function MemberPicker({ selected = [], onChange, label = 'Members' }) {
+function MemberPicker({ selected = [], onChange, label = 'Members', members = [] }) {
   const [open, setOpen] = useState(false);
 
-  const toggle = (tm_id) => {
-    const next = selected.includes(tm_id)
-      ? selected.filter(id => id !== tm_id)
-      : [...selected, tm_id];
+  const toggle = (id) => {
+    const next = selected.includes(id)
+      ? selected.filter(item => item !== id)
+      : [...selected, id];
     onChange(next);
   };
 
-  const selectedMembers = TEAM_MEMBERS.filter(m => selected.includes(m.tm_id));
+  const selectedMembers = members.filter(m => selected.includes(m.id));
 
   return (
     <div style={{ position: 'relative' }}>
       <label className="lp-label">{label}</label>
-      <button type="button" className="lp-member-trigger" onClick={() => setOpen(o => !o)}>
+      <div className="lp-member-trigger" onClick={() => setOpen(o => !o)} style={{ cursor: 'pointer' }}>
         {selectedMembers.length === 0 ? (
           <span style={{ color: 'var(--text-muted)' }}>Select members...</span>
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', flex: 1 }}>
-            {selectedMembers.map(m => (
-              <span key={m.tm_id} className="lp-member-chip">
-                <span className="lp-member-avatar-sm">{(m.name || m.tm_name || '?')[0].toUpperCase()}</span>
-                {m.name || m.tm_name}
-                <button type="button" className="lp-chip-remove"
-                  onClick={e => { e.stopPropagation(); toggle(m.tm_id); }}>
-                  <X size={10} />
-                </button>
-              </span>
-            ))}
+            {selectedMembers.map(m => {
+              const key = m.id || Math.random().toString();
+              return (
+                <span key={key} className="lp-member-chip">
+                  <span className="lp-member-avatar-sm">{(m.name || '?')[0].toUpperCase()}</span>
+                  {m.name}
+                  <button type="button" className="lp-chip-remove"
+                    onClick={e => { e.stopPropagation(); toggle(m.id); }}>
+                    <X size={10} />
+                  </button>
+                </span>
+              );
+            })}
           </div>
         )}
         <ChevronDown size={14} style={{ flexShrink: 0, color: 'var(--text-muted)', marginLeft: 'auto', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />
-      </button>
+      </div>
 
       {open && (
         <>
           <div className="lp-picker-backdrop" onClick={() => setOpen(false)} />
           <div className="lp-member-dropdown">
-            {TEAM_MEMBERS.length === 0
+            {members.length === 0
               ? <p style={{ padding: '12px 16px', color: 'var(--text-muted)', fontSize: 13 }}>No members available.</p>
-              : TEAM_MEMBERS.map(m => {
-                const isSelected = selected.includes(m.tm_id);
+              : members.map(m => {
+                const key = m.id || Math.random().toString();
+                const isSelected = selected.includes(m.id);
                 return (
-                  <button key={m.tm_id} type="button"
+                  <button key={key} type="button"
                     className={`lp-member-option ${isSelected ? 'selected' : ''}`}
-                    onClick={() => toggle(m.tm_id)}>
-                    <span className="lp-member-avatar">{(m.name || m.tm_name || '?')[0].toUpperCase()}</span>
-                    <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{m.name || m.tm_name}</span>
+                    onClick={() => toggle(m.id)}>
+                    <span className="lp-member-avatar">{(m.name || '?')[0].toUpperCase()}</span>
+                    <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{m.name}</span>
                     {isSelected && <Check size={14} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />}
                   </button>
                 );
@@ -110,12 +110,15 @@ function ProjectMembersPanel({ members, onEdit }) {
         ? <p style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 0' }}>No members assigned.</p>
         : (
           <div className="lp-members-list">
-            {members.map(m => (
-              <div key={m.tm_id} className="lp-member-row">
-                <span className="lp-member-avatar">{(m.name || m.tm_name || '?')[0].toUpperCase()}</span>
-                <span style={{ fontSize: 13 }}>{m.name || m.tm_name}</span>
-              </div>
-            ))}
+            {members.map(m => {
+              const key = m.id || Math.random().toString();
+              return (
+                <div key={key} className="lp-member-row">
+                  <span className="lp-member-avatar">{(m.name || '?')[0].toUpperCase()}</span>
+                  <span style={{ fontSize: 13 }}>{m.name}</span>
+                </div>
+              );
+            })}
           </div>
         )
       }
@@ -124,320 +127,880 @@ function ProjectMembersPanel({ members, onEdit }) {
 }
 
 export default function LeadProjects() {
-  const navigate        = useNavigate();
+  const { user } = useAuth();
+  const navigate = useNavigate();
   const { onMenuClick } = useOutletContext();
 
-  const [search,          setSearch]          = useState('');
-  const [filterStatus,    setFilterStatus]    = useState('all');
-  const [filterPriority,  setFilterPriority]  = useState('all');
+  // State
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [projects, setProjects] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [teamMembers, setTeamMembers] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [pteamEntries, setPteamEntries] = useState([]);
+  const [allSupervisors, setAllSupervisors] = useState([]);
 
-  const [projects, setProjects] = useState(() =>
-    PROJECTS.map(p => ({
-      ...p,
-      members: P_TEAMS.filter(pt => pt.p_id === p.p_id).map(pt => pt.tm_id),
-    }))
-  );
-
-  const [tasks, setTasks] = useState(
-    INITIAL_TASKS.map(t => ({
-      ...t,
-      progress : t.progress ?? progressFromStatus(t.status),
-      milestone: t.milestone ?? '',
-    }))
-  );
-
+  const [search, setSearch] = useState('');
+  const [filterStatus, setFilterStatus] = useState('all');
+  const [filterPriority, setFilterPriority] = useState('all');
   const [currentPage, setCurrentPage] = useState(1);
-const itemsPerPage = 6;
+  const itemsPerPage = 6;
 
-  const [projectModal,    setProjectModal]    = useState(false);
-  const [taskAddModal,    setTaskAddModal]    = useState(null);
-  const [editProject,     setEditProject]     = useState(null);
-  const [taskListModal,   setTaskListModal]   = useState(null);
-  const [selectedTask,    setSelectedTask]    = useState(null);
-  const [editTask,        setEditTask]        = useState(null);
-  const [deleteTaskId,    setDeleteTaskId]    = useState(null);
+  // Modal states
+  const [projectModal, setProjectModal] = useState(false);
+  const [taskAddModal, setTaskAddModal] = useState(null);
+  const [editProject, setEditProject] = useState(null);
+  const [taskListModal, setTaskListModal] = useState(null);
+  const [selectedTask, setSelectedTask] = useState(null);
+  const [editTask, setEditTask] = useState(null);
+  const [deleteTaskId, setDeleteTaskId] = useState(null);
   const [deleteProjectId, setDeleteProjectId] = useState(null);
-  const [editMembersFor,  setEditMembersFor]  = useState(null);
+  const [editMembersFor, setEditMembersFor] = useState(null);
 
   const [form, setForm] = useState({
-    p_name: '', desc: '', priority: 'medium',
-    status: 'todo', start_date: '', end_date: '', members: []
+    name: '',
+    description: '',
+    priority: 'medium',
+    status: 'planning',
+    startDate: '',
+    deadline: '',
+    members: [],
+    supervisors: []
   });
 
   const [taskForm, setTaskForm] = useState({
-  title: '',
-  desc: '',
-  assignedTo: [],
-  status: 'todo',
-  priority: 'medium',
-  milestone: '',
-  milestoneDate: '',
-  milestoneOwner: [],
-  progress: 0
+    title: '',
+    desc: '',
+    assignedTo: [],
+    status: 'todo',
+    priority: 'medium',
+    milestone: '',
+    milestoneDate: '',
+    milestoneOwner: [],
+    progress: 0
+  });
+
+  // Fetch data
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      
+      const [projectsData, tasksData, membersData, usersData, pteamData] = await Promise.all([
+        projectService.getProjects(),
+        taskService.getTasks(),
+        teamService.getTeamMembers(),
+        userService.getUsers(),
+        projectTeamService.getProjectTeams(),
+      ]);
+
+      console.log('📊 All Projects Data:', projectsData);
+      
+      const projectsList = projectsData?.data || projectsData || [];
+      const tasksList = tasksData?.data || tasksData || [];
+      const membersList = membersData?.data || membersData || [];
+      const usersList = usersData?.data || usersData || [];
+      const pteamList = pteamData?.data || pteamData || [];
+
+      const userId = user?.id || user?.u_id;
+      const userName = user?.u_name || 'Unknown';
+      
+      console.log(`👤 Current user: ${userName} (ID: ${userId})`);
+
+      // ✅ IMPORTANT: Ensure current user is in teamMembers list
+      // This fixes the issue where the current user can't be added as supervisor
+      let activeMembersList = membersList.filter(m => m.is_deleted !== 1);
+      
+      const currentUserInMembers = activeMembersList.some(m => Number(m.id) === Number(userId));
+      if (!currentUserInMembers && userId) {
+        const userObj = usersList.find(u => Number(u.id) === Number(userId));
+        if (userObj) {
+          activeMembersList.push({
+            id: userId,
+            name: userObj.u_name || userObj.name || 'User',
+            email: userObj.email,
+            role: userObj.role,
+            is_deleted: 0,
+          });
+          console.log(`✅ Added current user ${userName} (ID: ${userId}) to teamMembers list`);
+        }
+      }
+
+      // ✅ Get supervisors (users with role 'manager' or 'admin' or 'supervisor')
+      const supervisors = usersList.filter(u => 
+        u.role === 'manager' || u.role === 'admin' || u.role === 'supervisor'
+      );
+      setAllSupervisors(supervisors);
+
+      // ✅ For leads: Show only projects they created OR are added to via PTeam
+      const userProjects = projectsList.filter(p => {
+        const isCreator = Number(p.created_by) === Number(userId);
+        // Check if user is a member via PTeam
+        const isMember = pteamList.some(pteam => 
+          Number(pteam.p) === Number(p.p_id || p.id) && 
+          Number(pteam.tm) === Number(userId)
+        );
+        return isCreator || isMember;
+      });
+
+      // ✅ Map project members from PTeam entries
+      // In fetchData function, after getting projectsWithMembers:
+
+// In fetchData function, update the projectsWithMembers mapping:
+
+const projectsWithMembers = userProjects.map(project => {
+  const projectId = project.p_id || project.id;
+  
+  // Get all PTeam entries for this project
+  const projectPteamEntries = pteamList.filter(entry => Number(entry.p) === Number(projectId));
+  
+  // Get members from PTeam entries - with deduplication
+  const memberMap = new Map();
+  projectPteamEntries.forEach(entry => {
+    // Try to find in activeMembersList first
+    let member = activeMembersList.find(m => Number(m.id) === Number(entry.tm));
+    
+    // If not found in teamMembers, try to find in users list
+    if (!member) {
+      const userObj = usersList.find(u => Number(u.id) === Number(entry.tm));
+      if (userObj) {
+        member = {
+          id: userObj.id,
+          name: userObj.u_name || userObj.name || 'Unknown',
+          email: userObj.email,
+          role: userObj.role,
+          is_deleted: 0,
+        };
+      }
+    }
+    
+    if (member && member.is_deleted !== 1) {
+      // Use the member id as key to deduplicate
+      if (!memberMap.has(member.id)) {
+        memberMap.set(member.id, {
+          ...member,
+          pt_id: entry.pt_id,
+          task_id: entry.t,
+        });
+      }
+    }
+  });
+  
+  const projectMembers = Array.from(memberMap.values());
+
+  // Get supervisor members (users with role manager/admin/supervisor)
+  const supervisorMembers = projectMembers.filter(m => {
+    // Check if this member has a supervisor role
+    if (m.role && (m.role === 'manager' || m.role === 'admin' || m.role === 'supervisor')) {
+      return true;
+    }
+    const userObj = usersList.find(u => Number(u.id) === Number(m.id));
+    return userObj && (userObj.role === 'manager' || userObj.role === 'admin' || userObj.role === 'supervisor');
+  });
+
+  // Get regular members (non-supervisors)
+  const regularMembers = projectMembers.filter(m => {
+    if (m.role && (m.role === 'manager' || m.role === 'admin' || m.role === 'supervisor')) {
+      return false;
+    }
+    const userObj = usersList.find(u => Number(u.id) === Number(m.id));
+    return !(userObj && (userObj.role === 'manager' || userObj.role === 'admin' || userObj.role === 'supervisor'));
+  });
+
+  return {
+    ...project,
+    members: projectMembers,
+    supervisorMembers: supervisorMembers,
+    regularMembers: regularMembers,
+    memberIds: [...new Set(projectMembers.map(m => m.id))],
+    supervisorIds: [...new Set(supervisorMembers.map(m => m.id))],
+  };
 });
 
+      console.log(`✅ ${userName} has access to ${projectsWithMembers.length} projects`);
+
+      setProjects(projectsWithMembers);
+      setTasks(tasksList);
+      setTeamMembers(activeMembersList);
+      setUsers(usersList);
+      setPteamEntries(pteamList);
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      toast.error('Failed to load projects');
+      setProjects([]);
+      setTasks([]);
+      setTeamMembers([]);
+      setUsers([]);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await fetchData();
+    toast.success('Projects refreshed');
+  };
+
+  // Filter and pagination
   const filtered = projects.filter(p => {
-  const s  = p.p_name.toLowerCase().includes(search.toLowerCase()) || p.desc?.toLowerCase().includes(search.toLowerCase());
-  const st = filterStatus   === 'all' || p.status   === filterStatus;
-  const pr = filterPriority === 'all' || p.priority === filterPriority;
-  return s && st && pr;
-});
+    const searchMatch = (p.p_name || p.name || '')?.toLowerCase().includes(search.toLowerCase()) || 
+                       (p.desc || p.description || '')?.toLowerCase().includes(search.toLowerCase());
+    const statusMatch = filterStatus === 'all' || p.status === filterStatus;
+    const priorityMatch = filterPriority === 'all' || p.priority === filterPriority;
+    return searchMatch && statusMatch && priorityMatch;
+  });
 
-// pagination
-const totalPages = Math.ceil(filtered.length / itemsPerPage);
-const paginatedProjects = filtered.slice(
-  (currentPage - 1) * itemsPerPage,
-  currentPage * itemsPerPage
-);
+  const totalPages = Math.ceil(filtered.length / itemsPerPage);
+  const paginatedProjects = filtered.slice(
+    (currentPage - 1) * itemsPerPage,
+    currentPage * itemsPerPage
+  );
 
   const openNewProject = () => {
     setEditProject(null);
-    setForm({ p_name:'', desc:'', priority:'medium', status:'todo', start_date:'', end_date:'', members:[] });
+    setForm({ 
+      name: '', 
+      description: '', 
+      priority: 'medium', 
+      status: 'planning', 
+      startDate: '', 
+      deadline: '',
+      members: [],
+      supervisors: []
+    });
     setProjectModal(true);
   };
 
-  const saveProject = () => {
-    if (!form.p_name.trim()) return;
+  const handleSaveProject = async () => {
+  if (!form.name.trim()) {
+    toast.error('Project name is required');
+    return;
+  }
+
+  if (form.supervisors.length === 0) {
+    toast.error('Please select at least one supervisor for the project');
+    return;
+  }
+
+  try {
+    const userId = user?.id || user?.u_id || null;
+    
+    const projectData = {
+      name: form.name,
+      description: form.description,
+      priority: form.priority,
+      status: form.status,
+      startDate: form.startDate || null,
+      deadline: form.deadline || null,
+      created_by: userId,
+    };
+
+    console.log('📤 Saving project with payload:', projectData);
+    console.log('📤 Selected supervisors (User IDs):', form.supervisors);
+    console.log('📤 Selected members (User IDs):', form.members);
+
+    // ✅ DEDUPLICATE the selected IDs BEFORE processing
+    const uniqueSupervisors = [...new Set(form.supervisors)];
+    const uniqueMembers = [...new Set(form.members)];
+
+    console.log('📤 Deduplicated supervisor IDs:', uniqueSupervisors);
+    console.log('📤 Deduplicated member IDs:', uniqueMembers);
+
+    let createdProject;
     if (editProject) {
-      setProjects(prev => prev.map(p => p.p_id === editProject.p_id ? { ...p, ...form } : p));
+      const updated = await projectService.updateProject(
+        editProject.p_id || editProject.id, 
+        projectData
+      );
+      createdProject = updated?.data || updated;
+      const projectId = createdProject.p_id || createdProject.id;
+      
+      // ✅ Get ALL current PTeam entries for this project
+      const currentPteam = pteamEntries.filter(entry => Number(entry.p) === Number(projectId));
+      
+      // ✅ Get current supervisor IDs from PTeam - with deduplication
+      const currentSupervisorIds = [...new Set(
+        currentPteam
+          .filter(entry => {
+            const member = teamMembers.find(m => Number(m.id) === Number(entry.tm));
+            const userObj = users.find(u => Number(u.id) === Number(member?.id));
+            return userObj && (userObj.role === 'manager' || userObj.role === 'admin' || userObj.role === 'supervisor');
+          })
+          .map(entry => Number(entry.tm))
+      )];
+      
+      // Get current member IDs from PTeam - with deduplication
+      const currentMemberIds = [...new Set(currentPteam.map(entry => Number(entry.tm)))];
+      
+      // ✅ Convert User IDs to TeamMember IDs - with fallback and deduplication
+      const newSupervisorIds = [...new Set(
+        uniqueSupervisors
+          .map(userId => {
+            let teamMember = teamMembers.find(m => Number(m.id) === Number(userId));
+            return teamMember ? Number(teamMember.id) : Number(userId);
+          })
+          .filter(id => id !== null && !isNaN(id))
+      )];
+      
+      const newMemberIds = [...new Set(
+        uniqueMembers
+          .map(userId => {
+            let teamMember = teamMembers.find(m => Number(m.id) === Number(userId));
+            return teamMember ? Number(teamMember.id) : Number(userId);
+          })
+          .filter(id => id !== null && !isNaN(id))
+      )];
+      
+      console.log('📤 New supervisor TeamMember IDs:', newSupervisorIds);
+      console.log('📤 New member TeamMember IDs:', newMemberIds);
+      
+      // ✅ Add new supervisors (only if not already present)
+      for (const tmId of newSupervisorIds) {
+        if (!currentSupervisorIds.includes(tmId)) {
+          try {
+            await projectTeamService.addMemberToProject(projectId, tmId);
+            console.log(`✅ Added supervisor TeamMember ${tmId} to project ${projectId}`);
+          } catch (pteamError) {
+            console.warn(`Could not add supervisor ${tmId} to PTeam:`, pteamError);
+          }
+        } else {
+          console.log(`⏭️ Supervisor TeamMember ${tmId} already in project ${projectId}`);
+        }
+      }
+      
+      // ✅ Add new members (non-supervisors)
+      for (const tmId of newMemberIds) {
+        if (!currentMemberIds.includes(tmId)) {
+          try {
+            await projectTeamService.addMemberToProject(projectId, tmId);
+            console.log(`✅ Added member TeamMember ${tmId} to project ${projectId}`);
+          } catch (pteamError) {
+            console.warn(`Could not add member ${tmId} to PTeam:`, pteamError);
+          }
+        } else {
+          console.log(`⏭️ Member TeamMember ${tmId} already in project ${projectId}`);
+        }
+      }
+      
+      // ✅ Remove supervisors that are no longer selected
+      for (const currentId of currentSupervisorIds) {
+        if (!newSupervisorIds.includes(currentId)) {
+          const entryToRemove = currentPteam.find(entry => Number(entry.tm) === currentId);
+          if (entryToRemove) {
+            try {
+              await projectTeamService.removeMemberFromProject(entryToRemove.pt_id);
+              console.log(`✅ Removed supervisor TeamMember ${currentId} from project ${projectId}`);
+            } catch (pteamError) {
+              console.warn(`Could not remove supervisor ${currentId} from PTeam:`, pteamError);
+            }
+          }
+        }
+      }
+      
+      // ✅ Remove members that are no longer selected
+      const allNewIds = [...newSupervisorIds, ...newMemberIds];
+      for (const currentId of currentMemberIds) {
+        if (!allNewIds.includes(currentId)) {
+          const entryToRemove = currentPteam.find(entry => Number(entry.tm) === currentId);
+          if (entryToRemove) {
+            try {
+              await projectTeamService.removeMemberFromProject(entryToRemove.pt_id);
+              console.log(`✅ Removed member TeamMember ${currentId} from project ${projectId}`);
+            } catch (pteamError) {
+              console.warn(`Could not remove member ${currentId} from PTeam:`, pteamError);
+            }
+          }
+        }
+      }
+      
+      setProjects(projects.map(p => 
+        (p.p_id || p.id) === (editProject.p_id || editProject.id) ? createdProject : p
+      ));
+      toast.success('Project updated successfully');
     } else {
-      setProjects(prev => [{ p_id: Date.now(), created_by: 1, ...form }, ...prev]);
+      const newProject = await projectService.createProject(projectData);
+      createdProject = newProject?.data || newProject;
+      const projectId = createdProject.p_id || createdProject.id;
+      
+      if (createdProject && userId) {
+        try {
+          await projectTeamService.addMemberToProject(projectId, userId);
+        } catch (pteamError) {
+          console.warn('Could not add creator to PTeam:', pteamError);
+        }
+      }
+
+      // ✅ Add supervisors with deduplication
+      if (createdProject && uniqueSupervisors.length > 0) {
+        // Deduplicate supervisor IDs again before adding
+        const uniqueSupervisorIds = [...new Set(uniqueSupervisors)];
+        for (const supervisorId of uniqueSupervisorIds) {
+          try {
+            const teamMember = teamMembers.find(m => Number(m.id) === Number(supervisorId));
+            const tmId = teamMember ? Number(teamMember.id) : Number(supervisorId);
+            await projectTeamService.addMemberToProject(projectId, tmId);
+            console.log(`✅ Added supervisor ${supervisorId} to project ${projectId}`);
+          } catch (pteamError) {
+            console.warn(`Could not add supervisor ${supervisorId} to PTeam:`, pteamError);
+          }
+        }
+      }
+
+      // ✅ Add members with deduplication
+      if (createdProject && uniqueMembers.length > 0) {
+        const uniqueMemberIds = [...new Set(uniqueMembers)];
+        for (const memberId of uniqueMemberIds) {
+          try {
+            const teamMember = teamMembers.find(m => Number(m.id) === Number(memberId));
+            const tmId = teamMember ? Number(teamMember.id) : Number(memberId);
+            await projectTeamService.addMemberToProject(projectId, tmId);
+            console.log(`✅ Added member ${memberId} to project ${projectId}`);
+          } catch (pteamError) {
+            console.warn(`Could not add member ${memberId} to PTeam:`, pteamError);
+          }
+        }
+      }
+
+      setProjects([createdProject, ...projects]);
+      toast.success('Project created successfully');
     }
     setProjectModal(false);
+    setEditProject(null);
+    await fetchData();
+  } catch (error) {
+    console.error('Error saving project:', error);
+    const errorMsg = error.response?.data?.message || 
+                     error.response?.data?.detail || 
+                     error.response?.data?.error ||
+                     'Failed to save project';
+    toast.error(errorMsg);
+  }
+};
+
+  const handleDeleteProject = async () => {
+    try {
+      await projectService.deleteProject(deleteProjectId);
+      setProjects(projects.filter(p => (p.p_id || p.id) !== deleteProjectId));
+      setDeleteProjectId(null);
+      toast.success('Project deleted successfully');
+    } catch (error) {
+      console.error('Error deleting project:', error);
+      toast.error('Failed to delete project');
+    }
   };
 
-  const saveProjectMembers = (p_id, members) => {
-    setProjects(prev => prev.map(p => p.p_id === p_id ? { ...p, members } : p));
-    setTaskListModal(prev => prev ? { ...prev, members } : prev);
-    setEditMembersFor(null);
-  };
-
-  const openAddTask = (project, e) => {
-    e?.stopPropagation();
+  const openAddTask = (project) => {
     setTaskAddModal(project);
-    setTaskForm({ title:'', desc:'', assignedTo:[], status:'todo', priority:'medium', milestone:'', progress:0 });
+    setTaskForm({
+      title: '',
+      desc: '',
+      assignedTo: [],
+      status: 'todo',
+      priority: 'medium',
+      milestone: '',
+      milestoneDate: '',
+      milestoneOwner: [],
+      progress: 0
+    });
   };
 
-  const addTask = () => {
-    if (!taskForm.title.trim()) return;
-    setTasks(prev => [{
-  t_id: Date.now(),
-  p_id: taskAddModal.p_id,
-  is_deleted: false,
-  ...taskForm
-}, ...prev]);
-    setTaskAddModal(null);
+  const handleAddTask = async () => {
+    if (!taskForm.title.trim()) {
+      toast.error('Task title is required');
+      return;
+    }
+
+    try {
+      const assignTo = taskForm.assignedTo[0] ? Number(taskForm.assignedTo[0]) : null;
+      
+      console.log('📤 Creating task with assignTo:', assignTo);
+      
+      const response = await taskService.createTask({
+        title: taskForm.title,
+        description: taskForm.desc,
+        status: taskForm.status,
+        priority: taskForm.priority,
+        projectId: taskAddModal.p_id || taskAddModal.id,
+        assignTo: assignTo,
+        dueDate: taskForm.milestoneDate || null,
+        startDate: null,
+      });
+      
+      const newTask = response?.data || response;
+      console.log('✅ Task created with assign_to:', newTask.assign_to);
+      
+      setTasks([newTask, ...tasks]);
+      setTaskAddModal(null);
+      toast.success('Task created successfully');
+    } catch (error) {
+      console.error('Error creating task:', error);
+      toast.error(error.response?.data?.message || 'Failed to create task');
+    }
   };
 
-  const handleUpdateTask = (updated) => {
-    setTasks(prev => prev.map(t => t.t_id === updated.t_id ? { ...t, ...updated } : t));
-    setEditTask(null);
-    setSelectedTask(updated);
+  const handleUpdateTask = async () => {
+    try {
+      const assignTo = editTask.assignedTo?.[0] ? Number(editTask.assignedTo[0]) : null;
+      
+      const response = await taskService.updateTask(editTask.t_id || editTask.id, {
+        title: editTask.title,
+        description: editTask.desc,
+        status: editTask.status,
+        priority: editTask.priority,
+        progress: editTask.progress,
+        assignTo: assignTo,
+      });
+      
+      const updatedTask = response?.data || response;
+      setTasks(tasks.map(t => (t.t_id || t.id) === (editTask.t_id || editTask.id) ? updatedTask : t));
+      setEditTask(null);
+      setSelectedTask(null);
+      toast.success('Task updated successfully');
+    } catch (error) {
+      console.error('Error updating task:', error);
+      toast.error(error.response?.data?.message || 'Failed to update task');
+    }
   };
 
-  const handleDeleteTask = (t_id) => {
-    setTasks(prev => prev.filter(t => t.t_id !== t_id));
-    setDeleteTaskId(null);
-    setSelectedTask(null);
+  const handleDeleteTask = async () => {
+    try {
+      await taskService.deleteTask(deleteTaskId);
+      setTasks(tasks.filter(t => (t.t_id || t.id) !== deleteTaskId));
+      setDeleteTaskId(null);
+      setSelectedTask(null);
+      toast.success('Task deleted successfully');
+    } catch (error) {
+      console.error('Error deleting task:', error);
+      toast.error(error.response?.data?.message || 'Failed to delete task');
+    }
   };
 
-  const changeTaskPriority = (t_id, priority) =>
-    setTasks(prev => prev.map(t => t.t_id === t_id ? { ...t, priority } : t));
+  const changeTaskPriority = (taskId, priority) => {
+    setTasks(tasks.map(t => (t.t_id || t.id) === taskId ? { ...t, priority } : t));
+  };
 
-  const getProjectMembers = (project) =>
-    TEAM_MEMBERS.filter(m => (project.members || []).includes(m.tm_id));
+  // Helper functions
+  const getProjectProgress = (projectId) => {
+    const projectTasks = tasks.filter(t => Number(t.p_id || t.p) === Number(projectId));
+    if (projectTasks.length === 0) return 0;
+    const done = projectTasks.filter(t => t.status === 'done' || t.status === 'completed').length;
+    return Math.round((done / projectTasks.length) * 100);
+  };
 
-  const getMemberObjects = (ids = []) =>
-    TEAM_MEMBERS.filter(m => ids.includes(m.tm_id));
+  const getProjectMembers = (project) => {
+    return project.members || [];
+  };
+
+  const getMemberObjects = (ids = []) => {
+    return teamMembers.filter(m => ids.includes(m.id));
+  };
+
+  const handleEditProject = (project) => {
+  setEditProject(project);
+  
+  // ✅ Get all supervisor IDs from the project's supervisorMembers - deduplicate
+  const supervisorIds = [...new Set(project.supervisorMembers?.map(s => s.id) || [])];
+  const memberIds = [...new Set(project.memberIds || [])];
+  
+  console.log('📤 Editing project:', project.p_name || project.name);
+  console.log('📤 Supervisor IDs from project:', supervisorIds);
+  console.log('📤 Member IDs from project:', memberIds);
+  
+  setForm({ 
+    name: project.p_name || project.name || '',
+    description: project.desc || project.description || '',
+    priority: project.priority || 'medium',
+    status: project.status || 'planning',
+    startDate: project.start_at || project.startDate || '',
+    deadline: project.deadline || project.end_date || '',
+    members: memberIds,
+    supervisors: supervisorIds
+  });
+  setProjectModal(true);
+};
+
+  // Loading state
+  if (loading) {
+    return (
+      <div>
+        <Topbar title="My Projects" onMenuClick={onMenuClick} />
+        <div className="page-container">
+          <div className="loading-spinner-wrapper">
+            <div className="loading-spinner" />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
       <Topbar
-        title="All Projects"
+        title="My Projects"
         onMenuClick={onMenuClick}
-        searchBar={
-          <div style={{ position:'relative', width:'100%', maxWidth:380 }}>
-            <Search size={16} style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', color:'var(--text-muted)' }} />
-            <input className="input" placeholder="Search projects..." value={search}
-              onChange={e => setSearch(e.target.value)} style={{ paddingLeft:40, width:'100%' }} />
-          </div>
+        actions={
+          <button 
+            className="btn btn-secondary btn-sm refresh-btn" 
+            onClick={handleRefresh}
+            disabled={refreshing}
+          >
+            <RefreshCw size={14} className={refreshing ? 'spin' : ''} />
+            {refreshing ? 'Refreshing...' : 'Refresh'}
+          </button>
         }
       />
 
       <div className="page-container">
-        
-        <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:16 }}>
+        {/* Header Actions */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
           <button className="btn btn-primary btn-sm" onClick={openNewProject}>
             <Plus size={14} /> New Project
           </button>
         </div>
 
-        <div style={{ 
-  display:'flex', 
-  gap:12, 
-  marginBottom:24, 
-  flexWrap:'wrap',
-  alignItems:'center',
-}}>
+        {/* ─── IMPROVED FILTERS ─── */}
+        <div className="lp-filters-container">
+          {/* Search Bar */}
+          <div className="lp-search-wrapper">
+            <Search size={16} className="lp-search-icon" />
+            <input
+              className="lp-search-input"
+              placeholder="Search projects by name or description..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
+            {search && (
+              <button className="lp-search-clear" onClick={() => setSearch('')}>
+                <X size={14} />
+              </button>
+            )}
+          </div>
 
-  {/* LEFT: SEARCH (NEW INLINE) */}
-  <div style={{ position:'relative', width:'100%', maxWidth:260 }}>
-    <Search size={16} style={{
-      position:'absolute',
-      left:12,
-      top:'50%',
-      transform:'translateY(-50%)',
-      color:'var(--text-muted)'
-    }} />
-    <input
-      className="input"
-      placeholder="Search projects..."
-      value={search}
-      onChange={e => setSearch(e.target.value)}
-      style={{ paddingLeft:40, width:'100%' }}
-    />
-  </div>
+          {/* Filter Controls */}
+          <div className="lp-filter-controls">
+            <div className="lp-filter-group">
+              <div className="lp-filter-label">
+                <Filter size={12} />
+                <span>Status</span>
+              </div>
+              <select 
+                className="lp-filter-select" 
+                value={filterStatus} 
+                onChange={e => setFilterStatus(e.target.value)}
+              >
+                <option value="all">All Status</option>
+                <option value="planning">📋 Planning</option>
+                <option value="active">🚀 Active</option>
+                <option value="on_hold">⏸ On Hold</option>
+                <option value="completed">✅ Completed</option>
+                <option value="cancelled">❌ Cancelled</option>
+              </select>
+            </div>
 
-  {/* RIGHT: FILTERS */}
-  <div style={{ display:'flex', gap:12, flexWrap:'wrap' }}>
-    <select className="input" value={filterStatus} onChange={e => setFilterStatus(e.target.value)} style={{ width:160 }}>
-      <option value="all">All Status</option>
-      {Object.entries(statusConfig).map(([v,c]) =>
-        <option key={v} value={v}>{c.label}</option>
-      )}
-    </select>
+            <div className="lp-filter-group">
+              <div className="lp-filter-label">
+                <Flag size={12} />
+                <span>Priority</span>
+              </div>
+              <select 
+                className="lp-filter-select" 
+                value={filterPriority} 
+                onChange={e => setFilterPriority(e.target.value)}
+              >
+                <option value="all">All Priority</option>
+                <option value="low">🟢 Low</option>
+                <option value="medium">🟡 Medium</option>
+                <option value="high">🟠 High</option>
+                <option value="critical">🔴 Critical</option>
+              </select>
+            </div>
 
-    <select className="input" value={filterPriority} onChange={e => setFilterPriority(e.target.value)} style={{ width:160 }}>
-      <option value="all">All Priority</option>
-      {Object.entries(priorityConfig).map(([v,c]) =>
-        <option key={v} value={v}>{c.label}</option>
-      )}
-    </select>
-  </div>
-</div>
+            {/* Active Filters Display */}
+            {(filterStatus !== 'all' || filterPriority !== 'all') && (
+              <div className="lp-active-filters">
+                {filterStatus !== 'all' && (
+                  <span className="lp-filter-chip">
+                    {filterStatus}
+                    <button onClick={() => setFilterStatus('all')}>
+                      <X size={12} />
+                    </button>
+                  </span>
+                )}
+                {filterPriority !== 'all' && (
+                  <span className="lp-filter-chip">
+                    {filterPriority}
+                    <button onClick={() => setFilterPriority('all')}>
+                      <X size={12} />
+                    </button>
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
 
-        {paginatedProjects.length === 0
-          ? <EmptyState icon={FolderOpen} title="No projects found" desc="Try adjusting filters." />
-          : (
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:16 }}>
-              {paginatedProjects.map(project => {
-                const progress  = getProjectProgress(project.p_id);
-                const lead      = getUserById(project.created_by);
-                const members   = getProjectMembers(project);
-                const pTasks    = tasks.filter(t => t.p_id === project.p_id && !t.is_deleted);
-                const doneTasks = pTasks.filter(t => t.status === 'done').length;
-                const health    = progress >= 70 ? '#10b981' : progress >= 40 ? '#fbbf24' : '#f43f5e';
+          {/* Results Count */}
+          <div className="lp-results-count">
+            <span>{filtered.length} project{filtered.length !== 1 ? 's' : ''}</span>
+            <span className="lp-results-dot">•</span>
+            <span className="lp-results-total">{projects.length} total</span>
+            {filtered.length !== projects.length && (
+              <button 
+                className="lp-clear-filters-btn"
+                onClick={() => {
+                  setSearch('');
+                  setFilterStatus('all');
+                  setFilterPriority('all');
+                }}
+              >
+                Clear all filters
+              </button>
+            )}
+          </div>
+        </div>
 
-                return (
-                  <div key={project.p_id} className="card animate-fade-in lp-project-card"
-                    onClick={() => navigate(`/lead/projects/${project.p_id}`)}>
+        {/* Projects Grid */}
+        {paginatedProjects.length === 0 ? (
+          <EmptyState 
+            icon={FolderOpen} 
+            title="No projects available" 
+            desc="You haven't been assigned to any projects yet. Contact your supervisor or create a new project." 
+          />
+        ) : (
+          <div className="lp-projects-grid">
+            {paginatedProjects.map((project, index) => {
+              const progress = getProjectProgress(project.p_id || project.id);
+              const members = getProjectMembers(project);
+              const pTasks = tasks.filter(t => Number(t.p_id || t.p) === Number(project.p_id || project.id) && !t.is_deleted);
+              const doneTasks = pTasks.filter(t => t.status === 'done' || t.status === 'completed').length;
+              const health = progress >= 70 ? '#34d399' : progress >= 40 ? '#f59e0b' : '#f87171';
 
-                    {/* ── TOP ROW: badges LEFT, action icons RIGHT — clear separation ── */}
-                    <div className="lp-card-top" onClick={e => e.stopPropagation()}>
-                      <div className="lp-card-badges">
-                        <PriorityBadge priority={project.priority} />
-                        <StatusBadge   status={project.status} />
-                      </div>
-                      <div className="lp-card-actions">
-                        <button className="lp-icon-btn" title="View Tasks" onClick={() => setTaskListModal(project)}>
-                          <ListTodo size={13}/>
-                        </button>
-                        <button className="lp-icon-btn" title="Edit Project"
-                          onClick={() => { setEditProject(project); setForm({ ...project, members: project.members || [] }); setProjectModal(true); }}>
-                          <Pencil size={13}/>
-                        </button>
-                        <button className="lp-icon-btn" title="Add Task" onClick={e => openAddTask(project, e)}>
-                          <Plus size={13}/>
-                        </button>
-                        <button className="lp-icon-btn danger" title="Delete Project"
-                          onClick={() => setDeleteProjectId(project.p_id)}>
-                          <Trash2 size={13}/>
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* title + desc */}
-                    <div className="lp-card-body">
-                      <h3 style={{ fontSize:15, fontWeight:700, marginBottom:2 }}>{project.p_name}</h3>
-                      <p style={{ fontSize:12, color:'var(--text-muted)' }}>{project.desc}</p>
-                    </div>
-
-                    {/* progress */}
-                    <div className="lp-card-body">
-                      <div style={{ display:'flex', justifyContent:'space-between', fontSize:11, marginBottom:4 }}>
-                        <span>Progress</span>
-                        <span style={{ fontWeight:600, color:health }}>{progress}%</span>
-                      </div>
-                      <div className="progress-bar">
-                        <div className="progress-fill" style={{ width:`${progress}%`, background:health }}/>
-                      </div>
-                    </div>
-
-                    {/* lead + tasks */}
-                    <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, padding:'0 16px' }}>
-                      <div><p style={{ fontSize:10 }}>Lead</p><p>{lead?.u_name}</p></div>
-                      <div style={{ textAlign:'right' }}>
-                        <p style={{ fontSize:10 }}>Tasks</p>
-                        <p>{doneTasks}/{pTasks.length}</p>
-                      </div>
-                    </div>
-
-                    {/* members footer */}
-                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', borderTop:'1px solid var(--border-subtle)', paddingTop:10, margin:'0 16px' }}>
-                      <AvatarGroup members={members} max={4}/>
-                      {members.length > 0 && (
-                        <span style={{ fontSize:11, color:'var(--text-muted)' }}>
-                          {members.length} member{members.length !== 1 ? 's' : ''}
+              return (
+                <motion.div
+                  key={project.p_id || project.id || Math.random().toString()}
+                  className="lp-project-card"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: index * 0.05 }}
+                  onClick={() => navigate(`/lead/projects/${project.p_id || project.id}`)}
+                >
+                  <div className="lp-card-top" onClick={e => e.stopPropagation()}>
+                    <div className="lp-card-badges">
+                      <PriorityBadge priority={project.priority} />
+                      <StatusBadge status={project.status} />
+                      {/* Show supervisor badge if there are supervisors */}
+                      {project.supervisorMembers && project.supervisorMembers.length > 0 && (
+                        <span className="lp-supervisor-badge" title={`${project.supervisorMembers.length} supervisor(s)`}>
+                          <Crown size={10} />
+                          {project.supervisorMembers.length}
                         </span>
                       )}
                     </div>
+                    <div className="lp-card-actions">
+                      <button className="lp-icon-btn" title="View Tasks" onClick={() => setTaskListModal(project)}>
+                        <ListTodo size={13} />
+                      </button>
+                      <button className="lp-icon-btn" title="Edit Project" onClick={() => handleEditProject(project)}>
+                        <Pencil size={13} />
+                      </button>
+                      <button className="lp-icon-btn" title="Add Task" onClick={e => {
+                        e.stopPropagation();
+                        openAddTask(project);
+                      }}>
+                        <Plus size={13} />
+                      </button>
+                      <button className="lp-icon-btn danger" title="Delete Project" onClick={(e) => {
+                        e.stopPropagation(); 
+                        setDeleteProjectId(project.p_id || project.id);
+                      }}>
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
                   </div>
-                );
-              })}
-            </div>
-          )
-        }
+
+                  <div className="lp-card-body">
+                    <h3 className="lp-project-name">{project.p_name || project.name}</h3>
+                    <p className="lp-project-desc">{project.desc || project.description}</p>
+                  </div>
+
+                  <div className="lp-card-body">
+                    <div className="lp-progress-header">
+                      <span>Progress</span>
+                      <span className="lp-progress-value" style={{ color: health }}>{progress}%</span>
+                    </div>
+                    <div className="progress-bar">
+                      <div className="progress-fill" style={{ width: `${progress}%`, background: health }} />
+                    </div>
+                  </div>
+
+                  <div className="lp-card-meta">
+                    <div>
+                      <p className="lp-meta-label">Supervisor</p>
+                      <p className="lp-meta-value">
+                        {project.supervisorMembers && project.supervisorMembers.length > 0 
+                          ? project.supervisorMembers.map(s => s.name).join(', ')
+                          : 'Assigned'}
+                      </p>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <p className="lp-meta-label">Tasks</p>
+                      <p className="lp-meta-value">{doneTasks}/{pTasks.length}</p>
+                    </div>
+                  </div>
+
+                  <div className="lp-card-footer">
+                    <AvatarGroup members={members} max={4} />
+                    {members.length > 0 && (
+                      <span className="lp-member-count">
+                        {members.length} member{members.length !== 1 ? 's' : ''}
+                      </span>
+                    )}
+                  </div>
+                </motion.div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Pagination */}
         {totalPages > 1 && (
-  <div style={{
-    display:'flex',
-    justifyContent:'center',
-    gap:10,
-    marginTop:20
-  }}>
-    <button
-      className="btn btn-secondary btn-sm"
-      disabled={currentPage === 1}
-      onClick={() => setCurrentPage(p => p - 1)}
-    >
-      Prev
-    </button>
-
-    <span style={{ padding:'6px 10px', fontSize:13 }}>
-      Page {currentPage} of {totalPages}
-    </span>
-
-    <button
-      className="btn btn-secondary btn-sm"
-      disabled={currentPage === totalPages}
-      onClick={() => setCurrentPage(p => p + 1)}
-    >
-      Next
-    </button>
-  </div>
-)}
+          <div className="lp-pagination">
+            <button 
+              className="btn btn-secondary btn-sm" 
+              disabled={currentPage === 1} 
+              onClick={() => setCurrentPage(p => p - 1)}
+            >
+              Prev
+            </button>
+            <span className="lp-page-info">Page {currentPage} of {totalPages}</span>
+            <button 
+              className="btn btn-secondary btn-sm" 
+              disabled={currentPage === totalPages} 
+              onClick={() => setCurrentPage(p => p + 1)}
+            >
+              Next
+            </button>
+          </div>
+        )}
       </div>
 
+      {/* ─── MODALS ─── */}
       {/* TASK LIST MODAL */}
       {taskListModal && !selectedTask && !editTask && (
         <div className="lp-overlay" onClick={() => { setTaskListModal(null); setEditMembersFor(null); }}>
           <div className="lp-modal lp-modal-wide" onClick={e => e.stopPropagation()}>
             <div className="lp-modal-header">
               <div>
-                <h2 className="lp-modal-title"><ListTodo size={17}/> {taskListModal.p_name}</h2>
+                <h2 className="lp-modal-title"><ListTodo size={17}/> {taskListModal.p_name || taskListModal.name}</h2>
                 <p className="lp-modal-sub">All tasks · click a task to view details</p>
               </div>
-              <div style={{ display:'flex', gap:8 }}>
-                <button className="btn btn-primary btn-sm" onClick={e => openAddTask(taskListModal, e)}>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn-primary btn-sm" onClick={() => openAddTask(taskListModal)}>
                   <Plus size={13}/> Add Task
                 </button>
                 <button className="lp-icon-btn" onClick={() => { setTaskListModal(null); setEditMembersFor(null); }}><X size={16}/></button>
@@ -446,51 +1009,57 @@ const paginatedProjects = filtered.slice(
 
             <div className="lp-modal-body-split">
               <div className="lp-task-scroll">
-                {tasks.filter(t => t.p_id === taskListModal.p_id && !t.is_deleted).length === 0
+                {tasks.filter(t => Number(t.p_id || t.p) === Number(taskListModal.p_id || taskListModal.id) && !t.is_deleted).length === 0
                   ? <p style={{ textAlign:'center', color:'var(--text-muted)', padding:'32px 0' }}>No tasks yet.</p>
-                  : tasks.filter(t => t.p_id === taskListModal.p_id && !t.is_deleted).map(t => (
-                    <div key={t.t_id} className="lp-task-row" onClick={() => setSelectedTask(t)}>
-                      <div className="lp-task-info">
-                        <strong className="lp-task-title">{t.title}</strong>
-                        {t.milestone && <span className="lp-milestone-tag"><Milestone size={10}/>{t.milestone}</span>}
-                        {(t.assignedTo || []).length > 0 && (
-                          <div style={{ display:'flex', gap:4, marginTop:2 }}>
-                            {getMemberObjects(Array.isArray(t.assignedTo) ? t.assignedTo : [t.assignedTo]).map(m => (
-                              <span key={m.tm_id} className="lp-task-assignee">
-                                {(m.name || m.tm_name || '?')[0].toUpperCase()}
-                              </span>
-                            ))}
+                  : tasks.filter(t => Number(t.p_id || t.p) === Number(taskListModal.p_id || taskListModal.id) && !t.is_deleted).map(t => {
+                      const key = t.t_id || t.id || Math.random().toString();
+                      return (
+                        <div key={key} className="lp-task-row" onClick={() => setSelectedTask(t)}>
+                          <div className="lp-task-info">
+                            <strong className="lp-task-title">{t.title}</strong>
+                            {t.milestone && <span className="lp-milestone-tag"><Milestone size={10}/>{t.milestone}</span>}
+                            {(t.assignedTo || []).length > 0 && (
+                              <div style={{ display:'flex', gap:4, marginTop:2 }}>
+                                {getMemberObjects(Array.isArray(t.assignedTo) ? t.assignedTo : [t.assignedTo]).map(m => {
+                                  const memberKey = m.id || Math.random().toString();
+                                  return (
+                                    <span key={memberKey} className="lp-task-assignee">
+                                      {(m.name || '?')[0].toUpperCase()}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
-                        )}
-                      </div>
-                      <div className="lp-task-meta">
-                        <StatusBadge status={t.status}/>
-                        <select className="lp-priority-select" value={t.priority}
-                          onClick={e => e.stopPropagation()}
-                          onChange={e => { e.stopPropagation(); changeTaskPriority(t.t_id, e.target.value); }}>
-                          {PRIORITY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
-                        </select>
-                        <div className="lp-mini-progress">
-                          <div className="lp-mini-track"><div className="lp-mini-fill" style={{ width:`${t.progress}%` }}/></div>
-                          <span className="lp-mini-pct">{t.progress}%</span>
+                          <div className="lp-task-meta">
+                            <StatusBadge status={t.status}/>
+                            <select className="lp-priority-select" value={t.priority}
+                              onClick={e => e.stopPropagation()}
+                              onChange={e => { e.stopPropagation(); changeTaskPriority(t.t_id || t.id, e.target.value); }}>
+                              {PRIORITY_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
+                            </select>
+                            <div className="lp-mini-progress">
+                              <div className="lp-mini-track"><div className="lp-mini-fill" style={{ width:`${t.progress || 0}%` }}/></div>
+                              <span className="lp-mini-pct">{t.progress || 0}%</span>
+                            </div>
+                          </div>
+                          <div className="lp-task-actions" onClick={e => e.stopPropagation()}>
+                            <button className="lp-icon-btn" title="Edit"
+                              onClick={() => setEditTask({ ...t, assignedTo: Array.isArray(t.assignedTo) ? t.assignedTo : (t.assignedTo ? [t.assignedTo] : []) })}>
+                              <Pencil size={12}/>
+                            </button>
+                            <button className="lp-icon-btn danger" title="Delete" onClick={() => setDeleteTaskId(t.t_id || t.id)}>
+                              <Trash2 size={12}/>
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                      <div className="lp-task-actions" onClick={e => e.stopPropagation()}>
-                        <button className="lp-icon-btn" title="Edit"
-                          onClick={() => setEditTask({ ...t, assignedTo: Array.isArray(t.assignedTo) ? t.assignedTo : (t.assignedTo ? [t.assignedTo] : []) })}>
-                          <Pencil size={12}/>
-                        </button>
-                        <button className="lp-icon-btn danger" title="Delete" onClick={() => setDeleteTaskId(t.t_id)}>
-                          <Trash2 size={12}/>
-                        </button>
-                      </div>
-                    </div>
-                  ))
+                      );
+                    })
                 }
               </div>
 
               <div className="lp-members-sidebar">
-                {editMembersFor === taskListModal.p_id ? (
+                {editMembersFor === (taskListModal.p_id || taskListModal.id) ? (
                   <div>
                     <div className="lp-members-panel-header" style={{ marginBottom: 10 }}>
                       <Users size={14} /><span>Edit Members</span>
@@ -499,17 +1068,26 @@ const paginatedProjects = filtered.slice(
                       selected={taskListModal.members || []}
                       onChange={(nm) => setTaskListModal(prev => ({ ...prev, members: nm }))}
                       label=""
+                      members={teamMembers}
                     />
                     <div style={{ display:'flex', gap:8, marginTop:12 }}>
                       <button className="btn btn-primary btn-sm" style={{ flex:1 }}
-                        onClick={() => saveProjectMembers(taskListModal.p_id, taskListModal.members || [])}>Save</button>
+                        onClick={() => {
+                          setProjects(prev => prev.map(p => 
+                            (p.p_id || p.id) === (taskListModal.p_id || taskListModal.id) 
+                              ? { ...p, members: taskListModal.members || [] } 
+                              : p
+                          ));
+                          setEditMembersFor(null);
+                          toast.success('Members updated');
+                        }}>Save</button>
                       <button className="btn btn-secondary btn-sm" onClick={() => setEditMembersFor(null)}>Cancel</button>
                     </div>
                   </div>
                 ) : (
                   <ProjectMembersPanel
                     members={getProjectMembers(taskListModal)}
-                    onEdit={() => setEditMembersFor(taskListModal.p_id)}
+                    onEdit={() => setEditMembersFor(taskListModal.p_id || taskListModal.id)}
                   />
                 )}
               </div>
@@ -537,22 +1115,25 @@ const paginatedProjects = filtered.slice(
                 <div style={{ marginBottom: 14 }}>
                   <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6 }}>Assigned To</p>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    {getMemberObjects(Array.isArray(selectedTask.assignedTo) ? selectedTask.assignedTo : [selectedTask.assignedTo]).map(m => (
-                      <span key={m.tm_id} className="lp-member-chip" style={{ cursor: 'default' }}>
-                        <span className="lp-member-avatar-sm">{(m.name || m.tm_name || '?')[0].toUpperCase()}</span>
-                        {m.name || m.tm_name}
-                      </span>
-                    ))}
+                    {getMemberObjects(Array.isArray(selectedTask.assignedTo) ? selectedTask.assignedTo : [selectedTask.assignedTo]).map(m => {
+                      const key = m.id || Math.random().toString();
+                      return (
+                        <span key={key} className="lp-member-chip" style={{ cursor: 'default' }}>
+                          <span className="lp-member-avatar-sm">{(m.name || '?')[0].toUpperCase()}</span>
+                          {m.name}
+                        </span>
+                      );
+                    })}
                   </div>
                 </div>
               )}
               <div className="lp-progress-section">
                 <div className="lp-progress-label-row">
                   <span className="lp-progress-label">Progress</span>
-                  <span className="lp-progress-pct">{selectedTask.progress}%</span>
+                  <span className="lp-progress-pct">{selectedTask.progress || 0}%</span>
                 </div>
                 <div className="lp-progress-track">
-                  <div className="lp-progress-fill" style={{ width:`${selectedTask.progress}%` }}/>
+                  <div className="lp-progress-fill" style={{ width:`${selectedTask.progress || 0}%` }}/>
                 </div>
               </div>
             </div>
@@ -562,7 +1143,7 @@ const paginatedProjects = filtered.slice(
                 <Pencil size={12}/> Edit
               </button>
               <button className="btn btn-danger btn-sm"
-                onClick={() => { setDeleteTaskId(selectedTask.t_id); setSelectedTask(null); }}>
+                onClick={() => { setDeleteTaskId(selectedTask.t_id || selectedTask.id); setSelectedTask(null); }}>
                 <Trash2 size={12}/> Delete
               </button>
               <button className="btn btn-secondary btn-sm" onClick={() => setSelectedTask(null)}>Close</button>
@@ -606,30 +1187,17 @@ const paginatedProjects = filtered.slice(
                 selected={Array.isArray(editTask.assignedTo) ? editTask.assignedTo : (editTask.assignedTo ? [editTask.assignedTo] : [])}
                 onChange={ids => setEditTask({ ...editTask, assignedTo: ids })}
                 label="Assign To"
+                members={teamMembers}
               />
               <label className="lp-label">Milestone</label>
               <input className="input lp-input" placeholder="e.g. Phase 1 Release"
                 value={editTask.milestone || ''} onChange={e => setEditTask({ ...editTask, milestone: e.target.value })}/>
-                <label className="lp-label">Milestone Date</label>
-<input
-  type="date"
-  className="input lp-input"
-  value={taskForm.milestoneDate}
-  onChange={e => setTaskForm({ ...taskForm, milestoneDate: e.target.value })}
-/>
-
-<label className="lp-label">Milestone Owner</label>
-<MemberPicker
-  selected={taskForm.milestoneOwner}
-  onChange={ids => setTaskForm({ ...taskForm, milestoneOwner: ids })}
-  label=""
-/>
-              <label className="lp-label">Progress: <strong>{editTask.progress}%</strong></label>
-              <input type="range" min={0} max={100} className="lp-range" value={editTask.progress}
+              <label className="lp-label">Progress: <strong>{editTask.progress || 0}%</strong></label>
+              <input type="range" min={0} max={100} className="lp-range" value={editTask.progress || 0}
                 onChange={e => setEditTask({ ...editTask, progress: Number(e.target.value) })}/>
             </div>
             <div className="lp-modal-footer">
-              <button className="btn btn-primary btn-sm" onClick={() => handleUpdateTask(editTask)}>Save Changes</button>
+              <button className="btn btn-primary btn-sm" onClick={handleUpdateTask}>Save Changes</button>
               <button className="btn btn-secondary btn-sm" onClick={() => setEditTask(null)}>Cancel</button>
             </div>
           </div>
@@ -641,7 +1209,7 @@ const paginatedProjects = filtered.slice(
         <div className="lp-overlay" onClick={() => setTaskAddModal(null)}>
           <div className="lp-modal" onClick={e => e.stopPropagation()}>
             <div className="lp-modal-header">
-              <h2 className="lp-modal-title">Add Task · {taskAddModal.p_name}</h2>
+              <h2 className="lp-modal-title">Add Task · {taskAddModal.p_name || taskAddModal.name}</h2>
               <button className="lp-icon-btn" onClick={() => setTaskAddModal(null)}><X size={16}/></button>
             </div>
             <div className="lp-modal-body lp-edit-form">
@@ -668,30 +1236,18 @@ const paginatedProjects = filtered.slice(
                 </div>
               </div>
               <MemberPicker selected={taskForm.assignedTo}
-                onChange={ids => setTaskForm({ ...taskForm, assignedTo: ids })} label="Assign Members"/>
+                onChange={ids => setTaskForm({ ...taskForm, assignedTo: ids })}
+                label="Assign Members"
+                members={teamMembers}/>
               <label className="lp-label">Milestone</label>
               <input className="input lp-input" placeholder="e.g. Phase 1 Release" value={taskForm.milestone}
                 onChange={e => setTaskForm({ ...taskForm, milestone: e.target.value })}/>
-                <label className="lp-label">Milestone Date</label>
-<input
-  type="date"
-  className="input lp-input"
-  value={taskForm.milestoneDate}
-  onChange={e => setTaskForm({ ...taskForm, milestoneDate: e.target.value })}
-/>
-
-<label className="lp-label">Milestone Owner</label>
-<MemberPicker
-  selected={taskForm.milestoneOwner}
-  onChange={ids => setTaskForm({ ...taskForm, milestoneOwner: ids })}
-  label=""
-/>
               <label className="lp-label">Initial Progress: <strong>{taskForm.progress}%</strong></label>
               <input type="range" min={0} max={100} className="lp-range" value={taskForm.progress}
                 onChange={e => setTaskForm({ ...taskForm, progress: Number(e.target.value) })}/>
             </div>
             <div className="lp-modal-footer">
-              <button className="btn btn-primary btn-sm" onClick={addTask}>Add Task</button>
+              <button className="btn btn-primary btn-sm" onClick={handleAddTask}>Add Task</button>
               <button className="btn btn-secondary btn-sm" onClick={() => setTaskAddModal(null)}>Cancel</button>
             </div>
           </div>
@@ -705,7 +1261,7 @@ const paginatedProjects = filtered.slice(
             <h3 className="lp-confirm-title">Delete Task?</h3>
             <p style={{ color:'var(--text-muted)', marginBottom:20, fontSize:13 }}>This cannot be undone.</p>
             <div className="lp-modal-footer" style={{ justifyContent:'center' }}>
-              <button className="btn btn-danger btn-sm" onClick={() => handleDeleteTask(deleteTaskId)}>Yes, Delete</button>
+              <button className="btn btn-danger btn-sm" onClick={handleDeleteTask}>Yes, Delete</button>
               <button className="btn btn-secondary btn-sm" onClick={() => setDeleteTaskId(null)}>Cancel</button>
             </div>
           </div>
@@ -719,11 +1275,7 @@ const paginatedProjects = filtered.slice(
             <h3 className="lp-confirm-title">Delete Project?</h3>
             <p style={{ color:'var(--text-muted)', marginBottom:20, fontSize:13 }}>All tasks will also be removed.</p>
             <div className="lp-modal-footer" style={{ justifyContent:'center' }}>
-              <button className="btn btn-danger btn-sm" onClick={() => {
-                setProjects(prev => prev.filter(p => p.p_id !== deleteProjectId));
-                setTasks(prev => prev.filter(t => t.p_id !== deleteProjectId));
-                setDeleteProjectId(null);
-              }}>Yes, Delete</button>
+              <button className="btn btn-danger btn-sm" onClick={handleDeleteProject}>Yes, Delete</button>
               <button className="btn btn-secondary btn-sm" onClick={() => setDeleteProjectId(null)}>Cancel</button>
             </div>
           </div>
@@ -740,49 +1292,170 @@ const paginatedProjects = filtered.slice(
             </div>
             <div className="lp-modal-body lp-edit-form">
               <label className="lp-label">Project Name *</label>
-              <input className="input lp-input" placeholder="Enter project name" value={form.p_name}
-                onChange={e => setForm({ ...form, p_name: e.target.value })}/>
+              <input 
+                className="input lp-input" 
+                placeholder="Enter project name" 
+                value={form.name}
+                onChange={e => setForm({ ...form, name: e.target.value })}
+              />
+              
               <label className="lp-label">Description</label>
-              <textarea className="input lp-input lp-textarea" rows={3} placeholder="Write project description..."
-                value={form.desc} onChange={e => setForm({ ...form, desc: e.target.value })}/>
+              <textarea 
+                className="input lp-input lp-textarea" 
+                rows={3} 
+                placeholder="Write project description..."
+                value={form.description}
+                onChange={e => setForm({ ...form, description: e.target.value })}
+              />
+              
               <div className="lp-form-2col">
                 <div>
                   <label className="lp-label">Priority *</label>
-                  <select className="input lp-input" value={form.priority}
-                    onChange={e => setForm({ ...form, priority: e.target.value })}>
+                  <select 
+                    className="input lp-input" 
+                    value={form.priority}
+                    onChange={e => setForm({ ...form, priority: e.target.value })}
+                  >
                     <option value="low">Low</option>
                     <option value="medium">Medium</option>
                     <option value="high">High</option>
+                    <option value="critical">Critical</option>
                   </select>
                 </div>
                 <div>
                   <label className="lp-label">Status *</label>
-                  <select className="input lp-input" value={form.status}
-                    onChange={e => setForm({ ...form, status: e.target.value })}>
-                    <option value="todo">To Do</option>
-                    <option value="in-progress">In Progress</option>
-                    <option value="done">Completed</option>
+                  <select 
+                    className="input lp-input" 
+                    value={form.status}
+                    onChange={e => setForm({ ...form, status: e.target.value })}
+                  >
+                    <option value="planning">Planning</option>
+                    <option value="active">Active</option>
+                    <option value="on_hold">On Hold</option>
+                    <option value="completed">Completed</option>
+                    <option value="cancelled">Cancelled</option>
                   </select>
                 </div>
               </div>
-              <MemberPicker selected={form.members}
-                onChange={ids => setForm({ ...form, members: ids })} label="Project Members"/>
+
+              {/* ✅ SUPERVISORS PICKER - MANDATORY FOR LEADS */}
+              <div>
+                <label className="lp-label">
+                  <Crown size={14} style={{ display: 'inline', marginRight: 4 }} />
+                  Select Supervisor * <span style={{ color: '#ef4444', fontWeight: 700 }}>(Required)</span>
+                </label>
+                <div className="lp-supervisor-picker">
+                  {allSupervisors.length === 0 ? (
+                    <div style={{ 
+                      padding: '12px', 
+                      background: 'var(--bg-secondary)', 
+                      borderRadius: '8px',
+                      border: '1px dashed var(--border-default)',
+                      color: 'var(--text-muted)',
+                      fontSize: 13,
+                      textAlign: 'center'
+                    }}>
+                      No supervisors available. Contact an admin to add supervisors.
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                      {allSupervisors.map(s => {
+                        const isSelected = form.supervisors.includes(s.id);
+                        const isCurrentUser = Number(s.id) === Number(user?.id || user?.u_id);
+                        return (
+                          <button
+                            key={s.id}
+                            type="button"
+                            className={`lp-supervisor-chip ${isSelected ? 'selected' : ''} ${isCurrentUser ? 'current-user' : ''}`}
+                            onClick={() => {
+                              setForm(prev => ({
+                                ...prev,
+                                supervisors: isSelected 
+                                  ? prev.supervisors.filter(id => id !== s.id)
+                                  : [...prev.supervisors, s.id]
+                              }));
+                            }}
+                          >
+                            <span className="lp-member-avatar-sm">
+                              {(s.u_name || '?')[0].toUpperCase()}
+                            </span>
+                            {s.u_name}
+                            {isCurrentUser && (
+                              <span className="lp-current-user-badge">(You)</span>
+                            )}
+                            {isSelected && <Check size={12} style={{ color: 'var(--accent-primary)' }} />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+                <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+                  <span style={{ color: '#ef4444' }}>*</span> You must select at least one supervisor for this project.
+                </p>
+                {form.supervisors.length > 0 && (
+                  <div style={{ 
+                    marginTop: 8, 
+                    padding: '8px 12px', 
+                    background: 'rgba(52, 211, 153, 0.1)',
+                    borderRadius: '6px',
+                    fontSize: 12,
+                    color: '#34d399'
+                  }}>
+                    <Check size={12} style={{ display: 'inline', marginRight: 4 }} />
+                    {form.supervisors.length} supervisor{form.supervisors.length !== 1 ? 's' : ''} selected
+                  </div>
+                )}
+                {form.supervisors.length === 0 && (
+                  <div style={{ 
+                    marginTop: 8, 
+                    padding: '8px 12px', 
+                    background: 'rgba(248, 113, 113, 0.08)',
+                    borderRadius: '6px',
+                    fontSize: 12,
+                    color: '#f87171'
+                  }}>
+                    ⚠️ Please select at least one supervisor
+                  </div>
+                )}
+              </div>
+
+              {/* Members Picker */}
+              <MemberPicker
+                selected={form.members}
+                onChange={ids => setForm({ ...form, members: ids })}
+                label="Project Members"
+                members={teamMembers}
+              />
+              
               <div className="lp-form-2col">
                 <div>
                   <label className="lp-label">Start Date</label>
-                  <input type="date" className="input lp-input" value={form.start_date}
-                    onChange={e => setForm({ ...form, start_date: e.target.value })}/>
+                  <input 
+                    type="date" 
+                    className="input lp-input" 
+                    value={form.startDate ? form.startDate.split('T')[0] : ''}
+                    onChange={e => setForm({ ...form, startDate: e.target.value })}
+                  />
                 </div>
                 <div>
-                  <label className="lp-label">End Date</label>
-                  <input type="date" className="input lp-input" value={form.end_date}
-                    onChange={e => setForm({ ...form, end_date: e.target.value })}/>
+                  <label className="lp-label">Deadline</label>
+                  <input 
+                    type="date" 
+                    className="input lp-input" 
+                    value={form.deadline ? form.deadline.split('T')[0] : ''}
+                    onChange={e => setForm({ ...form, deadline: e.target.value })}
+                  />
                 </div>
               </div>
             </div>
             <div className="lp-modal-footer">
               <button className="btn btn-secondary btn-sm" onClick={() => setProjectModal(false)}>Cancel</button>
-              <button className="btn btn-primary btn-sm" onClick={saveProject}>
+              <button 
+                className="btn btn-primary btn-sm" 
+                onClick={handleSaveProject}
+                disabled={form.supervisors.length === 0}
+              >
                 {editProject ? 'Update Project' : 'Create Project'}
               </button>
             </div>
@@ -791,6 +1464,449 @@ const paginatedProjects = filtered.slice(
       )}
 
       <style>{`
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+        .spin { animation: spin 1s linear infinite; }
+
+        .loading-spinner-wrapper {
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          height: 400px;
+        }
+
+        .loading-spinner {
+          width: 40px;
+          height: 40px;
+          border: 3px solid var(--border-subtle);
+          border-top-color: var(--accent-primary);
+          border-radius: 50%;
+          animation: spin 0.8s linear infinite;
+        }
+
+        .refresh-btn {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
+        .lp-supervisor-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 3px;
+          padding: 2px 7px;
+          border-radius: 7px;
+          font-size: 10px;
+          font-weight: 600;
+          background: rgba(245, 158, 11, 0.15);
+          color: #f59e0b;
+          border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+
+        .lp-supervisor-picker {
+          padding: 10px 12px;
+          border-radius: 9px;
+          border: 1px solid var(--border-default);
+          background: var(--bg-secondary);
+          min-height: 44px;
+        }
+
+        .lp-supervisor-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          padding: 4px 10px 4px 6px;
+          border-radius: 20px;
+          border: 1px solid var(--border-subtle);
+          background: var(--bg-card);
+          color: var(--text-primary);
+          font-size: 12px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.15s;
+        }
+
+        .lp-supervisor-chip:hover {
+          border-color: var(--accent-primary);
+          background: var(--bg-hover);
+        }
+
+        .lp-supervisor-chip.selected {
+          background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+          border-color: var(--accent-primary);
+        }
+
+        .lp-supervisor-chip.current-user {
+          border-color: #34d399;
+          background: rgba(52, 211, 153, 0.1);
+        }
+
+        .lp-current-user-badge {
+          font-size: 9px;
+          color: #34d399;
+          font-weight: 600;
+        }
+
+        .lp-filters-container {
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
+          margin-bottom: 24px;
+          background: var(--bg-card);
+          padding: 18px 20px;
+          border-radius: 14px;
+          border: 1px solid var(--border-subtle);
+          transition: all 0.2s ease;
+        }
+
+        .lp-filters-container:focus-within {
+          border-color: var(--accent-primary);
+          box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
+        }
+
+        .lp-search-wrapper {
+          position: relative;
+          display: flex;
+          align-items: center;
+          width: 100%;
+        }
+
+        .lp-search-icon {
+          position: absolute;
+          left: 14px;
+          color: var(--text-muted);
+          pointer-events: none;
+          transition: color 0.2s;
+        }
+
+        .lp-search-wrapper:focus-within .lp-search-icon {
+          color: var(--accent-primary);
+        }
+
+        .lp-search-input {
+          width: 100%;
+          padding: 11px 40px 11px 42px;
+          border-radius: 10px;
+          border: 1px solid var(--border-default);
+          background: var(--bg-secondary);
+          color: var(--text-primary);
+          font-size: 13px;
+          transition: all 0.2s ease;
+          outline: none;
+        }
+
+        .lp-search-input:focus {
+          border-color: var(--accent-primary);
+          background: var(--bg-card);
+          box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
+        }
+
+        .lp-search-input::placeholder {
+          color: var(--text-muted);
+        }
+
+        .lp-search-clear {
+          position: absolute;
+          right: 10px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 28px;
+          height: 28px;
+          border: none;
+          border-radius: 50%;
+          background: var(--bg-hover);
+          color: var(--text-muted);
+          cursor: pointer;
+          transition: all 0.15s;
+        }
+
+        .lp-search-clear:hover {
+          background: var(--border-default);
+          color: var(--text-primary);
+        }
+
+        .lp-filter-controls {
+          display: flex;
+          align-items: center;
+          gap: 16px;
+          flex-wrap: wrap;
+        }
+
+        .lp-filter-group {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex: 1;
+          min-width: 140px;
+        }
+
+        .lp-filter-label {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          font-size: 11px;
+          font-weight: 600;
+          color: var(--text-muted);
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+          white-space: nowrap;
+        }
+
+        .lp-filter-select {
+          flex: 1;
+          padding: 8px 12px;
+          border-radius: 8px;
+          border: 1px solid var(--border-default);
+          background: var(--bg-secondary);
+          color: var(--text-primary);
+          font-size: 12px;
+          font-weight: 500;
+          cursor: pointer;
+          outline: none;
+          transition: all 0.2s ease;
+          min-width: 120px;
+          appearance: none;
+          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+          background-repeat: no-repeat;
+          background-position: right 10px center;
+          padding-right: 32px;
+        }
+
+        .lp-filter-select:hover {
+          border-color: var(--border-strong);
+          background-color: var(--bg-hover);
+        }
+
+        .lp-filter-select:focus {
+          border-color: var(--accent-primary);
+          background-color: var(--bg-card);
+          box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
+        }
+
+        .lp-active-filters {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex-wrap: wrap;
+          margin-left: auto;
+        }
+
+        .lp-filter-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          padding: 4px 10px 4px 12px;
+          border-radius: 20px;
+          font-size: 11px;
+          font-weight: 600;
+          background: var(--accent-muted);
+          color: var(--accent-primary);
+          border: 1px solid rgba(99, 102, 241, 0.2);
+          white-space: nowrap;
+        }
+
+        .lp-filter-chip button {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 2px;
+          border: none;
+          border-radius: 50%;
+          background: transparent;
+          color: var(--accent-primary);
+          cursor: pointer;
+          transition: all 0.15s;
+        }
+
+        .lp-filter-chip button:hover {
+          background: rgba(239, 68, 68, 0.1);
+          color: #ef4444;
+        }
+
+        .lp-results-count {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding-top: 12px;
+          border-top: 1px solid var(--border-subtle);
+          font-size: 12px;
+          color: var(--text-muted);
+          flex-wrap: wrap;
+        }
+
+        .lp-results-count span {
+          font-weight: 500;
+        }
+
+        .lp-results-count .lp-results-total {
+          color: var(--text-secondary);
+        }
+
+        .lp-results-dot {
+          color: var(--border-default);
+        }
+
+        .lp-clear-filters-btn {
+          margin-left: auto;
+          padding: 4px 12px;
+          border: none;
+          border-radius: 6px;
+          background: var(--bg-secondary);
+          color: var(--text-secondary);
+          font-size: 11px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.15s;
+        }
+
+        .lp-clear-filters-btn:hover {
+          background: var(--bg-hover);
+          color: var(--accent-primary);
+        }
+
+        .lp-projects-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+          gap: 16px;
+        }
+
+        .lp-project-card {
+          padding: 0 0 14px !important;
+          display: flex !important;
+          flex-direction: column !important;
+          gap: 10px !important;
+          overflow: hidden;
+          cursor: pointer;
+          background: var(--bg-card);
+          border: 1px solid var(--border-subtle);
+          border-radius: 14px;
+          transition: all 0.2s ease;
+        }
+
+        .lp-project-card:hover {
+          border-color: var(--accent-primary);
+          transform: translateY(-2px);
+          box-shadow: var(--shadow-md);
+        }
+
+        .lp-card-top {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          padding: 12px 14px 0;
+          width: 100%;
+          box-sizing: border-box;
+          min-width: 0;
+        }
+
+        .lp-card-badges {
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          min-width: 0;
+          flex: 1;
+          overflow: hidden;
+          flex-wrap: wrap;
+        }
+
+        .lp-card-badges > * {
+          font-size: 10.5px !important;
+          padding: 2px 7px !important;
+          height: auto !important;
+          line-height: 1.4 !important;
+          border-radius: 7px !important;
+          white-space: nowrap !important;
+          display: inline-flex !important;
+          align-items: center !important;
+          gap: 3px !important;
+          flex-shrink: 0 !important;
+          box-sizing: border-box !important;
+        }
+
+        .lp-card-actions {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          flex-shrink: 0;
+        }
+
+        .lp-card-body {
+          padding: 0 16px;
+        }
+
+        .lp-project-name {
+          font-size: 15px;
+          font-weight: 700;
+          margin-bottom: 2px;
+          color: var(--text-primary);
+        }
+
+        .lp-project-desc {
+          font-size: 12px;
+          color: var(--text-muted);
+        }
+
+        .lp-progress-header {
+          display: flex;
+          justify-content: space-between;
+          font-size: 11px;
+          margin-bottom: 4px;
+          color: var(--text-secondary);
+        }
+
+        .lp-progress-value {
+          font-weight: 600;
+        }
+
+        .lp-card-meta {
+          display: flex;
+          justify-content: space-between;
+          font-size: 12px;
+          padding: 0 16px;
+        }
+
+        .lp-meta-label {
+          font-size: 10px;
+          color: var(--text-muted);
+          margin: 0;
+        }
+
+        .lp-meta-value {
+          font-weight: 600;
+          color: var(--text-primary);
+          margin: 0;
+        }
+
+        .lp-card-footer {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          border-top: 1px solid var(--border-subtle);
+          padding-top: 10px;
+          margin: 0 16px;
+        }
+
+        .lp-member-count {
+          font-size: 11px;
+          color: var(--text-muted);
+        }
+
+        .lp-pagination {
+          display: flex;
+          justify-content: center;
+          gap: 10px;
+          margin-top: 20px;
+        }
+
+        .lp-page-info {
+          padding: 6px 10px;
+          font-size: 13px;
+          color: var(--text-secondary);
+        }
+
         .lp-overlay {
           position: fixed; inset: 0;
           background: rgba(0,0,0,0.6);
@@ -851,66 +1967,6 @@ const paginatedProjects = filtered.slice(
           line-height: 1.6; margin-bottom: 14px;
         }
 
-        /* ══ PROJECT CARD ══ */
-        .lp-project-card {
-          padding: 0 0 14px !important;
-          display: flex !important;
-          flex-direction: column !important;
-          gap: 10px !important;
-          overflow: hidden;
-          cursor: pointer;
-        }
-
-        /* KEY FIX: top row — badges left, icons right, never overlap */
-        .lp-card-top {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 8px;
-          padding: 12px 14px 0;
-          width: 100%;
-          box-sizing: border-box;
-          min-width: 0;
-        }
-
-        .lp-card-badges {
-          display: flex;
-          align-items: center;
-          gap: 5px;
-          min-width: 0;
-          flex: 1;
-          overflow: hidden;
-        }
-
-        /* Keep each badge compact and truncated if needed */
-        .lp-card-badges > * {
-          font-size: 10.5px !important;
-          padding: 2px 7px !important;
-          height: auto !important;
-          line-height: 1.4 !important;
-          border-radius: 7px !important;
-          white-space: nowrap !important;
-          display: inline-flex !important;
-          align-items: center !important;
-          gap: 3px !important;
-          flex-shrink: 1 !important;
-          box-sizing: border-box !important;
-          max-width: 96px !important;
-          overflow: hidden !important;
-          text-overflow: ellipsis !important;
-        }
-
-        /* Action buttons — never shrink, always visible */
-        .lp-card-actions {
-          display: flex;
-          align-items: center;
-          gap: 4px;
-          flex-shrink: 0;
-        }
-
-        .lp-card-body { padding: 0 16px; }
-
-        /* task scroll */
         .lp-task-scroll {
           max-height: 100%; overflow-y: auto;
           padding: 14px 20px;
@@ -1028,7 +2084,6 @@ const paginatedProjects = filtered.slice(
         .btn-secondary { background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-default); }
         .btn-secondary:hover { border-color: var(--accent-primary); }
 
-        /* member picker */
         .lp-member-trigger {
           display: flex; align-items: center; gap: 8px; width: 100%; min-height: 42px;
           padding: 8px 12px; border-radius: 9px; border: 1px solid var(--border-default);
@@ -1107,6 +2162,48 @@ const paginatedProjects = filtered.slice(
           border-radius: 8px; background: var(--bg-card); border: 1px solid var(--border-subtle);
         }
 
+        @media (max-width: 768px) {
+          .lp-filters-container {
+            padding: 14px 16px;
+            gap: 12px;
+          }
+
+          .lp-filter-controls {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 10px;
+          }
+
+          .lp-filter-group {
+            min-width: 0;
+          }
+
+          .lp-filter-select {
+            min-width: 0;
+          }
+
+          .lp-active-filters {
+            margin-left: 0;
+            justify-content: flex-start;
+          }
+
+          .lp-results-count {
+            padding-top: 10px;
+            flex-wrap: wrap;
+          }
+
+          .lp-clear-filters-btn {
+            margin-left: 0;
+          }
+
+          .lp-modal-body-split { grid-template-columns: 1fr; grid-template-rows: auto auto; }
+          .lp-members-sidebar { border-top: 1px solid var(--border-subtle); }
+          .lp-task-scroll { border-right: none; max-height: 300px; }
+          .lp-projects-grid {
+            grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+          }
+        }
+
         @media (max-width: 600px) {
           .lp-modal-body-split { grid-template-columns: 1fr; grid-template-rows: auto auto; }
           .lp-members-sidebar { border-top: 1px solid var(--border-subtle); }
@@ -1114,6 +2211,35 @@ const paginatedProjects = filtered.slice(
         }
 
         @media (max-width: 480px) {
+          .lp-filters-container {
+            padding: 12px;
+            gap: 10px;
+          }
+
+          .lp-search-input {
+            padding: 10px 36px 10px 38px;
+            font-size: 12px;
+          }
+
+          .lp-filter-group {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 4px;
+          }
+
+          .lp-filter-label {
+            font-size: 10px;
+          }
+
+          .lp-filter-select {
+            padding: 7px 10px;
+            font-size: 11px;
+          }
+
+          .lp-projects-grid {
+            grid-template-columns: 1fr;
+          }
+
           .lp-form-2col { grid-template-columns: 1fr; }
           .lp-task-meta { gap: 6px; }
           .lp-mini-track { width: 50px; }

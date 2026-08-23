@@ -1,14 +1,6 @@
-import { useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
-import {
-  PROJECTS,
-  TASKS,
-  COMMENTS,
-  P_TEAMS,
-  TEAM_MEMBERS,
-  getProjectProgress,
-} from "../../data/mockData";
-
+// components/lead/LeadProjectDetail.jsx
+import { useState, useEffect } from "react";
+import { useParams, useNavigate, useOutletContext } from "react-router-dom";
 import {
   ArrowLeft,
   MessageSquare,
@@ -17,988 +9,1911 @@ import {
   Clock3,
   Pencil,
   Trash2,
-  Flag,
   Milestone,
   X,
   Pin,
   PinOff,
-  ChevronDown,
   BarChart2,
+  RefreshCw,
+  Plus,
+  Loader2,
+  FolderKanban,
+  Calendar,
+  Flag,
+  AlertCircle,
+  Sparkles,
+  TrendingUp,
+  Award,
+  User,
+  Send,
+  Target,
+  Zap,
+  FileText,
+  Clock,
+  Activity,
+  Briefcase,
+  Crown
 } from "lucide-react";
-
-import { Avatar, StatusBadge, PriorityBadge } from "../shared/UIComponents";
+import { motion, AnimatePresence } from "framer-motion";
 import toast from "react-hot-toast";
 
-const PRIORITY_OPTIONS = ["low", "medium", "high", "critical"];
-const STATUS_OPTIONS = ["todo", "in_progress", "review", "done"];
+import Topbar from "../shared/Topbar";
+import { Avatar, StatusBadge, PriorityBadge } from "../shared/UIComponents";
+import projectService from "../../services/projectService";
+import taskService from "../../services/taskService";
+import teamService from "../../services/teamService";
+import commentService from "../../services/commentService";
+import projectTeamService from "../../services/projectTeamService";
+import userService from "../../services/userService";
+import { useAuth } from "../../context/AuthContext";
+import NotificationHelper from '../../services/notificationHelper';
 
-export default function ProjectDetail() {
+const PRIORITY_OPTIONS = ["low", "medium", "high", "critical"];
+const STATUS_OPTIONS = ["todo", "in_progress", "review", "done", "cancelled"];
+
+const getStatusLabel = (status) => {
+  const labels = {
+    todo: "To Do",
+    pending: "Pending",
+    in_progress: "In Progress",
+    "in-progress": "In Progress",
+    review: "In Review",
+    done: "Done",
+    completed: "Completed",
+    cancelled: "Cancelled"
+  };
+  return labels[status?.toLowerCase()] || status || "Unknown";
+};
+
+const getStatusColor = (status) => {
+  const colors = {
+    todo: "#94a3b8",
+    pending: "#94a3b8",
+    in_progress: "#818cf8",
+    "in-progress": "#818cf8",
+    review: "#f59e0b",
+    done: "#34d399",
+    completed: "#34d399",
+    cancelled: "#f87171"
+  };
+  return colors[status?.toLowerCase()] || "#94a3b8";
+};
+
+export default function LeadProjectDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { onMenuClick } = useOutletContext();
+  const { user } = useAuth();
 
-  const projectId = Number(id);
-  const project = PROJECTS.find((p) => p.p_id === projectId);
+  const projectId = parseInt(id);
 
-  const [comments, setComments] = useState(
-    COMMENTS.map((c) => ({ ...c, pinned: false }))
-  );
-  const [text, setText] = useState("");
-  const [tasks, setTasks] = useState(
-    TASKS.filter((t) => t.p_id === projectId).map((t) => ({
-      ...t,
-      progress: t.progress ?? (t.status === "done" ? 100 : t.status === "in_progress" ? 50 : t.status === "review" ? 75 : 0),
-      milestones: t.milestones ?? [],
-    }))
-  );
-
+  // State
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [project, setProject] = useState(null);
+  const [tasks, setTasks] = useState([]);
+  const [allTeamMembers, setAllTeamMembers] = useState([]);
+  const [projectMembers, setProjectMembers] = useState([]);
+  const [projectSupervisors, setProjectSupervisors] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [comments, setComments] = useState([]);
   const [selectedTask, setSelectedTask] = useState(null);
   const [editTask, setEditTask] = useState(null);
   const [showAddTask, setShowAddTask] = useState(false);
-
-const [newTask, setNewTask] = useState({
-  title: "",
-  desc: "",
-  priority: "medium",
-  status: "todo",
-  progress: 0,
-  milestones: [],
-});
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
-  const handleAddTask = () => {
-  if (!newTask.title.trim()) {
-    toast.error("Task title is required");
-    return;
-  }
+  const [text, setText] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isCommenting, setIsCommenting] = useState(false);
+  const [modalCommentText, setModalCommentText] = useState("");
+  const [isModalCommenting, setIsModalCommenting] = useState(false);
+  const [commentUpdateTrigger, setCommentUpdateTrigger] = useState(0);
 
-  const task = {
-    t_id: Date.now(),
-    p_id: projectId,
-    ...newTask,
-  };
-
-  setTasks((prev) => [...prev, task]);
-
-  setNewTask({
+  const [newTask, setNewTask] = useState({
     title: "",
     desc: "",
     priority: "medium",
     status: "todo",
     progress: 0,
-    milestone: "",
+    assignedTo: null,
+    milestones: [],
   });
 
-  setShowAddTask(false);
-  toast.success("Task added successfully");
-};
+  // Helper: Get comments for a specific task
+  const getTaskComments = (taskId) => {
+    if (!taskId) return [];
+    return comments.filter(c => Number(c.taskId || c.t) === Number(taskId));
+  };
 
-  if (!project) return <div>Project not found</div>;
+  // Sorted comments for right panel (all comments)
+  const sortedComments = [...comments].sort((a, b) =>
+    (b.pin || b.pinned) === (a.pin || a.pinned) ? 0 : (b.pin || b.pinned) ? 1 : -1
+  );
 
+  // Sorted comments for modal (filtered by selected task)
+  const modalTaskComments = selectedTask 
+    ? getTaskComments(selectedTask.t_id || selectedTask.id)
+    : [];
+  
+  const sortedModalComments = [...modalTaskComments].sort((a, b) =>
+    (b.pin || b.pinned) === (a.pin || a.pinned) ? 0 : (b.pin || b.pinned) ? 1 : -1
+  );
+
+  useEffect(() => {
+    fetchProjectData();
+  }, [projectId]);
+
+  const fetchProjectData = async () => {
+    try {
+      setLoading(true);
+      
+      const [projectData, tasksData, membersData, usersData, pteamData] = await Promise.all([
+        projectService.getProject(projectId),
+        taskService.getTasks(),
+        teamService.getTeamMembers(),
+        userService.getUsers(),
+        projectTeamService.getProjectTeams(),
+      ]);
+
+      console.log('📊 Project Data:', projectData);
+      console.log('📊 Tasks Data:', tasksData);
+      console.log('📊 Members Data:', membersData);
+      console.log('📊 Users Data:', usersData);
+      console.log('📊 PTeam Data:', pteamData);
+
+      const projectItem = projectData?.data || projectData;
+      const allTasks = tasksData?.data || tasksData || [];
+      const membersList = membersData?.data || membersData || [];
+      const usersList = usersData?.data || usersData || [];
+      const pteamList = pteamData?.data || pteamData || [];
+
+      setProject(projectItem);
+      setAllTeamMembers(membersList);
+      setUsers(usersList);
+
+      // ✅ Get project members from PTeam - use correct field names
+      let memberEntries = [];
+      
+      // Log the actual PTeam data structure
+      console.log('📊 PTeam list:', pteamList);
+      
+      if (pteamList && Array.isArray(pteamList) && pteamList.length > 0) {
+        // Try multiple ways to filter PTeam entries
+        // Some APIs might use 'p_id' or 'project' or just 'p'
+        const projectPteamEntries = pteamList.filter(entry => {
+          const entryProjectId = entry.p || entry.p_id || entry.project || entry.projectId || entry.project_id;
+          console.log(`📊 Checking entry: p=${entry.p}, p_id=${entry.p_id}, project=${entry.project}, projectId=${entry.projectId}, entryProjectId=${entryProjectId}`);
+          return Number(entryProjectId) === Number(projectId);
+        });
+        
+        console.log('📊 PTeam entries for project:', projectPteamEntries);
+
+        // Map to team members
+        memberEntries = projectPteamEntries
+          .map(entry => {
+            // Get the member ID from the entry
+            const memberId = entry.tm || entry.tm_id || entry.team_member || entry.member || entry.member_id || entry.teamMember;
+            const member = membersList.find(m => Number(m.id) === Number(memberId));
+            if (member) {
+              return {
+                ...member,
+                pt_id: entry.pt_id || entry.id,
+                task_id: entry.t || entry.task_id || entry.task,
+              };
+            }
+            console.log(`⚠️ Member with ID ${memberId} not found in membersList`);
+            return null;
+          })
+          .filter(m => m !== null);
+
+        console.log('📊 Found project members from PTeam:', memberEntries);
+      }
+
+      // ✅ If no PTeam members found, try to get from tasks (fallback)
+      if (memberEntries.length === 0) {
+        console.log('⚠️ No PTeam entries found, trying to get members from tasks...');
+        
+        const projectTasks = allTasks.filter(t => {
+          const taskProjectId = t.p_id || t.p || t.project || t.project_id;
+          return Number(taskProjectId) === Number(projectId);
+        });
+        
+        const memberIds = new Set();
+        projectTasks.forEach(t => {
+          if (t.assign_to) memberIds.add(Number(t.assign_to));
+        });
+        
+        console.log('📊 Members from tasks:', Array.from(memberIds));
+        
+        memberEntries = membersList
+          .filter(m => memberIds.has(Number(m.id)))
+          .map(m => ({
+            ...m,
+            pt_id: null,
+            task_id: null,
+          }));
+      }
+
+      // ✅ Set project members
+      setProjectMembers(memberEntries);
+
+      // ✅ Get supervisors (users with role manager/admin/supervisor)
+      // Get supervisors from the PTeam entries that are marked as supervisors
+// Instead of auto-detecting, we should check if the member is in the supervisor list
+const supervisorEntries = memberEntries.filter(m => {
+  // Check if this member is in the supervisors list from the project data
+  // Since we don't have a separate field, we check the user role
+  const userObj = usersList.find(u => Number(u.id) === Number(m.id));
+  const isSupervisor = userObj && (userObj.role === 'manager' || userObj.role === 'admin' || userObj.role === 'supervisor');
+  
+  // Log for debugging
+  if (isSupervisor) {
+    console.log('👑 Found supervisor:', m.name, 'with role:', userObj?.role);
+  }
+  return isSupervisor;
+});
+      
+      console.log('📊 Project supervisors:', supervisorEntries);
+      setProjectSupervisors(supervisorEntries);
+
+      // ✅ Filter tasks for this project
+      const projectTasks = allTasks.filter(t => {
+        const taskProjectId = t.p_id || t.p || t.project || t.project_id;
+        return Number(taskProjectId) === Number(projectId);
+      });
+
+      console.log('📊 Filtered project tasks:', projectTasks);
+      console.log('📊 Total tasks in project:', projectTasks.length);
+
+      const mappedTasks = projectTasks.map(t => ({
+        ...t,
+        progress: t.progress ?? (
+          t.status === "done" || t.status === "completed" ? 100 :
+          t.status === "in_progress" || t.status === "in-progress" ? 50 :
+          t.status === "review" ? 75 : 0
+        ),
+        milestones: t.milestones || [],
+        assigneeId: t.assign_to,
+      }));
+
+      setTasks(mappedTasks);
+
+      // ✅ FETCH COMMENTS FOR EACH TASK
+      if (mappedTasks.length > 0) {
+        const allComments = [];
+        for (const task of mappedTasks) {
+          try {
+            const commentsResponse = await commentService.getCommentsByTask(task.t_id || task.id);
+            const commentsList = commentsResponse?.data || commentsResponse || [];
+            commentsList.forEach(comment => {
+              allComments.push({
+                ...comment,
+                taskId: task.t_id || task.id
+              });
+            });
+          } catch (error) {
+            console.log(`No comments for task ${task.t_id || task.id}`);
+          }
+        }
+        
+        setComments(allComments);
+        console.log(`📊 Loaded ${allComments.length} comments from backend`);
+      }
+
+    } catch (error) {
+      console.error('Error fetching project data:', error);
+      toast.error('Failed to load project details');
+      if (error.status === 404) {
+        navigate('/lead/projects');
+      }
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await fetchProjectData();
+    toast.success('Project refreshed');
+  };
+
+  // Task CRUD
+  const handleAddTask = async () => {
+    if (!newTask.title.trim()) {
+      toast.error("Task title is required");
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      console.log('📤 Creating task with projectId:', projectId);
+      console.log('📤 Assigning to TeamMember ID:', newTask.assignedTo);
+      
+      const assignTo = newTask.assignedTo ? Number(newTask.assignedTo) : null;
+      
+      const response = await taskService.createTask({
+        title: newTask.title,
+        description: newTask.desc,
+        status: newTask.status,
+        priority: newTask.priority,
+        projectId: projectId,
+        assignTo: assignTo,
+        dueDate: null,
+        startDate: null,
+        progress: newTask.progress,
+      });
+
+      const createdTask = response?.data || response;
+      console.log('✅ Task created response:', createdTask);
+      console.log('✅ assign_to in response:', createdTask.assign_to);
+      
+      await NotificationHelper.taskCreated(createdTask, user);
+      
+      if (createdTask.assign_to) {
+        const assignee = allTeamMembers.find(m => Number(m.id) === Number(createdTask.assign_to));
+        await NotificationHelper.taskAssigned(createdTask, assignee, user);
+      }
+      
+      const taskWithProject = {
+        ...createdTask,
+        p_id: projectId,
+        p: projectId,
+        progress: createdTask.progress || newTask.progress || 0,
+        milestones: createdTask.milestones || [],
+        assign_to: createdTask.assign_to || assignTo,
+      };
+      
+      setTasks(prev => [taskWithProject, ...prev]);
+      
+      setNewTask({
+        title: "",
+        desc: "",
+        priority: "medium",
+        status: "todo",
+        progress: 0,
+        assignedTo: null,
+        milestones: [],
+      });
+      setShowAddTask(false);
+      toast.success("Task added successfully");
+      
+      await fetchProjectData();
+    } catch (error) {
+      console.error('Error adding task:', error);
+      toast.error(error.response?.data?.message || 'Failed to add task');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleUpdateTask = async (updated) => {
+    try {
+      const assignTo = updated.assign_to || updated.assignTo ? Number(updated.assign_to || updated.assignTo) : null;
+      
+      console.log('📤 Updating task with assignTo:', assignTo);
+      
+      const response = await taskService.updateTask(updated.t_id || updated.id, {
+        title: updated.title,
+        description: updated.desc,
+        status: updated.status,
+        priority: updated.priority,
+        progress: updated.progress,
+        assignTo: assignTo,
+      });
+
+      const updatedTask = response?.data || response;
+      
+      await NotificationHelper.taskUpdated(updatedTask, user);
+      
+      if (updated.status === 'done' || updated.status === 'completed') {
+        await NotificationHelper.taskCompleted(updatedTask, user);
+      }
+      
+      setTasks(prev => prev.map(t => 
+        (t.t_id || t.id) === (updated.t_id || updated.id) 
+          ? { ...t, ...updatedTask, progress: updatedTask.progress || updated.progress || 0, assign_to: updatedTask.assign_to || assignTo } 
+          : t
+      ));
+      setEditTask(null);
+      setSelectedTask(updated);
+      toast.success("Task updated successfully");
+      
+      await fetchProjectData();
+    } catch (error) {
+      console.error('Error updating task:', error);
+      toast.error(error.response?.data?.message || 'Failed to update task');
+    }
+  };
+
+  const handleDeleteTask = async (taskId) => {
+    try {
+      await taskService.deleteTask(taskId);
+      setTasks(prev => prev.filter(t => (t.t_id || t.id) !== taskId));
+      setShowDeleteConfirm(null);
+      setSelectedTask(null);
+      toast.success("Task deleted successfully");
+      
+      await fetchProjectData();
+    } catch (error) {
+      console.error('Error deleting task:', error);
+      toast.error(error.response?.data?.message || 'Failed to delete task');
+    }
+  };
+
+  // ─── COMMENTS ───
+  const addComment = async () => {
+    if (!text.trim()) {
+      toast.error("Please enter a comment");
+      return;
+    }
+
+    if (!selectedTask) {
+      toast.error("Please select a task to comment on");
+      return;
+    }
+
+    setIsCommenting(true);
+    try {
+      const response = await commentService.addComment({
+        taskId: selectedTask.t_id || selectedTask.id,
+        desc: text,
+        priority: "normal",
+        pin: false,
+      });
+      
+      const newComment = response?.data || response;
+      
+      await NotificationHelper.commentAdded(newComment, user);
+      
+      setComments(prev => [...prev, {
+        ...newComment,
+        taskId: selectedTask.t_id || selectedTask.id
+      }]);
+      
+      setText("");
+      setCommentUpdateTrigger(prev => prev + 1);
+      toast.success("Comment added successfully");
+    } catch (error) {
+      console.error('Error adding comment:', error);
+      toast.error(error.response?.data?.message || 'Failed to add comment');
+    } finally {
+      setIsCommenting(false);
+    }
+  };
+
+  // ─── MODAL COMMENTS ───
+  const addModalComment = async () => {
+    if (!modalCommentText.trim()) {
+      toast.error("Please enter a comment");
+      return;
+    }
+
+    if (!selectedTask) {
+      toast.error("Please select a task to comment on");
+      return;
+    }
+
+    setIsModalCommenting(true);
+    try {
+      const response = await commentService.addComment({
+        taskId: selectedTask.t_id || selectedTask.id,
+        desc: modalCommentText,
+        priority: "normal",
+        pin: false,
+      });
+      
+      const newComment = response?.data || response;
+      
+      setComments(prev => [...prev, {
+        ...newComment,
+        taskId: selectedTask.t_id || selectedTask.id
+      }]);
+      
+      setModalCommentText("");
+      setCommentUpdateTrigger(prev => prev + 1);
+      toast.success("Comment added successfully");
+    } catch (error) {
+      console.error('Error adding comment:', error);
+      toast.error(error.response?.data?.message || 'Failed to add comment');
+    } finally {
+      setIsModalCommenting(false);
+    }
+  };
+
+  const togglePin = async (commentId) => {
+    try {
+      const comment = comments.find(c => (c.c_id || c.id) === commentId);
+      if (comment) {
+        const response = await commentService.togglePin(commentId);
+        const updatedComment = response?.data || response;
+        
+        if (updatedComment.pin) {
+          await NotificationHelper.commentPinned(updatedComment, user);
+        }
+        
+        setComments(prev =>
+          prev.map(c => (c.c_id || c.id) === commentId ? { ...c, pin: updatedComment.pin || !c.pin } : c)
+        );
+        toast.success(updatedComment.pin ? "Comment pinned" : "Comment unpinned");
+      }
+    } catch (error) {
+      console.error('Error toggling pin:', error);
+      toast.error('Failed to update pin');
+    }
+  };
+
+  const deleteComment = async (commentId) => {
+    if (!window.confirm("Are you sure you want to delete this comment?")) return;
+    
+    try {
+      await commentService.deleteComment(commentId);
+      setComments(prev => prev.filter(c => (c.c_id || c.id) !== commentId));
+      toast.success("Comment deleted successfully");
+    } catch (error) {
+      console.error('Error deleting comment:', error);
+      toast.error('Failed to delete comment');
+    }
+  };
+
+  // Calculate progress
   const progress = tasks.length
     ? Math.round(tasks.reduce((sum, t) => sum + (t.progress || 0), 0) / tasks.length)
     : 0;
 
-  const members = TEAM_MEMBERS.filter((m) =>
-    P_TEAMS.some((p) => p.p_id === projectId && p.tm_id === m.tm_id)
-  );
+  const done = tasks.filter(t => t.status === "done" || t.status === "completed" || t.status === "Done").length;
 
-  const done = tasks.filter((t) => t.status === "done").length;
-
-  const addComment = () => {
-    if (!text.trim()) return;
-    const newComment = {
-      c_id: Date.now(),
-      t_id: null,
-      u_id: 1,
-      desc: text,
-      created_at: new Date().toLocaleString(),
-      pinned: false,
-    };
-    setComments((prev) => [...prev, newComment]);
-    setText("");
-    toast.success("Comment added");
+  const getMemberName = (memberId) => {
+    if (!memberId) return "Unassigned";
+    const member = allTeamMembers.find(m => Number(m.id) === Number(memberId));
+    return member ? (member.name) : "Unassigned";
   };
 
-  const togglePin = (c_id) => {
-    setComments((prev) =>
-      prev.map((c) => (c.c_id === c_id ? { ...c, pinned: !c.pinned } : c))
-    );
+  const getMemberById = (memberId) => {
+    return allTeamMembers.find(m => Number(m.id) === Number(memberId));
   };
 
-  const deleteComment = (c_id) => {
-    setComments((prev) => prev.filter((c) => c.c_id !== c_id));
-    toast.success("Comment deleted");
-  };
-
-  const handleDeleteTask = (t_id) => {
-    setTasks((prev) => prev.filter((t) => t.t_id !== t_id));
-    setShowDeleteConfirm(null);
-    setSelectedTask(null);
-    toast.success("Task deleted");
-  };
-
-  const handleUpdateTask = (updated) => {
-    setTasks((prev) =>
-      prev.map((t) => (t.t_id === updated.t_id ? { ...t, ...updated } : t))
-    );
-    setEditTask(null);
-    setSelectedTask(updated);
-    toast.success("Task updated");
-  };
-
-  const sortedComments = [...comments].sort((a, b) =>
-    b.pinned === a.pinned ? 0 : b.pinned ? 1 : -1
-  );
-
-  return (
-    <div className="project-page">
-      {/* TASK DETAIL MODAL */}
-      {selectedTask && (
-        <div className="modal-overlay" onClick={() => setSelectedTask(null)}>
-          <div className="modal-box" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2 className="modal-title">{selectedTask.title}</h2>
-              <button className="icon-btn" onClick={() => setSelectedTask(null)}>
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="modal-body">
-              <p className="modal-desc">{selectedTask.desc}</p>
-
-              <div className="modal-meta-row">
-                <StatusBadge status={selectedTask.status} />
-                <PriorityBadge priority={selectedTask.priority} />
-              </div>
-
-              {selectedTask.milestones?.length > 0 && (
-  <div style={{ marginTop: 12 }}>
-    <h4 className="form-label">Milestones in this Task</h4>
-
-    {selectedTask.milestones.map((m, i) => {
-      const member = members.find(mem => mem.tm_id === m.assignedTo);
-
-      return (
-        <div key={i} className="milestone-box">
-          <div><strong>{m.title}</strong></div>
-
-          <div className="muted">📅 {m.dueDate}</div>
-
-          <div className="muted">
-            👤 {member ? member.name : "Unassigned"}
+  if (loading) {
+    return (
+      <div>
+        <Topbar title="Project Details" onMenuClick={onMenuClick} />
+        <div className="page-container">
+          <div className="loading-spinner-wrapper">
+            <div className="loading-spinner" />
           </div>
         </div>
-      );
-    })}
-  </div>
-)}
+      </div>
+    );
+  }
 
-              <div className="progress-section">
-                <div className="progress-label-row">
-                  <span className="progress-label">Progress</span>
-                  <span className="progress-pct">{selectedTask.progress}%</span>
+  if (!project) {
+    return (
+      <div>
+        <Topbar title="Project Details" onMenuClick={onMenuClick} />
+        <div className="page-container">
+          <div className="not-found-container">
+            <FolderKanban size={48} style={{ opacity: 0.3, color: 'var(--text-muted)' }} />
+            <h2>Project not found</h2>
+            <p>The project you're looking for doesn't exist or you don't have access.</p>
+            <button className="btn btn-primary" onClick={() => navigate('/lead/projects')}>
+              <ArrowLeft size={14} /> Back to Projects
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="project-detail-page">
+      <Topbar
+        title={
+          <span className="project-title-text">
+            <span className="project-title-main">{project.p_name || project.name}</span>
+            <span className="project-title-badge" style={{ 
+              background: progress >= 70 ? '#34d399' : progress >= 40 ? '#f59e0b' : '#f87171' 
+            }}>
+              {progress}% Complete
+            </span>
+          </span>
+        }
+        onMenuClick={onMenuClick}
+        actions={
+          <div className="topbar-actions">
+            <button 
+              className="btn btn-secondary btn-sm refresh-btn" 
+              onClick={handleRefresh}
+              disabled={refreshing}
+            >
+              <RefreshCw size={14} className={refreshing ? 'spin' : ''} />
+              {refreshing ? '...' : 'Refresh'}
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={() => navigate('/lead/projects')}>
+              <ArrowLeft size={14} /> Back
+            </button>
+          </div>
+        }
+      />
+
+      {/* ─── TASK DETAIL MODAL ─── */}
+      <AnimatePresence>
+        {selectedTask && (
+          <motion.div 
+            className="modal-overlay" 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setSelectedTask(null)}
+          >
+            <motion.div 
+              className="modal-box"
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              transition={{ duration: 0.2 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="modal-header">
+                <h2 className="modal-title">{selectedTask.title}</h2>
+                <button className="modal-close-btn" onClick={() => setSelectedTask(null)}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="modal-body">
+                <p className="modal-desc">{selectedTask.desc || 'No description'}</p>
+
+                <div className="modal-meta-row">
+                  <StatusBadge status={selectedTask.status} />
+                  <PriorityBadge priority={selectedTask.priority} />
                 </div>
-                <div className="progress-track">
-                  <div
-                    className="progress-fill"
-                    style={{ width: `${selectedTask.progress}%` }}
+
+                {selectedTask.milestones?.length > 0 && (
+                  <div className="modal-milestones">
+                    <h4 className="modal-subtitle">
+                      <Milestone size={14} /> Milestones
+                    </h4>
+                    {selectedTask.milestones.map((m, i) => (
+                      <div key={`milestone-${i}-${m.id || Date.now()}`} className="milestone-box">
+                        <div className="milestone-title">{m.title}</div>
+                        <div className="milestone-meta">
+                          <Calendar size={12} /> {m.dueDate}
+                          <User size={12} /> {getMemberName(m.assignedTo)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="modal-progress-section">
+                  <div className="modal-progress-header">
+                    <span className="modal-progress-label">Progress</span>
+                    <span className="modal-progress-value">{selectedTask.progress || 0}%</span>
+                  </div>
+                  <div className="modal-progress-track">
+                    <motion.div
+                      className="modal-progress-fill"
+                      initial={{ width: 0 }}
+                      animate={{ width: `${selectedTask.progress || 0}%` }}
+                      transition={{ duration: 0.5 }}
+                    />
+                  </div>
+                </div>
+
+                {/* ─── COMMENTS IN MODAL ─── */}
+                <div className="modal-comments-section">
+                  <h4 className="modal-subtitle" style={{ marginTop: 16 }}>
+                    <MessageSquare size={14} /> Comments ({sortedModalComments.length})
+                  </h4>
+
+                  <div className="modal-comment-input">
+                    <textarea
+                      className="modal-comment-textarea"
+                      value={modalCommentText}
+                      onChange={(e) => setModalCommentText(e.target.value)}
+                      placeholder={`Write a comment on "${selectedTask.title}"... (Ctrl+Enter to send)`}
+                      rows={2}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && e.ctrlKey) {
+                          e.preventDefault();
+                          addModalComment();
+                        }
+                      }}
+                    />
+                    <button 
+                      className="modal-comment-send-btn" 
+                      onClick={addModalComment}
+                      disabled={isModalCommenting || !modalCommentText.trim()}
+                    >
+                      {isModalCommenting ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
+                      {isModalCommenting ? 'Sending...' : 'Send'}
+                    </button>
+                  </div>
+
+                  <div className="modal-comment-list">
+                    {sortedModalComments.length === 0 ? (
+                      <div className="modal-comment-empty">
+                        <MessageSquare size={20} style={{ opacity: 0.3 }} />
+                        <p>No comments yet</p>
+                      </div>
+                    ) : (
+                      sortedModalComments.map((c) => {
+                        const commentKey = c.c_id || c.id || `comment-${Math.random().toString(36).substr(2, 9)}`;
+                        const isPinned = c.pin || c.pinned;
+                        return (
+                          <motion.div 
+                            key={commentKey} 
+                            className={`modal-comment-item ${isPinned ? 'pinned' : ''}`}
+                            initial={{ opacity: 0, y: 5 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.15 }}
+                          >
+                            {isPinned && (
+                              <div className="modal-comment-pin-badge">
+                                <Pin size={10} /> Pinned
+                              </div>
+                            )}
+                            <p className="modal-comment-text">{c.desc || c.content}</p>
+                            <div className="modal-comment-footer">
+                              <span className="modal-comment-meta">
+                                {c.u_name || c.user_name || 'User'} • 
+                                {c.created_at ? new Date(c.created_at).toLocaleString() : 'Just now'}
+                              </span>
+                              <div className="modal-comment-actions">
+                                <button
+                                  className={`modal-comment-action-btn ${isPinned ? 'active' : ''}`}
+                                  title={isPinned ? "Unpin" : "Pin"}
+                                  onClick={() => togglePin(c.c_id || c.id)}
+                                >
+                                  {isPinned ? <PinOff size={11} /> : <Pin size={11} />}
+                                </button>
+                                <button 
+                                  className="modal-comment-action-btn danger" 
+                                  title="Delete" 
+                                  onClick={() => deleteComment(c.c_id || c.id)}
+                                >
+                                  <Trash2 size={11} />
+                                </button>
+                              </div>
+                            </div>
+                          </motion.div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* ─── MODAL FOOTER ─── */}
+              <div className="modal-footer">
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => {
+                      setEditTask({ ...selectedTask });
+                      setSelectedTask(null);
+                    }}
+                  >
+                    <Pencil size={13} /> Edit Task
+                  </button>
+                  <button
+                    className="btn btn-danger btn-sm"
+                    onClick={() => {
+                      setShowDeleteConfirm(selectedTask.t_id || selectedTask.id);
+                      setSelectedTask(null);
+                    }}
+                  >
+                    <Trash2 size={13} /> Delete
+                  </button>
+                </div>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setSelectedTask(null)}
+                >
+                  Close
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ─── EDIT TASK MODAL ─── */}
+      <AnimatePresence>
+        {editTask && (
+          <motion.div 
+            className="modal-overlay" 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setEditTask(null)}
+          >
+            <motion.div 
+              className="modal-box"
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="modal-header">
+                <h2 className="modal-title">Edit Task</h2>
+                <button className="modal-close-btn" onClick={() => setEditTask(null)}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="modal-body edit-form">
+                <div className="form-group">
+                  <label className="form-label">Title <span className="form-required">*</span></label>
+                  <input
+                    className="form-input"
+                    value={editTask.title}
+                    onChange={(e) => setEditTask({ ...editTask, title: e.target.value })}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Description</label>
+                  <textarea
+                    className="form-input form-textarea"
+                    value={editTask.desc || ''}
+                    onChange={(e) => setEditTask({ ...editTask, desc: e.target.value })}
+                  />
+                </div>
+
+                <div className="form-row-2">
+                  <div className="form-group">
+                    <label className="form-label">Priority</label>
+                    <select
+                      className="form-input"
+                      value={editTask.priority}
+                      onChange={(e) => setEditTask({ ...editTask, priority: e.target.value })}
+                    >
+                      {PRIORITY_OPTIONS.map((p) => (
+                        <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Status</label>
+                    <select
+                      className="form-input"
+                      value={editTask.status}
+                      onChange={(e) => setEditTask({ ...editTask, status: e.target.value })}
+                    >
+                      {STATUS_OPTIONS.map((s) => (
+                        <option key={s} value={s}>{getStatusLabel(s)}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Assign To</label>
+                  <select
+                    className="form-input"
+                    value={editTask.assign_to || editTask.assignTo || ''}
+                    onChange={(e) => setEditTask({ ...editTask, assign_to: e.target.value ? parseInt(e.target.value) : null })}
+                  >
+                    <option value="">Unassigned</option>
+                    {projectMembers.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name} {projectSupervisors.some(s => s.id === m.id) ? '👑' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">
+                    Progress: <strong>{editTask.progress || 0}%</strong>
+                  </label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={editTask.progress || 0}
+                    className="range-input"
+                    onChange={(e) =>
+                      setEditTask({ ...editTask, progress: Number(e.target.value) })
+                    }
                   />
                 </div>
               </div>
-            </div>
-            {/* TEAM WORKING ON PROJECT */}
-<div className="card themed-card-inner" style={{ marginTop: 16 }}>
-  <h4 className="form-label">Team Working on Project</h4>
 
-  <div className="team-list">
-    {members.map((m) => (
-      <div key={m.tm_id} className="member-row">
-        <Avatar name={m.name} size="sm" />
-        <div>
-          <div className="member-name">{m.name}</div>
-          <div className="muted">{m.role}</div>
-        </div>
-      </div>
-    ))}
-  </div>
-</div>
-
-            <div className="modal-footer">
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={() => {
-                  setEditTask({ ...selectedTask });
-                  setSelectedTask(null);
-                }}
-              >
-                <Pencil size={13} /> Edit Task
-              </button>
-              <button
-                className="btn btn-danger btn-sm"
-                onClick={() => {
-                  setShowDeleteConfirm(selectedTask.t_id);
-                  setSelectedTask(null);
-                }}
-              >
-                <Trash2 size={13} /> Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* EDIT TASK MODAL */}
-      {editTask && (
-        <div className="modal-overlay" onClick={() => setEditTask(null)}>
-          <div className="modal-box" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2 className="modal-title">Edit Task</h2>
-              <button className="icon-btn" onClick={() => setEditTask(null)}>
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="modal-body edit-form">
-              <label className="form-label">Title</label>
-              <input
-                className="input themed-input form-input"
-                value={editTask.title}
-                onChange={(e) => setEditTask({ ...editTask, title: e.target.value })}
-              />
-
-              <label className="form-label">Description</label>
-              <textarea
-                className="input themed-input form-textarea"
-                value={editTask.desc}
-                onChange={(e) => setEditTask({ ...editTask, desc: e.target.value })}
-              />
-
-              <div className="form-row-2">
-                <div>
-                  <label className="form-label">Priority</label>
-                  <select
-                    className="input themed-input form-select"
-                    value={editTask.priority}
-                    onChange={(e) => setEditTask({ ...editTask, priority: e.target.value })}
-                  >
-                    {PRIORITY_OPTIONS.map((p) => (
-                      <option key={p} value={p}>{p}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="form-label">Status</label>
-                  <select
-                    className="input themed-input form-select"
-                    value={editTask.status}
-                    onChange={(e) => setEditTask({ ...editTask, status: e.target.value })}
-                  >
-                    {STATUS_OPTIONS.map((s) => (
-                      <option key={s} value={s}>{s}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* MILESTONES EDIT SECTION */}
-<div style={{ marginTop: 10 }}>
-  <label className="form-label">Milestones</label>
-
-  {editTask.milestones?.map((m, i) => (
-    <div
-      key={i}
-      style={{
-        padding: 10,
-        border: "1px solid var(--border-subtle)",
-        borderRadius: 10,
-        marginBottom: 10,
-        background: "var(--bg-secondary)",
-      }}
-    >
-      {/* TITLE */}
-      <input
-        className="input themed-input form-input"
-        placeholder="Milestone title"
-        value={m.title}
-        onChange={(e) => {
-          const updated = [...editTask.milestones];
-          updated[i].title = e.target.value;
-          setEditTask({ ...editTask, milestones: updated });
-        }}
-      />
-
-      {/* DATE */}
-      <input
-        type="date"
-        className="input themed-input form-input"
-        value={m.dueDate}
-        onChange={(e) => {
-          const updated = [...editTask.milestones];
-          updated[i].dueDate = e.target.value;
-          setEditTask({ ...editTask, milestones: updated });
-        }}
-      />
-
-      {/* ASSIGN MEMBER */}
-      <select
-        className="input themed-input form-select"
-        value={m.assignedTo}
-        onChange={(e) => {
-          const updated = [...editTask.milestones];
-          updated[i].assignedTo = Number(e.target.value);
-          setEditTask({ ...editTask, milestones: updated });
-        }}
-      >
-        <option value="">Assign Member</option>
-        {members.map((mem) => (
-          <option key={mem.tm_id} value={mem.tm_id}>
-            {mem.name}
-          </option>
-        ))}
-      </select>
-
-      {/* REMOVE MILESTONE */}
-      <button
-        className="btn btn-danger btn-sm"
-        style={{ marginTop: 6 }}
-        onClick={() => {
-          const updated = editTask.milestones.filter((_, index) => index !== i);
-          setEditTask({ ...editTask, milestones: updated });
-        }}
-      >
-        Remove
-      </button>
-    </div>
-  ))}
-
-  {/* ADD MILESTONE BUTTON */}
-  <button
-    className="btn btn-secondary btn-sm"
-    onClick={() =>
-      setEditTask({
-        ...editTask,
-        milestones: [
-          ...(editTask.milestones || []),
-          {
-            title: "",
-            dueDate: "",
-            assignedTo: "",
-          },
-        ],
-      })
-    }
-  >
-    + Add Milestone
-  </button>
-</div>
-              
-
-              <label className="form-label">
-                Progress: <strong>{editTask.progress}%</strong>
-              </label>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={editTask.progress}
-                className="range-input"
-                onChange={(e) =>
-                  setEditTask({ ...editTask, progress: Number(e.target.value) })
-                }
-              />
-            </div>
-
-            <div className="modal-footer">
-              <button
-                className="btn btn-primary btn-sm"
-                onClick={() => handleUpdateTask(editTask)}
-              >
-                Save Changes
-              </button>
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={() => setEditTask(null)}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ADD TASK MODAL */}
-{/* ADD TASK MODAL */}
-{showAddTask && (
-  <div className="modal-overlay" onClick={() => setShowAddTask(false)}>
-    <div className="modal-box" onClick={(e) => e.stopPropagation()}>
-
-      <div className="modal-header">
-        <h2 className="modal-title">Create New Task</h2>
-        <button className="icon-btn" onClick={() => setShowAddTask(false)}>
-          <X size={18} />
-        </button>
-      </div>
-
-      <div className="modal-body edit-form">
-
-        {/* ───── BASIC INFO ───── */}
-        <div className="form-section">
-          <h4 className="form-label">Basic Information</h4>
-
-          <input
-            className="input themed-input form-input"
-            placeholder="Task title"
-            value={newTask.title}
-            onChange={(e) =>
-              setNewTask({ ...newTask, title: e.target.value })
-            }
-          />
-
-          <textarea
-            className="input themed-input form-textarea"
-            placeholder="Task description"
-            value={newTask.desc}
-            onChange={(e) =>
-              setNewTask({ ...newTask, desc: e.target.value })
-            }
-          />
-        </div>
-
-        {/* ───── ASSIGNMENT ───── */}
-        <div className="form-section">
-          <h4 className="form-label">Assignment & Priority</h4>
-
-          <div className="form-row-2">
-
-            <div>
-              <label className="form-label">Priority</label>
-              <select
-                className="input themed-input form-select"
-                value={newTask.priority}
-                onChange={(e) =>
-                  setNewTask({ ...newTask, priority: e.target.value })
-                }
-              >
-                {PRIORITY_OPTIONS.map((p) => (
-                  <option key={p} value={p}>{p}</option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="form-label">Status</label>
-              <select
-                className="input themed-input form-select"
-                value={newTask.status}
-                onChange={(e) =>
-                  setNewTask({ ...newTask, status: e.target.value })
-                }
-              >
-                {STATUS_OPTIONS.map((s) => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-        </div>
-
-        {/* ───── TEAM ASSIGNMENT ───── */}
-        <div className="form-section">
-          <h4 className="form-label">Assign Team Member</h4>
-
-          <select
-            className="input themed-input form-select"
-            value={newTask.assignedTo || ""}
-            onChange={(e) =>
-              setNewTask({ ...newTask, assignedTo: Number(e.target.value) })
-            }
-          >
-            <option value="">Select Member</option>
-            {members.map((mem) => (
-              <option key={mem.tm_id} value={mem.tm_id}>
-                {mem.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* ───── PROGRESS ───── */}
-        <div className="form-section">
-          <h4 className="form-label">
-            Progress: <strong>{newTask.progress}%</strong>
-          </h4>
-
-          <input
-            type="range"
-            min={0}
-            max={100}
-            className="range-input"
-            value={newTask.progress}
-            onChange={(e) =>
-              setNewTask({
-                ...newTask,
-                progress: Number(e.target.value),
-              })
-            }
-          />
-        </div>
-
-        {/* ───── MILESTONES ───── */}
-        <div className="form-section">
-          <h4 className="form-label">Milestones</h4>
-
-          {newTask.milestones.map((m, i) => (
-            <div key={i} className="milestone-card">
-
-              <input
-                className="input themed-input form-input"
-                placeholder="Milestone title"
-                value={m.title}
-                onChange={(e) => {
-                  const updated = [...newTask.milestones];
-                  updated[i].title = e.target.value;
-                  setNewTask({ ...newTask, milestones: updated });
-                }}
-              />
-
-              <div className="form-row-2">
-
-                <input
-                  type="date"
-                  className="input themed-input form-input"
-                  value={m.dueDate}
-                  onChange={(e) => {
-                    const updated = [...newTask.milestones];
-                    updated[i].dueDate = e.target.value;
-                    setNewTask({ ...newTask, milestones: updated });
-                  }}
-                />
-
-                <select
-                  className="input themed-input form-select"
-                  value={m.assignedTo}
-                  onChange={(e) => {
-                    const updated = [...newTask.milestones];
-                    updated[i].assignedTo = Number(e.target.value);
-                    setNewTask({ ...newTask, milestones: updated });
-                  }}
+              <div className="modal-footer">
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={() => handleUpdateTask(editTask)}
                 >
-                  <option value="">Assign</option>
-                  {members.map((mem) => (
-                    <option key={mem.tm_id} value={mem.tm_id}>
-                      {mem.name}
-                    </option>
-                  ))}
-                </select>
+                  <CheckCircle2 size={14} /> Save Changes
+                </button>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setEditTask(null)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ─── ADD TASK MODAL ─── */}
+      <AnimatePresence>
+        {showAddTask && (
+          <motion.div 
+            className="modal-overlay" 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowAddTask(false)}
+          >
+            <motion.div 
+              className="modal-box"
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="modal-header">
+                <h2 className="modal-title">
+                  <Plus size={18} /> Create New Task
+                </h2>
+                <button className="modal-close-btn" onClick={() => setShowAddTask(false)}>
+                  <X size={18} />
+                </button>
               </div>
 
-              <button
-                className="btn btn-danger btn-sm"
-                onClick={() => {
-                  const updated = newTask.milestones.filter((_, idx) => idx !== i);
-                  setNewTask({ ...newTask, milestones: updated });
-                }}
-              >
-                Remove
-              </button>
-            </div>
-          ))}
+              <div className="modal-body edit-form">
+                <div className="form-group">
+                  <label className="form-label">Task Title <span className="form-required">*</span></label>
+                  <input
+                    className="form-input"
+                    placeholder="Enter task title"
+                    value={newTask.title}
+                    onChange={(e) => setNewTask({ ...newTask, title: e.target.value })}
+                  />
+                </div>
 
-          <button
-            className="btn btn-secondary btn-sm"
-            onClick={() =>
-              setNewTask({
-                ...newTask,
-                milestones: [
-                  ...newTask.milestones,
-                  { title: "", dueDate: "", assignedTo: "" },
-                ],
-              })
-            }
+                <div className="form-group">
+                  <label className="form-label">Description</label>
+                  <textarea
+                    className="form-input form-textarea"
+                    placeholder="Enter task description..."
+                    value={newTask.desc}
+                    onChange={(e) => setNewTask({ ...newTask, desc: e.target.value })}
+                  />
+                </div>
+
+                <div className="form-row-2">
+                  <div className="form-group">
+                    <label className="form-label">Priority</label>
+                    <select
+                      className="form-input"
+                      value={newTask.priority}
+                      onChange={(e) => setNewTask({ ...newTask, priority: e.target.value })}
+                    >
+                      {PRIORITY_OPTIONS.map((p) => (
+                        <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Status</label>
+                    <select
+                      className="form-input"
+                      value={newTask.status}
+                      onChange={(e) => setNewTask({ ...newTask, status: e.target.value })}
+                    >
+                      {STATUS_OPTIONS.map((s) => (
+                        <option key={s} value={s}>{getStatusLabel(s)}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Assign Team Member</label>
+                  <select
+                    className="form-input"
+                    value={newTask.assignedTo || ""}
+                    onChange={(e) => setNewTask({ ...newTask, assignedTo: e.target.value ? parseInt(e.target.value) : null })}
+                  >
+                    <option value="">Select Member</option>
+                    {projectMembers.map((mem) => (
+                      <option key={mem.id} value={mem.id}>
+                        {mem.name} {projectSupervisors.some(s => s.id === mem.id) ? '👑' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">
+                    Initial Progress: <strong>{newTask.progress}%</strong>
+                  </label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    className="range-input"
+                    value={newTask.progress}
+                    onChange={(e) => setNewTask({ ...newTask, progress: Number(e.target.value) })}
+                  />
+                </div>
+              </div>
+
+              <div className="modal-footer">
+                <button 
+                  className="btn btn-primary btn-sm" 
+                  onClick={handleAddTask}
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? (
+                    <><Loader2 size={14} className="spin" /> Creating...</>
+                  ) : (
+                    'Create Task'
+                  )}
+                </button>
+                <button className="btn btn-secondary btn-sm" onClick={() => setShowAddTask(false)}>
+                  Cancel
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ─── DELETE CONFIRM ─── */}
+      <AnimatePresence>
+        {showDeleteConfirm !== null && (
+          <motion.div 
+            className="modal-overlay" 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowDeleteConfirm(null)}
           >
-            + Add Milestone
-          </button>
-        </div>
+            <motion.div 
+              className="modal-box confirm-box"
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <AlertCircle size={40} style={{ color: '#f87171', marginBottom: 12 }} />
+              <h3 className="confirm-title">Delete Task?</h3>
+              <p className="confirm-desc">This action cannot be undone. The task will be permanently removed.</p>
+              <div className="modal-footer" style={{ justifyContent: 'center' }}>
+                <button className="btn btn-danger btn-sm" onClick={() => handleDeleteTask(showDeleteConfirm)}>
+                  <Trash2 size={14} /> Yes, Delete
+                </button>
+                <button className="btn btn-secondary btn-sm" onClick={() => setShowDeleteConfirm(null)}>
+                  Cancel
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-      </div>
-
-      {/* FOOTER */}
-      <div className="modal-footer">
-        <button className="btn btn-primary btn-sm" onClick={handleAddTask}>
-          Create Task
-        </button>
-
-        <button
-          className="btn btn-secondary btn-sm"
-          onClick={() => setShowAddTask(false)}
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  </div>
-)}
-      {/* DELETE CONFIRM */}
-      {showDeleteConfirm !== null && (
-        <div
-          className="modal-overlay"
-          onClick={() => setShowDeleteConfirm(null)}
-        >
-          <div
-            className="modal-box confirm-box"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="confirm-title">Delete Task?</h3>
-            <p className="muted" style={{ marginBottom: 20 }}>
-              This action cannot be undone.
-            </p>
-            <div className="modal-footer">
-              <button
-                className="btn btn-danger btn-sm"
-                onClick={() => handleDeleteTask(showDeleteConfirm)}
-              >
-                Yes, Delete
-              </button>
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={() => setShowDeleteConfirm(null)}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* HEADER */}
-      <div className="project-header">
-        <div className="header-top-row">
-          <button className="btn btn-ghost btn-sm" onClick={() => navigate(-1)}>
-            <ArrowLeft size={14} />
-            Back
-          </button>
-
-          <div className="project-progress">
-            <div className="progress-value">{progress}%</div>
-            <small className="muted">Progress</small>
-          </div>
-        </div>
-
-        <div className="project-title-block">
-          <h1 className="project-title">{project.p_name}</h1>
-          <p className="project-desc">{project.desc}</p>
-        </div>
-      </div>
-
-      {/* BODY */}
+      {/* ─── PROJECT BODY ─── */}
       <div className="project-body">
         {/* LEFT PANEL */}
-        <div className="left-panel">
-          {/* TASKS */}
-          <div className="card themed-card">
-           <div className="section-title-row">
-  <h3 className="section-title" style={{ marginBottom: 0 }}>
-    <BarChart2 size={16} /> Tasks
-  </h3>
-
-  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-    <span className="task-count-badge">{tasks.length}</span>
-
-    <button
-      className="btn btn-primary btn-sm"
-      onClick={() => setShowAddTask(true)}
-    >
-      + Add Task
-    </button>
-  </div>
-</div>
-
-            <div className="task-scroll-container">
-              <div className="task-list">
-                {tasks.map((t) => (
-                  <div
-                    key={t.t_id}
-                    className="task-card themed-card-inner"
-                    onClick={() => setSelectedTask(t)}
-                  >
-                    <div className="task-top">
-                      <strong className="task-title">{t.title}</strong>
-                      <div className="task-badges">
-                        <PriorityBadge priority={t.priority} />
-                      </div>
-                    </div>
-
-                    <p className="muted task-desc">{t.desc}</p>
-
-                    {t.milestones?.length > 0 && (
-  <div style={{ marginBottom: 8 }}>
-    {t.milestones.map((m, i) => {
-      const member = members.find(mem => mem.tm_id === m.assignedTo);
-
-      return (
-        <div key={i} className="milestone-tag small-tag">
-          <Milestone size={11} />
-          <div>
-            <strong>{m.title}</strong>
-            <div className="muted">
-              {m.dueDate} • {member ? member.name : "Unassigned"}
-            </div>
-          </div>
-        </div>
-      );
-    })}
-  </div>
-)}
-
-                    <div className="task-bottom">
-                      <StatusBadge status={t.status} />
-                      <div className="task-progress-mini">
-                        <div className="mini-track">
-                          <div
-                            className="mini-fill"
-                            style={{ width: `${t.progress}%` }}
-                          />
-                        </div>
-                        <span className="mini-pct">{t.progress}%</span>
-                      </div>
-                    </div>
-
-                    <div
-                      className="task-actions"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <button
-                        className="icon-btn"
-                        title="Edit"
-                        onClick={() => setEditTask({ ...t })}
-                      >
-                        <Pencil size={13} />
-                      </button>
-                      <button
-                        className="icon-btn danger"
-                        title="Delete"
-                        onClick={() => setShowDeleteConfirm(t.t_id)}
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    </div>
+        <div className="project-left">
+          {/* Project Overview */}
+          <div className="project-overview-card">
+            <div className="overview-header">
+              <div className="overview-info">
+                <h1 className="overview-title">{project.p_name || project.name}</h1>
+                <p className="overview-desc">{project.desc || project.description}</p>
+              </div>
+              <div className="overview-progress-ring">
+                <div className="ring-container">
+                  <svg className="ring-svg" viewBox="0 0 120 120">
+                    <circle className="ring-bg" cx="60" cy="60" r="50" />
+                    <circle 
+                      className="ring-fill" 
+                      cx="60" 
+                      cy="60" 
+                      r="50" 
+                      strokeDasharray={Math.PI * 2 * 50}
+                      strokeDashoffset={Math.PI * 2 * 50 * (1 - progress / 100)}
+                      style={{ stroke: progress >= 70 ? '#34d399' : progress >= 40 ? '#f59e0b' : '#f87171' }}
+                    />
+                  </svg>
+                  <div className="ring-center">
+                    <span className="ring-value">{progress}%</span>
+                    <span className="ring-label">Complete</span>
                   </div>
-                ))}
+                </div>
               </div>
             </div>
           </div>
 
-          {/* TEAM MEMBERS */}
-          <div className="card themed-card">
-            <h3 className="section-title">
-              <Users size={16} />
-              Team Members
-            </h3>
+          {/* Tasks Section */}
+          <div className="tasks-card">
+            <div className="tasks-header">
+              <h3 className="tasks-title">
+                <BarChart2 size={16} />
+                Tasks
+                <span className="tasks-count">{tasks.length}</span>
+              </h3>
+              <button className="btn btn-primary btn-sm" onClick={() => setShowAddTask(true)}>
+                <Plus size={14} /> Add Task
+              </button>
+            </div>
 
-            <div className="team-list">
-              {members.map((m) => (
-                <div key={m.tm_id} className="member-row">
-                  <Avatar name={m.name} size="sm" />
-                  <div>
-                    <div className="member-name">{m.name}</div>
-                    <div className="muted">{m.role}</div>
+            <div className="tasks-scroll">
+              <div className="tasks-list">
+                {tasks.length === 0 ? (
+                  <div className="tasks-empty">
+                    <FileText size={32} style={{ opacity: 0.3 }} />
+                    <p>No tasks yet</p>
+                    <span>Create your first task to get started</span>
                   </div>
-                </div>
-              ))}
+                ) : (
+                  tasks.map((t) => {
+                    const taskKey = t.t_id || t.id || `task-${Math.random().toString(36).substr(2, 9)}`;
+                    const taskStatusColor = getStatusColor(t.status);
+                    const taskCommentCount = getTaskComments(t.t_id || t.id).length;
+                    
+                    return (
+                      <motion.div
+                        key={taskKey}
+                        className="task-item"
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.2 }}
+                        onClick={() => {
+                          setSelectedTask(t);
+                        }}
+                      >
+                        <div className="task-item-header">
+                          <div className="task-item-left">
+                            <div className="task-status-dot" style={{ background: taskStatusColor }} />
+                            <span className="task-item-title">{t.title}</span>
+                          </div>
+                          <div className="task-item-badges">
+                            <PriorityBadge priority={t.priority} />
+                            {taskCommentCount > 0 && (
+                              <span className="task-comment-badge">
+                                <MessageSquare size={10} /> {taskCommentCount}
+                              </span>
+                            )}
+                            <span className="task-item-progress-badge" style={{
+                              background: t.progress >= 70 ? 'rgba(52, 211, 153, 0.15)' : 
+                                         t.progress >= 40 ? 'rgba(245, 158, 11, 0.15)' : 
+                                         'rgba(248, 113, 113, 0.15)',
+                              color: t.progress >= 70 ? '#34d399' : 
+                                     t.progress >= 40 ? '#f59e0b' : '#f87171'
+                            }}>
+                              {t.progress || 0}%
+                            </span>
+                          </div>
+                        </div>
+
+                        {t.desc && (
+                          <p className="task-item-desc">{t.desc}</p>
+                        )}
+
+                        <div className="task-item-footer">
+                          <StatusBadge status={t.status} />
+                          <div className="task-item-assignee">
+                            <User size={12} />
+                            {getMemberName(t.assign_to)}
+                          </div>
+                          <div className="task-item-actions">
+                            <button 
+                              className="task-action-btn"
+                              title="Edit Task"
+                              onClick={(e) => { e.stopPropagation(); setEditTask({ ...t }); }}
+                            >
+                              <Pencil size={12} />
+                            </button>
+                            <button 
+                              className="task-action-btn danger"
+                              title="Delete Task"
+                              onClick={(e) => { e.stopPropagation(); setShowDeleteConfirm(t.t_id || t.id); }}
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        </div>
+                      </motion.div>
+                    );
+                  })
+                )}
+              </div>
             </div>
           </div>
         </div>
 
         {/* RIGHT PANEL */}
-        <div className="right-panel">
-          {/* OVERVIEW */}
-          <div className="card themed-card">
-            <h3 className="section-title">Overview</h3>
+        <div className="project-right">
+          {/* Overview Stats */}
+          <div className="info-card">
+            <h4 className="info-card-title">
+              <Sparkles size={14} />
+              Overview
+            </h4>
 
-            <div className="stats-row">
-              <div className="stat-item">
-                <CheckCircle2 size={16} />
-                <p>
-                  {done}/{tasks.length} Done
-                </p>
+            <div className="info-stats">
+              <div className="info-stat">
+                <div className="info-stat-icon" style={{ background: 'rgba(129, 140, 248, 0.12)', color: '#818cf8' }}>
+                  <FolderKanban size={16} />
+                </div>
+                <div>
+                  <span className="info-stat-value">{tasks.length}</span>
+                  <span className="info-stat-label">Total Tasks</span>
+                </div>
               </div>
-
-              <div className="stat-item">
-                <Clock3 size={16} />
-                <p>Active</p>
+              <div className="info-stat">
+                <div className="info-stat-icon" style={{ background: 'rgba(52, 211, 153, 0.12)', color: '#34d399' }}>
+                  <CheckCircle2 size={16} />
+                </div>
+                <div>
+                  <span className="info-stat-value">{done}</span>
+                  <span className="info-stat-label">Completed</span>
+                </div>
+              </div>
+              <div className="info-stat">
+                <div className="info-stat-icon" style={{ background: 'rgba(245, 158, 11, 0.12)', color: '#f59e0b' }}>
+                  <Clock size={16} />
+                </div>
+                <div>
+                  <span className="info-stat-value">{tasks.length - done}</span>
+                  <span className="info-stat-label">In Progress</span>
+                </div>
               </div>
             </div>
           </div>
 
-          {/* COMMENTS */}
-          <div className="card themed-card">
-            <h3 className="section-title">
-              <MessageSquare size={16} />
+          {/* ─── TEAM MEMBERS WITH SUPERVISORS ─── */}
+          <div className="info-card">
+            <h4 className="info-card-title">
+              <Users size={14} />
+              Team Members
+              <span className="info-badge">{projectMembers.length}</span>
+            </h4>
+
+            <div className="team-list">
+              {projectMembers.length === 0 ? (
+                <div className="team-empty">No team members assigned</div>
+              ) : (
+                <>
+                  {/* Show supervisors first */}
+                  {projectSupervisors.length > 0 && (
+                    <>
+                      <div style={{ 
+                        fontSize: 11, 
+                        fontWeight: 700, 
+                        color: 'var(--text-muted)',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.5px',
+                        marginTop: 4,
+                        marginBottom: 4
+                      }}>
+                        <Crown size={12} style={{ display: 'inline', marginRight: 4 }} />
+                        Supervisors ({projectSupervisors.length})
+                      </div>
+                      {projectSupervisors.map((m) => (
+                        <div key={m.id} className="team-member-item supervisor-item">
+                          <Avatar name={m.name} size="sm" />
+                          <div className="team-member-info">
+                            <span className="team-member-name">
+                              {m.name}
+                              <span className="supervisor-badge" title="Supervisor">
+                                <Crown size={12} style={{ color: '#f59e0b', marginLeft: 4 }} />
+                              </span>
+                            </span>
+                            <span className="team-member-role">Supervisor</span>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                  
+                  {/* Show regular members */}
+                  {projectMembers.filter(m => !projectSupervisors.some(s => s.id === m.id)).length > 0 && (
+                    <>
+                      <div style={{ 
+                        fontSize: 11, 
+                        fontWeight: 700, 
+                        color: 'var(--text-muted)',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.5px',
+                        marginTop: 8,
+                        marginBottom: 4
+                      }}>
+                        <Users size={12} style={{ display: 'inline', marginRight: 4 }} />
+                        Members ({projectMembers.filter(m => !projectSupervisors.some(s => s.id === m.id)).length})
+                      </div>
+                      {projectMembers
+                        .filter(m => !projectSupervisors.some(s => s.id === m.id))
+                        .map((m) => (
+                          <div key={m.id} className="team-member-item">
+                            <Avatar name={m.name} size="sm" />
+                            <div className="team-member-info">
+                              <span className="team-member-name">{m.name}</span>
+                              <span className="team-member-role">{m.role || 'Member'}</span>
+                            </div>
+                          </div>
+                        ))
+                      }
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* ─── COMMENTS SECTION ─── */}
+          <div className="info-card comments-card">
+            <h4 className="info-card-title">
+              <MessageSquare size={14} />
               Comments
-            </h3>
+              <span className="info-badge">{comments.length}</span>
+            </h4>
 
-            <textarea
-              className="input themed-input"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="Write a comment..."
-            />
-
-            <button
-              className="btn btn-primary btn-sm post-btn"
-              onClick={addComment}
-            >
-              Post Comment
-            </button>
+            <div className="comment-input-area">
+              <textarea
+                className="comment-textarea"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder={selectedTask ? `Write a comment on "${selectedTask.title}"... (Ctrl+Enter to send)` : "Select a task to add a comment"}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && e.ctrlKey) {
+                    e.preventDefault();
+                    if (selectedTask) {
+                      addComment();
+                    } else {
+                      toast.info("Please select a task first");
+                    }
+                  }
+                }}
+                disabled={!selectedTask}
+                style={{ opacity: selectedTask ? 1 : 0.6 }}
+              />
+              <button 
+                className="comment-send-btn" 
+                onClick={addComment}
+                disabled={isCommenting || !text.trim() || !selectedTask}
+              >
+                {isCommenting ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
+                {isCommenting ? 'Sending...' : 'Send'}
+              </button>
+              {!selectedTask && (
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', marginTop: 4 }}>
+                  💡 Select a task to add a comment
+                </span>
+              )}
+            </div>
 
             <div className="comment-list">
-              {sortedComments.slice(-10).map((c) => (
-                <div
-                  key={c.c_id}
-                  className={`comment-item${c.pinned ? " pinned-comment" : ""}`}
-                >
-                  {c.pinned && (
-                    <div className="pin-indicator">
-                      <Pin size={10} /> Pinned
-                    </div>
-                  )}
-                  <p>{c.desc}</p>
-                  <div className="comment-footer">
-                    <small className="muted">{c.created_at}</small>
-                    <div className="comment-actions">
-                      <button
-                        className={`icon-btn${c.pinned ? " pinned" : ""}`}
-                        title={c.pinned ? "Unpin" : "Pin"}
-                        onClick={() => togglePin(c.c_id)}
-                      >
-                        {c.pinned ? <PinOff size={12} /> : <Pin size={12} />}
-                      </button>
-                      <button
-                        className="icon-btn danger"
-                        title="Delete"
-                        onClick={() => deleteComment(c.c_id)}
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    </div>
-                  </div>
+              {comments.length === 0 ? (
+                <div className="comment-empty">
+                  <MessageSquare size={24} style={{ opacity: 0.3 }} />
+                  <p>No comments yet</p>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    Comments will appear here
+                  </span>
                 </div>
-              ))}
+              ) : (
+                [...comments]
+                  .sort((a, b) => (b.pin || b.pinned) - (a.pin || a.pinned))
+                  .slice(0, 15)
+                  .map((c) => {
+                    const commentKey = c.c_id || c.id || `comment-${Math.random().toString(36).substr(2, 9)}`;
+                    const isPinned = c.pin || c.pinned;
+                    const task = tasks.find(t => Number(t.t_id || t.id) === Number(c.taskId || c.t));
+                    
+                    return (
+                      <motion.div 
+                        key={commentKey} 
+                        className={`comment-item ${isPinned ? 'pinned' : ''}`}
+                        initial={{ opacity: 0, y: 5 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.15 }}
+                      >
+                        {isPinned && (
+                          <div className="comment-pin-badge">
+                            <Pin size={10} /> Pinned
+                          </div>
+                        )}
+                        <p className="comment-text">{c.desc || c.content}</p>
+                        <div className="comment-meta-row">
+                          <span className="comment-meta">
+                            {c.u_name || c.user_name || 'User'} • 
+                            {c.created_at ? new Date(c.created_at).toLocaleString() : 'Just now'}
+                          </span>
+                          {task && (
+                            <span className="comment-task-tag">
+                              📋 {task.title}
+                            </span>
+                          )}
+                        </div>
+                        <div className="comment-footer">
+                          <div className="comment-actions">
+                            <button
+                              className={`comment-action-btn ${isPinned ? 'active' : ''}`}
+                              title={isPinned ? "Unpin" : "Pin"}
+                              onClick={() => togglePin(c.c_id || c.id)}
+                            >
+                              {isPinned ? <PinOff size={11} /> : <Pin size={11} />}
+                            </button>
+                            <button 
+                              className="comment-action-btn danger" 
+                              title="Delete" 
+                              onClick={() => deleteComment(c.c_id || c.id)}
+                            >
+                              <Trash2 size={11} />
+                            </button>
+                          </div>
+                        </div>
+                      </motion.div>
+                    );
+                  })
+              )}
             </div>
           </div>
         </div>
       </div>
 
       <style>{`
-        /* ── BASE ── */
-        .project-page {
-          min-height: 100vh;
-          background: var(--bg-primary);
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+        .spin { animation: spin 1s linear infinite; }
+
+        .loading-spinner-wrapper {
           display: flex;
-          flex-direction: column;
+          justify-content: center;
+          align-items: center;
+          height: 400px;
         }
 
-        /* ── HEADER ── */
-        .project-header {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-          padding: 20px 24px;
-          border-bottom: 1px solid var(--border-subtle);
-          background: var(--bg-secondary);
+        .loading-spinner {
+          width: 40px;
+          height: 40px;
+          border: 3px solid var(--border-subtle);
+          border-top-color: var(--accent-primary);
+          border-radius: 50%;
+          animation: spin 0.8s linear infinite;
         }
 
-        .header-top-row {
+        .not-found-container {
+          text-align: center;
+          padding: 60px 20px;
+          color: var(--text-muted);
+        }
+
+        .not-found-container h2 {
+          font-size: 24px;
+          font-weight: 700;
+          color: var(--text-primary);
+          margin: 16px 0 8px;
+        }
+
+        .not-found-container p {
+          margin-bottom: 20px;
+        }
+
+        .project-title-text {
           display: flex;
           align-items: center;
-          justify-content: space-between;
           gap: 12px;
         }
 
-        .project-title-block { flex: 1; }
-
-        .project-title {
-          font-size: 22px;
-          font-weight: 800;
-          color: var(--text-primary);
-          margin-bottom: 4px;
-        }
-
-        .project-desc {
-          font-size: 13px;
-          color: var(--text-secondary);
-          line-height: 1.6;
-        }
-
-        .project-progress {
-          min-width: 100px;
-          text-align: center;
-          padding: 10px 16px;
-          border: 1px solid var(--border-subtle);
-          border-radius: 14px;
-          background: var(--bg-card);
+        .project-title-main {
+          max-width: 300px;
           white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
 
-        .progress-value {
-          font-size: 22px;
-          font-weight: 800;
-          color: var(--accent-primary);
+        .project-title-badge {
+          font-size: 10px;
+          font-weight: 700;
+          padding: 3px 10px;
+          border-radius: 20px;
+          color: #fff;
+          flex-shrink: 0;
         }
 
-        /* ── BODY GRID ── */
+        .topbar-actions {
+          display: flex;
+          gap: 8px;
+        }
+
+        .refresh-btn {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
+        .project-detail-page {
+          min-height: 100vh;
+          background: var(--bg-primary);
+        }
+
         .project-body {
           display: grid;
-          grid-template-columns: 1.6fr 0.8fr;
-          gap: 18px;
-          padding: 20px;
-          flex: 1;
-          align-items: start;
+          grid-template-columns: 1fr 340px;
+          gap: 20px;
+          padding: 20px 24px;
+          max-width: 1440px;
+          margin: 0 auto;
         }
 
-        .left-panel,
-        .right-panel {
+        .project-left {
           display: flex;
           flex-direction: column;
           gap: 16px;
         }
 
-        /* ── CARD ── */
-        .card {
+        .project-right {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }
+
+        .supervisor-item {
+          background: rgba(245, 158, 11, 0.05);
+          border: 1px solid rgba(245, 158, 11, 0.15);
+          border-radius: 8px;
+          padding: 6px 10px;
+        }
+
+        .supervisor-item:hover {
+          background: rgba(245, 158, 11, 0.1);
+        }
+
+        .supervisor-badge {
+          display: inline-flex;
+          align-items: center;
+          margin-left: 4px;
+        }
+
+        .comment-meta-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          flex-wrap: wrap;
+          margin-top: 4px;
+        }
+
+        .comment-task-tag {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          padding: 1px 8px;
+          border-radius: 12px;
+          font-size: 10px;
+          color: var(--text-muted);
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-subtle);
+          max-width: 140px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          flex-shrink: 0;
+        }
+
+        .comments-card .comment-input-area {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          margin-bottom: 12px;
+        }
+
+        .task-comment-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 3px;
+          font-size: 10px;
+          font-weight: 600;
+          color: var(--text-muted);
+          background: var(--bg-secondary);
+          padding: 1px 8px;
+          border-radius: 12px;
+          border: 1px solid var(--border-subtle);
+        }
+
+        .modal-comments-section {
+          margin-top: 12px;
+          border-top: 1px solid var(--border-subtle);
+          padding-top: 12px;
+        }
+
+        .modal-comment-input {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          margin-bottom: 10px;
+        }
+
+        .modal-comment-textarea {
+          padding: 8px 12px;
           border: 1px solid var(--border-default);
-          border-radius: 16px;
-          padding: 18px;
+          border-radius: 8px;
+          background: var(--bg-secondary);
+          color: var(--text-primary);
+          font-size: 13px;
+          resize: vertical;
+          min-height: 50px;
+          font-family: inherit;
+          transition: border-color 0.2s;
+        }
+
+        .modal-comment-textarea:focus {
+          outline: none;
+          border-color: var(--accent-primary);
           background: var(--bg-card);
         }
 
-        .section-title {
+        .modal-comment-textarea::placeholder {
+          color: var(--text-muted);
+        }
+
+        .modal-comment-send-btn {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+          padding: 5px 14px;
+          border: none;
+          border-radius: 6px;
+          background: var(--accent-primary);
+          color: #fff;
+          font-size: 12px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.15s;
+          align-self: flex-end;
+        }
+
+        .modal-comment-send-btn:hover:not(:disabled) {
+          opacity: 0.85;
+        }
+
+        .modal-comment-send-btn:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .modal-comment-list {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          max-height: 200px;
+          overflow-y: auto;
+          scrollbar-width: thin;
+          scrollbar-color: var(--border-default) transparent;
+        }
+
+        .modal-comment-list::-webkit-scrollbar { width: 3px; }
+        .modal-comment-list::-webkit-scrollbar-thumb {
+          background: var(--border-default);
+          border-radius: 10px;
+        }
+
+        .modal-comment-item {
+          padding: 8px 10px;
+          border: 1px solid var(--border-subtle);
+          border-radius: 6px;
+          background: var(--bg-secondary);
+          transition: all 0.15s;
+        }
+
+        .modal-comment-item.pinned {
+          border-color: var(--accent-primary);
+          background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-secondary));
+        }
+
+        .modal-comment-pin-badge {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          font-size: 9px;
+          font-weight: 700;
+          color: var(--accent-primary);
+          text-transform: uppercase;
+          letter-spacing: 0.4px;
+          margin-bottom: 3px;
+        }
+
+        .modal-comment-text {
+          font-size: 12px;
+          color: var(--text-secondary);
+          line-height: 1.4;
+          margin: 0;
+          white-space: pre-wrap;
+        }
+
+        .modal-comment-footer {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-top: 4px;
+        }
+
+        .modal-comment-meta {
+          font-size: 9px;
+          color: var(--text-muted);
+        }
+
+        .modal-comment-actions {
+          display: flex;
+          gap: 2px;
+        }
+
+        .modal-comment-action-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 2px 4px;
+          border: 1px solid var(--border-subtle);
+          border-radius: 4px;
+          background: var(--bg-card);
+          color: var(--text-secondary);
+          cursor: pointer;
+          transition: all 0.14s;
+        }
+
+        .modal-comment-action-btn:hover {
+          background: var(--bg-primary);
+          color: var(--accent-primary);
+          border-color: var(--accent-primary);
+        }
+
+        .modal-comment-action-btn.active {
+          color: var(--accent-primary);
+          border-color: var(--accent-primary);
+        }
+
+        .modal-comment-action-btn.danger:hover {
+          color: #f87171;
+          border-color: #f87171;
+        }
+
+        .modal-comment-empty {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          padding: 12px 0;
+          color: var(--text-muted);
+          text-align: center;
+        }
+
+        .modal-comment-empty p {
+          font-size: 12px;
+          margin: 2px 0 0;
+        }
+
+        .project-overview-card {
+          background: var(--bg-card);
+          border: 1px solid var(--border-subtle);
+          border-radius: 14px;
+          padding: 20px 24px;
+        }
+
+        .overview-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 20px;
+        }
+
+        .overview-info {
+          flex: 1;
+          min-width: 0;
+        }
+
+        .overview-title {
+          font-size: 20px;
+          font-weight: 800;
+          color: var(--text-primary);
+          margin: 0 0 4px;
+        }
+
+        .overview-desc {
+          font-size: 13px;
+          color: var(--text-secondary);
+          line-height: 1.6;
+          margin: 0;
+        }
+
+        .overview-progress-ring {
+          flex-shrink: 0;
+        }
+
+        .ring-container {
+          position: relative;
+          width: 80px;
+          height: 80px;
+        }
+
+        .ring-svg {
+          transform: rotate(-90deg);
+          width: 100%;
+          height: 100%;
+        }
+
+        .ring-bg {
+          fill: none;
+          stroke: var(--border-subtle);
+          stroke-width: 6;
+        }
+
+        .ring-fill {
+          fill: none;
+          stroke-width: 6;
+          stroke-linecap: round;
+          transition: stroke-dashoffset 0.8s ease;
+        }
+
+        .ring-center {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .ring-value {
+          font-size: 18px;
+          font-weight: 800;
+          color: var(--text-primary);
+          line-height: 1;
+        }
+
+        .ring-label {
+          font-size: 8px;
+          font-weight: 600;
+          color: var(--text-muted);
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+
+        .tasks-card {
+          background: var(--bg-card);
+          border: 1px solid var(--border-subtle);
+          border-radius: 14px;
+          padding: 18px 20px;
+        }
+
+        .tasks-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 14px;
+        }
+
+        .tasks-title {
           display: flex;
           align-items: center;
           gap: 8px;
           font-size: 15px;
           font-weight: 700;
-          margin-bottom: 14px;
           color: var(--text-primary);
+          margin: 0;
         }
 
-        .section-title-row {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          margin-bottom: 14px;
-        }
-
-        .task-count-badge {
+        .tasks-count {
           font-size: 11px;
-          font-weight: 700;
-          background: var(--accent-primary);
-          color: #fff;
+          font-weight: 600;
+          color: var(--text-muted);
+          background: var(--bg-secondary);
+          padding: 1px 10px;
           border-radius: 20px;
-          padding: 2px 10px;
-          opacity: 0.85;
         }
 
-        /* ── TASKS SCROLL ── */
-        .task-scroll-container {
+        .tasks-scroll {
           max-height: 480px;
           overflow-y: auto;
           padding-right: 4px;
@@ -1006,169 +1921,438 @@ const [newTask, setNewTask] = useState({
           scrollbar-color: var(--border-default) transparent;
         }
 
-        .task-scroll-container::-webkit-scrollbar {
-          width: 5px;
-        }
-
-        .task-scroll-container::-webkit-scrollbar-thumb {
+        .tasks-scroll::-webkit-scrollbar { width: 4px; }
+        .tasks-scroll::-webkit-scrollbar-thumb {
           background: var(--border-default);
           border-radius: 10px;
         }
 
-        .task-list {
+        .tasks-list {
           display: flex;
           flex-direction: column;
-          gap: 12px;
+          gap: 8px;
         }
 
-        .task-card {
-          padding: 14px;
-          border: 1px solid var(--border-subtle);
-          border-radius: 12px;
+        .tasks-empty {
+          text-align: center;
+          padding: 30px 0;
+          color: var(--text-muted);
+        }
+
+        .tasks-empty p {
+          font-size: 14px;
+          font-weight: 500;
+          margin: 8px 0 4px;
+        }
+
+        .tasks-empty span {
+          font-size: 12px;
+        }
+
+        .task-item {
+          padding: 12px 14px;
           background: var(--bg-secondary);
+          border: 1px solid var(--border-subtle);
+          border-radius: 10px;
           cursor: pointer;
-          transition: box-shadow 0.18s, border-color 0.18s;
-          position: relative;
+          transition: all 0.15s;
         }
 
-        .task-card:hover {
+        .task-item:hover {
           border-color: var(--accent-primary);
-          box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+          background: var(--bg-card);
         }
 
-        .task-top {
+        .task-item-header {
           display: flex;
           justify-content: space-between;
-          align-items: flex-start;
+          align-items: center;
           gap: 10px;
-          margin-bottom: 6px;
         }
 
-        .task-title {
-          font-size: 14px;
+        .task-item-left {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex: 1;
+          min-width: 0;
+        }
+
+        .task-status-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          flex-shrink: 0;
+        }
+
+        .task-item-title {
+          font-size: 13px;
           font-weight: 600;
           color: var(--text-primary);
-          flex: 1;
-        }
-
-        .task-desc {
-          font-size: 12px;
-          line-height: 1.5;
-          margin-bottom: 8px;
-          display: -webkit-box;
-          -webkit-line-clamp: 2;
-          -webkit-box-orient: vertical;
+          white-space: nowrap;
           overflow: hidden;
+          text-overflow: ellipsis;
         }
 
-        .task-badges {
+        .task-item-badges {
           display: flex;
+          align-items: center;
           gap: 6px;
           flex-shrink: 0;
         }
 
-        .task-bottom {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-          margin-top: 10px;
+        .task-item-progress-badge {
+          font-size: 10px;
+          font-weight: 700;
+          padding: 1px 8px;
+          border-radius: 12px;
         }
 
-        .task-progress-mini {
-          display: flex;
-          align-items: center;
-          gap: 7px;
-        }
-
-        .mini-track {
-          width: 80px;
-          height: 6px;
-          background: var(--border-subtle);
-          border-radius: 10px;
+        .task-item-desc {
+          font-size: 12px;
+          color: var(--text-secondary);
+          margin: 6px 0 8px;
+          display: -webkit-box;
+          -webkit-line-clamp: 1;
+          -webkit-box-orient: vertical;
           overflow: hidden;
         }
 
-        .mini-fill {
-          height: 100%;
-          background: var(--accent-primary);
-          border-radius: 10px;
-          transition: width 0.3s ease;
-        }
-
-        .mini-pct {
-          font-size: 11px;
-          font-weight: 700;
-          color: var(--text-secondary);
-          white-space: nowrap;
-        }
-
-        .task-actions {
+        .task-item-footer {
           display: flex;
-          gap: 6px;
-          margin-top: 10px;
-          padding-top: 8px;
-          border-top: 1px solid var(--border-subtle);
-        }
-
-        /* ── MILESTONE TAG ── */
-        .milestone-tag {
-          display: inline-flex;
           align-items: center;
-          gap: 5px;
-          font-size: 12px;
-          font-weight: 600;
-          color: var(--accent-primary);
-          background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
-          border-radius: 8px;
-          padding: 3px 9px;
-          margin-bottom: 8px;
+          gap: 10px;
+          flex-wrap: wrap;
         }
 
-        .small-tag {
+        .task-item-assignee {
+          display: flex;
+          align-items: center;
+          gap: 4px;
           font-size: 11px;
-          padding: 2px 7px;
-          margin-bottom: 6px;
+          color: var(--text-muted);
         }
 
-        /* ── ICON BTNS ── */
-        .icon-btn {
+        .task-item-actions {
+          display: flex;
+          gap: 4px;
+          margin-left: auto;
+        }
+
+        .task-action-btn {
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          padding: 5px 7px;
-          border-radius: 7px;
+          padding: 3px 5px;
+          border-radius: 4px;
           border: 1px solid var(--border-subtle);
           background: var(--bg-card);
           color: var(--text-secondary);
           cursor: pointer;
-          transition: all 0.15s;
-          font-size: 12px;
-          gap: 4px;
+          transition: all 0.14s;
         }
 
-        .icon-btn:hover {
+        .task-action-btn:hover {
           background: var(--bg-primary);
           color: var(--accent-primary);
           border-color: var(--accent-primary);
         }
 
-        .icon-btn.danger:hover {
-          color: #ef4444;
-          border-color: #ef4444;
-          background: rgba(239,68,68,0.06);
+        .task-action-btn.danger:hover {
+          color: #f87171;
+          border-color: #f87171;
         }
 
-        .icon-btn.pinned {
+        .info-card {
+          background: var(--bg-card);
+          border: 1px solid var(--border-subtle);
+          border-radius: 14px;
+          padding: 16px 18px;
+        }
+
+        .info-card-title {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 13px;
+          font-weight: 700;
+          color: var(--text-primary);
+          margin: 0 0 12px;
+        }
+
+        .info-badge {
+          margin-left: auto;
+          font-size: 11px;
+          font-weight: 600;
+          color: var(--text-muted);
+          background: var(--bg-secondary);
+          padding: 1px 10px;
+          border-radius: 20px;
+        }
+
+        .info-stats {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        .info-stat {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 8px 10px;
+          background: var(--bg-secondary);
+          border-radius: 8px;
+        }
+
+        .info-stat-icon {
+          width: 32px;
+          height: 32px;
+          border-radius: 8px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+
+        .info-stat-value {
+          display: block;
+          font-size: 15px;
+          font-weight: 700;
+          color: var(--text-primary);
+        }
+
+        .info-stat-label {
+          font-size: 11px;
+          color: var(--text-muted);
+        }
+
+        .team-list {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+
+        .team-empty {
+          text-align: center;
+          padding: 12px 0;
+          color: var(--text-muted);
+          font-size: 13px;
+        }
+
+        .team-member-item {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 6px 8px;
+          border-radius: 8px;
+          transition: background 0.15s;
+        }
+
+        .team-member-item:hover {
+          background: var(--bg-secondary);
+        }
+
+        .team-member-info {
+          flex: 1;
+          min-width: 0;
+        }
+
+        .team-member-name {
+          display: block;
+          font-size: 13px;
+          font-weight: 500;
+          color: var(--text-primary);
+        }
+
+        .team-member-role {
+          font-size: 11px;
+          color: var(--text-muted);
+        }
+
+        .comments-card {
+          flex: 1;
+        }
+
+        .comment-input-area {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          margin-bottom: 12px;
+        }
+
+        .comment-textarea {
+          padding: 10px 12px;
+          border: 1px solid var(--border-default);
+          border-radius: 8px;
+          background: var(--bg-secondary);
+          color: var(--text-primary);
+          font-size: 13px;
+          resize: vertical;
+          min-height: 60px;
+          font-family: inherit;
+          transition: border-color 0.2s;
+        }
+
+        .comment-textarea:focus {
+          outline: none;
+          border-color: var(--accent-primary);
+          background: var(--bg-card);
+        }
+
+        .comment-textarea::placeholder {
+          color: var(--text-muted);
+        }
+
+        .comment-send-btn {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+          padding: 6px 16px;
+          border: none;
+          border-radius: 8px;
+          background: var(--accent-primary);
+          color: #fff;
+          font-size: 12px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.15s;
+          align-self: flex-end;
+        }
+
+        .comment-send-btn:hover:not(:disabled) {
+          opacity: 0.85;
+        }
+
+        .comment-send-btn:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .comment-list {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          max-height: 300px;
+          overflow-y: auto;
+          scrollbar-width: thin;
+          scrollbar-color: var(--border-default) transparent;
+        }
+
+        .comment-list::-webkit-scrollbar { width: 3px; }
+        .comment-list::-webkit-scrollbar-thumb {
+          background: var(--border-default);
+          border-radius: 10px;
+        }
+
+        .comment-placeholder {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          padding: 24px 0;
+          color: var(--text-muted);
+        }
+
+        .comment-empty {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          padding: 16px 0;
+          color: var(--text-muted);
+          text-align: center;
+        }
+
+        .comment-empty p {
+          font-size: 13px;
+          margin: 4px 0 0;
+        }
+
+        .comment-item {
+          padding: 10px 12px;
+          border: 1px solid var(--border-subtle);
+          border-radius: 8px;
+          background: var(--bg-secondary);
+          transition: all 0.15s;
+        }
+
+        .comment-item.pinned {
+          border-color: var(--accent-primary);
+          background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-secondary));
+        }
+
+        .comment-pin-badge {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          font-size: 9px;
+          font-weight: 700;
+          color: var(--accent-primary);
+          text-transform: uppercase;
+          letter-spacing: 0.4px;
+          margin-bottom: 4px;
+        }
+
+        .comment-text {
+          font-size: 13px;
+          color: var(--text-secondary);
+          line-height: 1.5;
+          margin: 0;
+          white-space: pre-wrap;
+        }
+
+        .comment-footer {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-top: 6px;
+        }
+
+        .comment-meta {
+          font-size: 10px;
+          color: var(--text-muted);
+        }
+
+        .comment-actions {
+          display: flex;
+          gap: 3px;
+        }
+
+        .comment-action-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 2px 4px;
+          border: 1px solid var(--border-subtle);
+          border-radius: 4px;
+          background: var(--bg-card);
+          color: var(--text-secondary);
+          cursor: pointer;
+          transition: all 0.14s;
+        }
+
+        .comment-action-btn:hover {
+          background: var(--bg-primary);
           color: var(--accent-primary);
           border-color: var(--accent-primary);
         }
 
-        /* ── MODALS ── */
+        .comment-action-btn.active {
+          color: var(--accent-primary);
+          border-color: var(--accent-primary);
+        }
+
+        .comment-action-btn.danger:hover {
+          color: #f87171;
+          border-color: #f87171;
+        }
+
         .modal-overlay {
           position: fixed;
           inset: 0;
-          background: rgba(0,0,0,0.5);
+          background: rgba(0,0,0,0.6);
           backdrop-filter: blur(4px);
           display: flex;
           align-items: center;
@@ -1185,27 +2369,57 @@ const [newTask, setNewTask] = useState({
           max-width: 520px;
           max-height: 90vh;
           overflow-y: auto;
-          box-shadow: 0 20px 60px rgba(0,0,0,0.25);
-          animation: modal-in 0.2s ease;
+          box-shadow: 0 24px 60px rgba(0,0,0,0.3);
+          scrollbar-width: thin;
+          scrollbar-color: var(--border-default) transparent;
         }
 
-        @keyframes modal-in {
-          from { opacity: 0; transform: translateY(16px) scale(0.97); }
-          to   { opacity: 1; transform: none; }
+        .modal-box::-webkit-scrollbar { width: 4px; }
+        .modal-box::-webkit-scrollbar-thumb {
+          background: var(--border-default);
+          border-radius: 10px;
         }
 
         .modal-header {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          padding: 20px 20px 14px;
+          padding: 18px 20px 14px;
           border-bottom: 1px solid var(--border-subtle);
+          position: sticky;
+          top: 0;
+          background: var(--bg-card);
+          border-radius: 20px 20px 0 0;
+          z-index: 2;
         }
 
         .modal-title {
           font-size: 17px;
           font-weight: 700;
           color: var(--text-primary);
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin: 0;
+        }
+
+        .modal-close-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 6px;
+          border-radius: 8px;
+          border: 1px solid var(--border-subtle);
+          background: var(--bg-secondary);
+          color: var(--text-secondary);
+          cursor: pointer;
+          transition: all 0.14s;
+        }
+
+        .modal-close-btn:hover {
+          border-color: var(--accent-primary);
+          color: var(--accent-primary);
+          background: var(--bg-primary);
         }
 
         .modal-body {
@@ -1216,15 +2430,93 @@ const [newTask, setNewTask] = useState({
           font-size: 14px;
           color: var(--text-secondary);
           line-height: 1.6;
-          margin-bottom: 14px;
+          margin: 0 0 14px;
         }
 
         .modal-meta-row {
           display: flex;
           gap: 8px;
-          align-items: center;
-          margin-bottom: 12px;
           flex-wrap: wrap;
+          margin-bottom: 12px;
+        }
+
+        .modal-milestones {
+          margin: 12px 0;
+        }
+
+        .modal-subtitle {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 12px;
+          font-weight: 700;
+          color: var(--text-secondary);
+          margin: 0 0 8px;
+        }
+
+        .milestone-box {
+          padding: 10px 12px;
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-subtle);
+          border-radius: 8px;
+          margin-bottom: 6px;
+        }
+
+        .milestone-title {
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--text-primary);
+        }
+
+        .milestone-meta {
+          display: flex;
+          gap: 12px;
+          font-size: 11px;
+          color: var(--text-muted);
+          margin-top: 4px;
+        }
+
+        .milestone-meta svg {
+          width: 12px;
+          height: 12px;
+        }
+
+        .modal-progress-section {
+          margin-top: 14px;
+        }
+
+        .modal-progress-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 6px;
+        }
+
+        .modal-progress-label {
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--text-secondary);
+        }
+
+        .modal-progress-value {
+          font-size: 14px;
+          font-weight: 800;
+          color: var(--accent-primary);
+        }
+
+        .modal-progress-track {
+          width: 100%;
+          height: 8px;
+          background: var(--border-subtle);
+          border-radius: 10px;
+          overflow: hidden;
+        }
+
+        .modal-progress-fill {
+          height: 100%;
+          background: linear-gradient(90deg, var(--accent-primary), #a78bfa);
+          border-radius: 10px;
+          transition: width 0.5s ease;
         }
 
         .modal-footer {
@@ -1232,79 +2524,72 @@ const [newTask, setNewTask] = useState({
           gap: 10px;
           padding: 14px 20px 20px;
           border-top: 1px solid var(--border-subtle);
-          justify-content: flex-end;
-        }
-
-        /* Progress section inside modal */
-        .progress-section {
-          margin-top: 16px;
-        }
-
-        .progress-label-row {
-          display: flex;
           justify-content: space-between;
           align-items: center;
-          margin-bottom: 8px;
         }
 
-        .progress-label {
-          font-size: 13px;
-          font-weight: 600;
-          color: var(--text-secondary);
+        .confirm-box {
+          max-width: 380px;
+          text-align: center;
+          padding-bottom: 24px;
         }
 
-        .progress-pct {
-          font-size: 15px;
+        .confirm-title {
+          font-size: 18px;
           font-weight: 800;
-          color: var(--accent-primary);
+          color: var(--text-primary);
+          margin: 0 0 6px;
         }
 
-        .progress-track {
-          width: 100%;
-          height: 10px;
-          background: var(--border-subtle);
-          border-radius: 10px;
-          overflow: hidden;
+        .confirm-desc {
+          font-size: 13px;
+          color: var(--text-muted);
+          margin: 0 0 16px;
         }
 
-        .progress-fill {
-          height: 100%;
-          background: linear-gradient(90deg, var(--accent-primary), color-mix(in srgb, var(--accent-primary) 60%, #a78bfa));
-          border-radius: 10px;
-          transition: width 0.4s ease;
-        }
-
-        /* ── EDIT FORM ── */
         .edit-form {
           display: flex;
           flex-direction: column;
-          gap: 10px;
+          gap: 12px;
+        }
+
+        .form-group {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
         }
 
         .form-label {
           font-size: 12px;
           font-weight: 600;
           color: var(--text-secondary);
-          margin-bottom: 3px;
-          display: block;
         }
 
-        .form-input,
-        .form-textarea,
-        .form-select {
-          width: 100%;
-          box-sizing: border-box;
+        .form-required {
+          color: #f87171;
+        }
+
+        .form-input {
           padding: 9px 12px;
-          border-radius: 9px;
-          font-size: 13px;
           border: 1px solid var(--border-default);
+          border-radius: 8px;
           background: var(--bg-secondary);
           color: var(--text-primary);
+          font-size: 13px;
+          transition: all 0.2s;
+          font-family: inherit;
+        }
+
+        .form-input:focus {
+          outline: none;
+          border-color: var(--accent-primary);
+          background: var(--bg-card);
+          box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
         }
 
         .form-textarea {
-          min-height: 80px;
           resize: vertical;
+          min-height: 80px;
         }
 
         .form-row-2 {
@@ -1319,244 +2604,189 @@ const [newTask, setNewTask] = useState({
           cursor: pointer;
         }
 
-        /* ── CONFIRM BOX ── */
-        .confirm-box {
-          max-width: 360px;
-          text-align: center;
-        }
-
-        .confirm-title {
-          font-size: 18px;
-          font-weight: 700;
-          color: var(--text-primary);
-          margin-bottom: 6px;
-        }
-
-        /* ── BUTTONS ── */
         .btn-danger {
-          background: rgba(239,68,68,0.1);
+          background: rgba(239, 68, 68, 0.1);
           color: #ef4444;
-          border: 1px solid rgba(239,68,68,0.3);
+          border: 1px solid rgba(239, 68, 68, 0.3);
         }
-
-        .btn-danger:hover {
-          background: rgba(239,68,68,0.2);
-        }
+        .btn-danger:hover { background: rgba(239, 68, 68, 0.2); }
 
         .btn-secondary {
           background: var(--bg-secondary);
           color: var(--text-primary);
           border: 1px solid var(--border-default);
         }
-
-        .btn-secondary:hover {
-          border-color: var(--accent-primary);
-        }
-
-        /* ── TEAM ── */
-        .team-list {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-        }
-
-        .member-row {
-          display: flex;
-          gap: 12px;
-          align-items: center;
-          padding: 10px;
-          border-radius: 10px;
-          background: var(--bg-secondary);
-        }
-
-        .member-name {
-          font-size: 14px;
-          font-weight: 600;
-          color: var(--text-primary);
-        }
-
-        /* ── STATS ── */
-        .stats-row {
-          display: flex;
-          gap: 14px;
-        }
-
-        .stat-item {
-          flex: 1;
-          padding: 14px;
-          border: 1px solid var(--border-subtle);
-          border-radius: 12px;
-          background: var(--bg-secondary);
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          color: var(--text-secondary);
-          font-weight: 500;
-          font-size: 14px;
-          min-width: 0;
-        }
-
-        /* ── COMMENTS ── */
-        textarea.themed-input {
-          width: 100%;
-          box-sizing: border-box;
-          min-height: 100px;
-          resize: vertical;
-          margin-bottom: 12px;
-          padding: 10px 12px;
-          border-radius: 10px;
-          font-size: 14px;
-          line-height: 1.5;
-        }
-
-        .post-btn {
-          width: 100%;
-          justify-content: center;
-          margin-bottom: 4px;
-        }
-
-        .comment-list {
-          margin-top: 14px;
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-        }
-
-        .comment-item {
-          padding: 12px;
-          border: 1px solid var(--border-subtle);
-          border-radius: 12px;
-          background: var(--bg-secondary);
-          word-break: break-word;
-          transition: border-color 0.15s;
-        }
-
-        .comment-item.pinned-comment {
-          border-color: var(--accent-primary);
-          background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-secondary));
-        }
-
-        .pin-indicator {
-          display: flex;
-          align-items: center;
-          gap: 4px;
-          font-size: 10px;
-          font-weight: 700;
-          color: var(--accent-primary);
-          margin-bottom: 6px;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-        }
-
-        .comment-footer {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          margin-top: 8px;
-        }
-
-        .comment-actions {
-          display: flex;
-          gap: 4px;
-        }
-
-        /* ── UTILS ── */
-        .muted {
-          font-size: 12px;
-          color: var(--text-muted);
-        }
-
-        .themed-input {
-          background: var(--bg-secondary);
-          border: 1px solid var(--border-default);
-          color: var(--text-primary);
-        }
-
-        .themed-card   { background: var(--bg-card); }
-        .themed-card-inner { background: var(--bg-secondary); }
-
-        /* ═════════════ RESPONSIVE ═════════════ */
+        .btn-secondary:hover { border-color: var(--accent-primary); }
 
         @media (max-width: 1024px) {
           .project-body {
-            grid-template-columns: 1fr 1fr;
-            gap: 14px;
-            padding: 16px;
+            grid-template-columns: 1fr 280px;
+            padding: 16px 20px;
           }
         }
 
         @media (max-width: 768px) {
-          .project-header { padding: 16px; }
-          .project-title  { font-size: 19px; }
           .project-body {
             grid-template-columns: 1fr;
-            gap: 14px;
-            padding: 14px;
-          }
-          .right-panel {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
+            padding: 14px 16px;
             gap: 14px;
           }
-          .team-list {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-          }
-          .task-scroll-container { max-height: 360px; }
-        }
 
-        @media (max-width: 600px) {
-          .project-body { padding: 12px; }
-          .right-panel  { grid-template-columns: 1fr; }
-          .team-list    { grid-template-columns: 1fr; }
-          .stats-row    { gap: 10px; }
-          .stat-item    { padding: 12px 10px; font-size: 13px; }
-          .form-row-2   { grid-template-columns: 1fr; }
+          .overview-header {
+            flex-direction: column;
+            align-items: stretch;
+            text-align: center;
+          }
+
+          .overview-progress-ring {
+            align-self: center;
+          }
+
+          .project-title-main {
+            max-width: 180px;
+          }
+
+          .form-row-2 {
+            grid-template-columns: 1fr;
+          }
+
+          .modal-comment-list {
+            max-height: 150px;
+          }
+
+          .modal-footer {
+            flex-direction: column;
+            gap: 8px;
+          }
+
+          .modal-footer > div {
+            width: 100%;
+          }
+
+          .modal-footer button {
+            flex: 1;
+          }
         }
 
         @media (max-width: 480px) {
-          .project-header  { padding: 12px; gap: 10px; }
-          .project-title   { font-size: 16px; }
-          .project-desc    { font-size: 11px; }
-          .progress-value  { font-size: 18px; }
-          .project-progress { padding: 8px 12px; min-width: 80px; }
-          .card            { padding: 14px; border-radius: 12px; }
-          .section-title   { font-size: 13px; margin-bottom: 10px; }
-          .task-card       { padding: 12px; }
-          .task-top        { flex-direction: column; align-items: flex-start; gap: 6px; }
-          .member-name     { font-size: 13px; }
-          .member-row      { padding: 8px; gap: 10px; }
-          .stats-row       { flex-direction: column; gap: 8px; }
-          .stat-item       { padding: 12px; }
-          textarea.themed-input { min-height: 80px; font-size: 13px; }
-          .comment-item p  { font-size: 13px; }
-          .btn-sm          { font-size: 12px; padding: 6px 12px; }
-          .mini-track      { width: 56px; }
+          .project-body {
+            padding: 10px 12px;
+            gap: 12px;
+          }
+
+          .project-overview-card {
+            padding: 16px;
+          }
+
+          .overview-title {
+            font-size: 17px;
+          }
+
+          .tasks-card {
+            padding: 14px 16px;
+          }
+
+          .task-item {
+            padding: 10px 12px;
+          }
+
+          .task-item-header {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 6px;
+          }
+
+          .task-item-badges {
+            width: 100%;
+            justify-content: flex-start;
+          }
+
+          .task-item-footer {
+            flex-wrap: wrap;
+          }
+
+          .task-item-actions {
+            margin-left: 0;
+          }
+
+          .info-card {
+            padding: 14px;
+          }
+
+          .modal-box {
+            max-width: 100%;
+            border-radius: 16px;
+          }
+
+          .modal-header {
+            padding: 14px 16px;
+          }
+
+          .modal-body {
+            padding: 14px 16px;
+          }
+
+          .modal-footer {
+            padding: 12px 16px 16px;
+          }
+
+          .project-title-text {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 4px;
+          }
+
+          .project-title-main {
+            max-width: 150px;
+          }
+
+          .topbar-actions {
+            flex-direction: column;
+            gap: 4px;
+          }
+
+          .ring-container {
+            width: 64px;
+            height: 64px;
+          }
+
+          .ring-value {
+            font-size: 14px;
+          }
+
+          .modal-comment-list {
+            max-height: 120px;
+          }
         }
 
         @media (max-width: 360px) {
-          .project-title  { font-size: 14px; }
-          .project-desc   { font-size: 10px; }
-          .project-body   { padding: 10px; gap: 10px; }
-          .card           { padding: 12px; border-radius: 10px; }
-          .section-title  { font-size: 12px; }
-          .task-top strong { font-size: 13px; }
-          .member-name    { font-size: 12px; }
-        }
-
-        @media (min-width: 1400px) {
           .project-body {
-            grid-template-columns: 2fr 1fr;
-            max-width: 1600px;
-            margin: 0 auto;
-            padding: 24px;
-            gap: 24px;
+            padding: 8px 10px;
           }
-          .project-header { padding: 24px 32px; }
-          .card           { padding: 22px; }
-          .project-title  { font-size: 26px; }
-          .task-scroll-container { max-height: 600px; }
+
+          .project-overview-card {
+            padding: 12px;
+          }
+
+          .overview-title {
+            font-size: 15px;
+          }
+
+          .overview-desc {
+            font-size: 11px;
+          }
+
+          .tasks-card {
+            padding: 12px;
+          }
+
+          .tasks-title {
+            font-size: 13px;
+          }
+
+          .task-item-title {
+            font-size: 12px;
+          }
         }
       `}</style>
     </div>

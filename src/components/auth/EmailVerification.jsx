@@ -1,3 +1,4 @@
+// src/components/auth/EmailVerification.jsx
 import { useNavigate } from 'react-router-dom';
 import { MailCheck, ArrowLeft, Zap } from 'lucide-react';
 

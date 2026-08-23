@@ -602,6 +602,26 @@ input, textarea, select { font-family: var(--font-body); }
   border-color: rgba(67,56,202,0.35);
 }
 
+/* ── AUTOFILL FIX: stop Chrome/Safari forcing a light bg on autofilled inputs ── */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  -webkit-text-fill-color: var(--text-primary) !important;
+  caret-color: var(--text-primary);
+  box-shadow: 0 0 0 1000px var(--bg-secondary) inset !important;
+  -webkit-box-shadow: 0 0 0 1000px var(--bg-secondary) inset !important;
+  transition: background-color 9999s ease-in-out 0s, color 9999s ease-in-out 0s;
+}
+
+/* The search bar sits on --bg-card, not --bg-secondary — match its own background */
+.search-bar-modern input:-webkit-autofill,
+.search-bar-modern input:-webkit-autofill:hover,
+.search-bar-modern input:-webkit-autofill:focus {
+  box-shadow: 0 0 0 1000px var(--bg-card) inset !important;
+  -webkit-box-shadow: 0 0 0 1000px var(--bg-card) inset !important;
+}
+
 /* ── MEMBER CARDS ── */
 .member-card {
   background: var(--bg-card);
@@ -617,6 +637,146 @@ input, textarea, select { font-family: var(--font-body); }
   border-color: var(--border-default);
   box-shadow: var(--shadow-md);
   transform: translateY(-2px);
+}
+
+/* Add to index.css */
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 768px) {
+  .grid-3 {
+    grid-template-columns: 1fr;
+  }
+}
+/* Add to index.css */
+
+/* App Layout */
+.app-layout {
+  display: flex;
+  min-height: 100vh;
+  background: var(--bg-primary);
+}
+
+.main-content {
+  flex: 1;
+  min-height: 100vh;
+  width: 100%;
+  overflow-x: hidden;
+}
+
+/* Sidebar responsive */
+@media (max-width: 768px) {
+  .main-content {
+    margin-left: 0 !important;
+  }
+}
+
+/* Sidebar overlay */
+.sidebar-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 999;
+  animation: fadeIn 0.3s ease;
+}
+
+.sidebar-overlay.open {
+  display: block;
+}
+
+@media (min-width: 769px) {
+  .sidebar-overlay {
+    display: none !important;
+  }
+}
+
+/* Sidebar navigation item */
+.sidebar-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: all 0.15s;
+  margin-bottom: 4px;
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.sidebar-nav-item:hover {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.sidebar-nav-item.active {
+  color: var(--accent-primary);
+  background: var(--bg-card);
+  font-weight: 600;
+}
+
+/* Sidebar close button - mobile only */
+@media (max-width: 768px) {
+  #sidebar-close-btn {
+    display: flex !important;
+  }
+}
+
+/* Button styles */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-decoration: none;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.btn-ghost:hover {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.btn-icon {
+  padding: 6px;
+  border-radius: 8px;
+}
+
+/* Page container */
+.page-container {
+  padding: 24px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+@media (max-width: 768px) {
+  .page-container {
+    padding: 16px;
+  }
+}
+
+/* Fade in animation */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.6s ease-out;
 }
 
 /* ── GLASS ── */

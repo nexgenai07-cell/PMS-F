@@ -1,3 +1,4 @@
+// src/components/shared/UIComponents.jsx
 import { priorityConfig, statusConfig } from '../../data/mockData';
 import { AlertCircle, ArrowUp, Minus, ArrowDown } from 'lucide-react';
 
@@ -13,11 +14,28 @@ export function PriorityBadge({ priority }) {
   );
 }
 
+// ✅ Updated StatusBadge with better handling
 export function StatusBadge({ status }) {
-  const cfg = statusConfig[status] || statusConfig.todo;
+  // Normalize status to lowercase
+  const normalizedStatus = String(status || '').toLowerCase().trim();
+  
+  // Get config or use fallback
+  const cfg = statusConfig[normalizedStatus] || { 
+    label: status || 'Unknown', 
+    color: '#94a3b8', 
+    badge: 'badge-gray' 
+  };
+  
   return (
     <span className={`badge ${cfg.badge}`}>
-      <span style={{ width: 6, height: 6, borderRadius: '50%', background: cfg.color, display: 'inline-block' }} />
+      <span style={{ 
+        width: 6, 
+        height: 6, 
+        borderRadius: '50%', 
+        background: cfg.color, 
+        display: 'inline-block',
+        flexShrink: 0 
+      }} />
       {cfg.label}
     </span>
   );
@@ -43,7 +61,7 @@ export function AvatarGroup({ members, max = 4 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center' }}>
       {shown.map((m, i) => (
-        <div key={m.tm_id || i} style={{ marginLeft: i === 0 ? 0 : -8, zIndex: shown.length - i }}>
+        <div key={m.id || i} style={{ marginLeft: i === 0 ? 0 : -8, zIndex: shown.length - i }}>
           <Avatar name={m.name} color={m.avatar_color || colors[i % colors.length]} size="sm" style={{ border: '2px solid var(--bg-card)' }} />
         </div>
       ))}
