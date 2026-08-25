@@ -108,6 +108,18 @@ export default function LeadProjectDetail() {
   const [isModalCommenting, setIsModalCommenting] = useState(false);
   const [commentUpdateTrigger, setCommentUpdateTrigger] = useState(0);
 
+  // ✅ ADD STATS STATE - FIXED
+  const [stats, setStats] = useState({
+    totalTasks: 0,
+    completedTasks: 0,
+    inProgressTasks: 0,
+    todoTasks: 0,
+    completionRate: 0,
+    onTimeRate: 0,
+    membersCount: 0,
+    avgProgress: 0
+  });
+
   const [newTask, setNewTask] = useState({
     title: "",
     desc: "",
@@ -146,12 +158,13 @@ export default function LeadProjectDetail() {
     try {
       setLoading(true);
       
-      const [projectData, tasksData, membersData, usersData, pteamData] = await Promise.all([
+      const [projectData, tasksData, membersData, usersData, pteamData, statsData] = await Promise.all([
         projectService.getProject(projectId),
         taskService.getTasks(),
         teamService.getTeamMembers(),
         userService.getUsers(),
         projectTeamService.getProjectTeams(),
+        projectService.getProjectStats(projectId), // ✅ Get stats from server
       ]);
 
       console.log('📊 Project Data:', projectData);
@@ -159,38 +172,42 @@ export default function LeadProjectDetail() {
       console.log('📊 Members Data:', membersData);
       console.log('📊 Users Data:', usersData);
       console.log('📊 PTeam Data:', pteamData);
+      console.log('📊 Stats Data:', statsData);
 
       const projectItem = projectData?.data || projectData;
       const allTasks = tasksData?.data || tasksData || [];
       const membersList = membersData?.data || membersData || [];
       const usersList = usersData?.data || usersData || [];
       const pteamList = pteamData?.data || pteamData || [];
+      const statsResponse = statsData?.data || statsData || {};
 
       setProject(projectItem);
       setAllTeamMembers(membersList);
       setUsers(usersList);
 
+      // ✅ Set stats from server - FIXED
+      setStats({
+        totalTasks: statsResponse.totalTasks || 0,
+        completedTasks: statsResponse.completedTasks || 0,
+        inProgressTasks: statsResponse.inProgressTasks || 0,
+        todoTasks: statsResponse.todoTasks || 0,
+        completionRate: statsResponse.completionRate || 0,
+        onTimeRate: statsResponse.onTimeRate || 0,
+        membersCount: statsResponse.membersCount || 0,
+        avgProgress: statsResponse.avgProgress || 0
+      });
+
       // ✅ Get project members from PTeam - use correct field names
       let memberEntries = [];
       
-      // Log the actual PTeam data structure
-      console.log('📊 PTeam list:', pteamList);
-      
       if (pteamList && Array.isArray(pteamList) && pteamList.length > 0) {
-        // Try multiple ways to filter PTeam entries
-        // Some APIs might use 'p_id' or 'project' or just 'p'
         const projectPteamEntries = pteamList.filter(entry => {
           const entryProjectId = entry.p || entry.p_id || entry.project || entry.projectId || entry.project_id;
-          console.log(`📊 Checking entry: p=${entry.p}, p_id=${entry.p_id}, project=${entry.project}, projectId=${entry.projectId}, entryProjectId=${entryProjectId}`);
           return Number(entryProjectId) === Number(projectId);
         });
-        
-        console.log('📊 PTeam entries for project:', projectPteamEntries);
 
-        // Map to team members
         memberEntries = projectPteamEntries
           .map(entry => {
-            // Get the member ID from the entry
             const memberId = entry.tm || entry.tm_id || entry.team_member || entry.member || entry.member_id || entry.teamMember;
             const member = membersList.find(m => Number(m.id) === Number(memberId));
             if (member) {
@@ -200,18 +217,13 @@ export default function LeadProjectDetail() {
                 task_id: entry.t || entry.task_id || entry.task,
               };
             }
-            console.log(`⚠️ Member with ID ${memberId} not found in membersList`);
             return null;
           })
           .filter(m => m !== null);
-
-        console.log('📊 Found project members from PTeam:', memberEntries);
       }
 
-      // ✅ If no PTeam members found, try to get from tasks (fallback)
+      // If no PTeam members found, try to get from tasks
       if (memberEntries.length === 0) {
-        console.log('⚠️ No PTeam entries found, trying to get members from tasks...');
-        
         const projectTasks = allTasks.filter(t => {
           const taskProjectId = t.p_id || t.p || t.project || t.project_id;
           return Number(taskProjectId) === Number(projectId);
@@ -222,8 +234,6 @@ export default function LeadProjectDetail() {
           if (t.assign_to) memberIds.add(Number(t.assign_to));
         });
         
-        console.log('📊 Members from tasks:', Array.from(memberIds));
-        
         memberEntries = membersList
           .filter(m => memberIds.has(Number(m.id)))
           .map(m => ({
@@ -233,36 +243,21 @@ export default function LeadProjectDetail() {
           }));
       }
 
-      // ✅ Set project members
       setProjectMembers(memberEntries);
 
-      // ✅ Get supervisors (users with role manager/admin/supervisor)
-      // Get supervisors from the PTeam entries that are marked as supervisors
-// Instead of auto-detecting, we should check if the member is in the supervisor list
-const supervisorEntries = memberEntries.filter(m => {
-  // Check if this member is in the supervisors list from the project data
-  // Since we don't have a separate field, we check the user role
-  const userObj = usersList.find(u => Number(u.id) === Number(m.id));
-  const isSupervisor = userObj && (userObj.role === 'manager' || userObj.role === 'admin' || userObj.role === 'supervisor');
-  
-  // Log for debugging
-  if (isSupervisor) {
-    console.log('👑 Found supervisor:', m.name, 'with role:', userObj?.role);
-  }
-  return isSupervisor;
-});
+      // Get supervisors
+      const supervisorEntries = memberEntries.filter(m => {
+        const userObj = usersList.find(u => Number(u.id) === Number(m.id));
+        return userObj && (userObj.role === 'manager' || userObj.role === 'admin' || userObj.role === 'supervisor');
+      });
       
-      console.log('📊 Project supervisors:', supervisorEntries);
       setProjectSupervisors(supervisorEntries);
 
-      // ✅ Filter tasks for this project
+      // Filter tasks for this project
       const projectTasks = allTasks.filter(t => {
         const taskProjectId = t.p_id || t.p || t.project || t.project_id;
         return Number(taskProjectId) === Number(projectId);
       });
-
-      console.log('📊 Filtered project tasks:', projectTasks);
-      console.log('📊 Total tasks in project:', projectTasks.length);
 
       const mappedTasks = projectTasks.map(t => ({
         ...t,
@@ -277,7 +272,7 @@ const supervisorEntries = memberEntries.filter(m => {
 
       setTasks(mappedTasks);
 
-      // ✅ FETCH COMMENTS FOR EACH TASK
+      // Fetch comments for each task
       if (mappedTasks.length > 0) {
         const allComments = [];
         for (const task of mappedTasks) {
@@ -326,9 +321,6 @@ const supervisorEntries = memberEntries.filter(m => {
 
     setIsSubmitting(true);
     try {
-      console.log('📤 Creating task with projectId:', projectId);
-      console.log('📤 Assigning to TeamMember ID:', newTask.assignedTo);
-      
       const assignTo = newTask.assignedTo ? Number(newTask.assignedTo) : null;
       
       const response = await taskService.createTask({
@@ -344,8 +336,6 @@ const supervisorEntries = memberEntries.filter(m => {
       });
 
       const createdTask = response?.data || response;
-      console.log('✅ Task created response:', createdTask);
-      console.log('✅ assign_to in response:', createdTask.assign_to);
       
       await NotificationHelper.taskCreated(createdTask, user);
       
@@ -389,8 +379,6 @@ const supervisorEntries = memberEntries.filter(m => {
   const handleUpdateTask = async (updated) => {
     try {
       const assignTo = updated.assign_to || updated.assignTo ? Number(updated.assign_to || updated.assignTo) : null;
-      
-      console.log('📤 Updating task with assignTo:', assignTo);
       
       const response = await taskService.updateTask(updated.t_id || updated.id, {
         title: updated.title,
@@ -440,7 +428,7 @@ const supervisorEntries = memberEntries.filter(m => {
     }
   };
 
-  // ─── COMMENTS ───
+  // Comments functions
   const addComment = async () => {
     if (!text.trim()) {
       toast.error("Please enter a comment");
@@ -481,7 +469,6 @@ const supervisorEntries = memberEntries.filter(m => {
     }
   };
 
-  // ─── MODAL COMMENTS ───
   const addModalComment = async () => {
     if (!modalCommentText.trim()) {
       toast.error("Please enter a comment");
@@ -555,12 +542,9 @@ const supervisorEntries = memberEntries.filter(m => {
     }
   };
 
-  // Calculate progress
-  const progress = tasks.length
-    ? Math.round(tasks.reduce((sum, t) => sum + (t.progress || 0), 0) / tasks.length)
-    : 0;
-
-  const done = tasks.filter(t => t.status === "done" || t.status === "completed" || t.status === "Done").length;
+  // ✅ Use stats from server instead of client-side calculation
+  const progress = stats.completionRate || 0;
+  const done = stats.completedTasks || 0;
 
   const getMemberName = (memberId) => {
     if (!memberId) return "Unassigned";
@@ -699,7 +683,6 @@ const supervisorEntries = memberEntries.filter(m => {
                   </div>
                 </div>
 
-                {/* ─── COMMENTS IN MODAL ─── */}
                 <div className="modal-comments-section">
                   <h4 className="modal-subtitle" style={{ marginTop: 16 }}>
                     <MessageSquare size={14} /> Comments ({sortedModalComments.length})
@@ -783,7 +766,6 @@ const supervisorEntries = memberEntries.filter(m => {
                 </div>
               </div>
 
-              {/* ─── MODAL FOOTER ─── */}
               <div className="modal-footer">
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <button
@@ -1232,7 +1214,7 @@ const supervisorEntries = memberEntries.filter(m => {
 
         {/* RIGHT PANEL */}
         <div className="project-right">
-          {/* Overview Stats */}
+          {/* Overview Stats - ✅ Using server stats */}
           <div className="info-card">
             <h4 className="info-card-title">
               <Sparkles size={14} />
@@ -1245,7 +1227,7 @@ const supervisorEntries = memberEntries.filter(m => {
                   <FolderKanban size={16} />
                 </div>
                 <div>
-                  <span className="info-stat-value">{tasks.length}</span>
+                  <span className="info-stat-value">{stats.totalTasks}</span>
                   <span className="info-stat-label">Total Tasks</span>
                 </div>
               </div>
@@ -1254,7 +1236,7 @@ const supervisorEntries = memberEntries.filter(m => {
                   <CheckCircle2 size={16} />
                 </div>
                 <div>
-                  <span className="info-stat-value">{done}</span>
+                  <span className="info-stat-value">{stats.completedTasks}</span>
                   <span className="info-stat-label">Completed</span>
                 </div>
               </div>
@@ -1263,7 +1245,7 @@ const supervisorEntries = memberEntries.filter(m => {
                   <Clock size={16} />
                 </div>
                 <div>
-                  <span className="info-stat-value">{tasks.length - done}</span>
+                  <span className="info-stat-value">{stats.inProgressTasks}</span>
                   <span className="info-stat-label">In Progress</span>
                 </div>
               </div>
@@ -1283,7 +1265,6 @@ const supervisorEntries = memberEntries.filter(m => {
                 <div className="team-empty">No team members assigned</div>
               ) : (
                 <>
-                  {/* Show supervisors first */}
                   {projectSupervisors.length > 0 && (
                     <>
                       <div style={{ 
@@ -1315,7 +1296,6 @@ const supervisorEntries = memberEntries.filter(m => {
                     </>
                   )}
                   
-                  {/* Show regular members */}
                   {projectMembers.filter(m => !projectSupervisors.some(s => s.id === m.id)).length > 0 && (
                     <>
                       <div style={{ 
@@ -1461,6 +1441,7 @@ const supervisorEntries = memberEntries.filter(m => {
         </div>
       </div>
 
+      {/* Styles - same as before */}
       <style>{`
         @keyframes spin {
           to { transform: rotate(360deg); }

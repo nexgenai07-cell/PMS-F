@@ -64,6 +64,7 @@ export default function LeadDashboard() {
   const [tasks, setTasks] = useState([]);
   const [teamMembers, setTeamMembers] = useState([]);
   const [activeIndex, setActiveIndex] = useState(null);
+  const [projectStatsMap, setProjectStatsMap] = useState({});
   const [stats, setStats] = useState({
     totalProjects: 0,
     totalTasks: 0,
@@ -95,7 +96,7 @@ export default function LeadDashboard() {
 
       const userId = user?.id || user?.u_id;
       
-      // ✅ FIX: Find projects where this lead is the creator
+      // Find projects where this lead is the creator
       const userProjects = allProjects.filter(p => {
         const isCreator = Number(p.created_by) === Number(userId);
         return isCreator;
@@ -125,55 +126,70 @@ export default function LeadDashboard() {
         allProjectIds.includes(Number(p.p_id || p.id))
       );
 
-      // Get all tasks for these projects
-      const projectTasks = tasksList.filter(t => 
-        allProjectIds.includes(Number(t.p_id || t.p))
-      );
+      // ✅ Get stats for each project using the stats endpoint
+      let totalTasks = 0;
+      let completedTasks = 0;
+      let inProgressTasks = 0;
+      let totalCompletion = 0;
+      const statsMap = {};
 
-      console.log('📊 Lead Dashboard:');
-      console.log('  Created projects:', createdProjectIds);
-      console.log('  Assigned project IDs:', assignedProjectIds);
-      console.log('  All project IDs:', allProjectIds);
-      console.log('  Involved projects:', involvedProjects.length);
-      console.log('  Project tasks:', projectTasks.length);
+      for (const project of involvedProjects) {
+        const projectId = Number(project.p_id || project.id);
+        try {
+          const statsResponse = await projectService.getProjectStats(projectId);
+          const stats = statsResponse?.data || {};
+          statsMap[projectId] = stats;
+          totalTasks += stats.totalTasks || 0;
+          completedTasks += stats.completedTasks || 0;
+          inProgressTasks += stats.inProgressTasks || 0;
+          totalCompletion += stats.completionRate || 0;
+        } catch (error) {
+          console.error(`Error fetching stats for project ${projectId}:`, error);
+        }
+      }
 
-      setProjects(involvedProjects);
-      setTasks(projectTasks);
-      setTeamMembers(membersList);
-
-      const completed = projectTasks.filter(t => 
-        t.status === 'done' || t.status === 'completed'
-      ).length;
-      
-      const inProgress = projectTasks.filter(t => 
-        t.status === 'in_progress' || t.status === 'in-progress' || t.status === 'review'
-      ).length;
+      setProjectStatsMap(statsMap);
 
       // Get unique team members from tasks
       const memberIds = new Set();
-      projectTasks.forEach(t => {
+      tasksList.forEach(t => {
         if (t.assign_to) memberIds.add(Number(t.assign_to));
       });
       const uniqueMembers = membersList.filter(m => 
         memberIds.has(Number(m.id))
       );
 
-      const completionRate = projectTasks.length === 0 ? 0 : Math.round((completed / projectTasks.length) * 100);
+      const completionRate = involvedProjects.length > 0 
+        ? Math.round(totalCompletion / involvedProjects.length) 
+        : 0;
       
       // Calculate on-time rate
-      const completedTasks = projectTasks.filter(t => 
+      const completedTasksList = tasksList.filter(t => 
         t.status === 'done' || t.status === 'completed'
       );
-      const onTime = completedTasks.filter(t => 
+      const onTime = completedTasksList.filter(t => 
         t.due_date && new Date(t.due_date) >= new Date(t.start_date || t.created_at)
       ).length;
-      const onTimeRate = completedTasks.length === 0 ? 0 : Math.round((onTime / completedTasks.length) * 100);
+      const onTimeRate = completedTasksList.length === 0 ? 0 : Math.round((onTime / completedTasksList.length) * 100);
+
+      console.log('📊 Lead Dashboard Stats:', {
+        totalProjects: involvedProjects.length,
+        totalTasks,
+        completedTasks,
+        inProgressTasks,
+        completionRate,
+        onTimeRate
+      });
+
+      setProjects(involvedProjects);
+      setTasks(tasksList);
+      setTeamMembers(membersList);
 
       setStats({
         totalProjects: involvedProjects.length,
-        totalTasks: projectTasks.length,
-        completedTasks: completed,
-        inProgressTasks: inProgress,
+        totalTasks: totalTasks,
+        completedTasks: completedTasks,
+        inProgressTasks: inProgressTasks,
         teamMembers: uniqueMembers.length,
         onTimeRate,
         completionRate
@@ -195,10 +211,8 @@ export default function LeadDashboard() {
   };
 
   const getProjectProgress = (projectId) => {
-    const projectTasks = tasks.filter(t => Number(t.p_id || t.p) === Number(projectId));
-    if (projectTasks.length === 0) return 0;
-    const done = projectTasks.filter(t => t.status === 'done' || t.status === 'completed').length;
-    return Math.round((done / projectTasks.length) * 100);
+    const stats = projectStatsMap[projectId];
+    return stats?.completionRate || 0;
   };
 
   const getProjectMembers = (projectId) => {

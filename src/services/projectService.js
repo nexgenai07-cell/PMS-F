@@ -182,14 +182,14 @@ class ProjectService {
   }
 
   async getProjectStats(projectId) {
-    try {
-      const response = await api.get(`/api/projects/${projectId}/stats`);
-      return response.data;
-    } catch (error) {
-      console.error(`ProjectService: Error fetching stats for project ${projectId}:`, error);
-      return { data: null };
-    }
+  try {
+    const response = await api.get(`/api/projects/${projectId}/stats`);
+    return response.data;
+  } catch (error) {
+    console.error(`ProjectService: Error fetching stats for project ${projectId}:`, error);
+    return { data: null };
   }
+}
 
   handleError(error) {
     if (error.response) {

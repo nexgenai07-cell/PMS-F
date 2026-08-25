@@ -40,6 +40,7 @@ export default function LeadTeamMembers() {
   const [members, setMembers] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [users, setUsers] = useState([]);
+  const [memberStatsMap, setMemberStatsMap] = useState({});
   const [showAdd, setShowAdd] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [selected, setSelected] = useState(null);
@@ -68,6 +69,13 @@ export default function LeadTeamMembers() {
   useEffect(() => {
     fetchData();
   }, []);
+
+  // Fetch stats when members change
+  useEffect(() => {
+    if (members.length > 0) {
+      fetchMemberStats();
+    }
+  }, [members]);
 
   const fetchData = async () => {
     try {
@@ -108,6 +116,28 @@ export default function LeadTeamMembers() {
     }
   };
 
+  // ✅ Fetch stats for all members from backend
+  const fetchMemberStats = async () => {
+    try {
+      const statsMap = {};
+      for (const member of members) {
+        try {
+          const response = await teamService.getTeamMemberStats(member.id);
+          // The backend returns { success: true, data: {...} }
+          const statsData = response?.data || response || {};
+          statsMap[member.id] = statsData;
+        } catch (err) {
+          console.error(`Error fetching stats for member ${member.id}:`, err);
+          statsMap[member.id] = {};
+        }
+      }
+      setMemberStatsMap(statsMap);
+      console.log('📊 Member stats loaded:', Object.keys(statsMap).length);
+    } catch (error) {
+      console.error('Error fetching member stats:', error);
+    }
+  };
+
   const handleRefresh = async () => {
     setRefreshing(true);
     await fetchData();
@@ -135,51 +165,38 @@ export default function LeadTeamMembers() {
       return memberEntries.length;
     } catch (error) {
       console.error('Error removing member from projects:', error);
-      // Don't throw - we want to continue with deletion even if this fails
       return 0;
     }
   };
 
-  // Get member stats with proper ID matching
+  // ✅ Get member stats from cached map or compute fallback
   const getMemberStats = (memberId) => {
-    const numericMemberId = Number(memberId);
+    const cachedStats = memberStatsMap[memberId];
+    if (cachedStats && Object.keys(cachedStats).length > 0) {
+      return cachedStats;
+    }
     
+    // Fallback: compute from tasks
+    const numericMemberId = Number(memberId);
     const memberTasks = tasks.filter(t => {
       const assignTo = t.assign_to || t.assignedTo;
       return Number(assignTo) === numericMemberId;
     });
     
-    const memberTasksByName = tasks.filter(t => {
-      if (!t.assign_to && t.assign_to_name) {
-        const member = members.find(m => 
-          m.name?.toLowerCase() === t.assign_to_name?.toLowerCase()
-        );
-        return member && Number(member.id) === numericMemberId;
-      }
-      return false;
-    });
+    const totalTasks = memberTasks.length;
+    const completedTasks = memberTasks.filter(t => t.status === 'done' || t.status === 'completed').length;
+    const inProgressTasks = memberTasks.filter(t => t.status === 'in_progress' || t.status === 'in-progress' || t.status === 'review').length;
+    const todoTasks = memberTasks.filter(t => t.status === 'todo' || t.status === 'pending').length;
     
-    const allMemberTasks = [...memberTasks, ...memberTasksByName];
-    const uniqueTasks = allMemberTasks.filter((t, index, self) => 
-      self.findIndex(t2 => (t2.t_id || t2.id) === (t.t_id || t.id)) === index
-    );
-    
-    const totalTasks = uniqueTasks.length;
-    const completedTasks = uniqueTasks.filter(t => t.status === 'done' || t.status === 'completed').length;
-    const inProgressTasks = uniqueTasks.filter(t => t.status === 'in_progress' || t.status === 'in-progress' || t.status === 'review').length;
-    const todoTasks = uniqueTasks.filter(t => t.status === 'todo' || t.status === 'pending').length;
-    const completedOnTime = uniqueTasks.filter(t => 
-      (t.status === 'done' || t.status === 'completed') && 
-      t.due_date && new Date(t.due_date) >= new Date(t.start_date || t.created_at)
-    ).length;
-
     return {
       totalTasks,
       completedTasks,
       inProgressTasks,
       todoTasks,
-      completedOnTime,
-      tasks: uniqueTasks
+      completionRate: totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0,
+      onTimeRate: 0,
+      avgProgress: 0,
+      tasks: memberTasks
     };
   };
 
@@ -231,6 +248,13 @@ export default function LeadTeamMembers() {
       // ✅ Remove from local state
       setMembers(prev => prev.filter(m => (m.id) !== memberToDelete.id));
       
+      // ✅ Remove from stats map
+      setMemberStatsMap(prev => {
+        const newMap = { ...prev };
+        delete newMap[memberToDelete.id];
+        return newMap;
+      });
+      
       // ✅ Refresh data
       await fetchData();
       
@@ -281,7 +305,7 @@ export default function LeadTeamMembers() {
     if (sortBy === 'tasks') {
       const statsA = getMemberStats(a.id);
       const statsB = getMemberStats(b.id);
-      return statsB.totalTasks - statsA.totalTasks;
+      return (statsB.totalTasks || 0) - (statsA.totalTasks || 0);
     }
     return 0;
   });
@@ -325,6 +349,9 @@ export default function LeadTeamMembers() {
         setShowAdd(false);
         setForm(defaultForm);
         toast.success('Member added successfully');
+        
+        // Fetch stats for the new member
+        await fetchMemberStats();
       } else {
         await fetchData();
         toast.success('Member added successfully');
@@ -356,6 +383,13 @@ export default function LeadTeamMembers() {
         // ✅ Then delete the member
         await teamService.deleteTeamMember(memberToDelete.id);
         setMembers(prev => prev.filter(m => (m.id) !== memberToDelete.id));
+        
+        // ✅ Remove from stats map
+        setMemberStatsMap(prev => {
+          const newMap = { ...prev };
+          delete newMap[memberToDelete.id];
+          return newMap;
+        });
         
         if (memberToDeleteObj) {
           await NotificationHelper.memberDeleted(memberToDeleteObj, user);
@@ -417,6 +451,9 @@ export default function LeadTeamMembers() {
       setSelected(null);
       setForm(defaultForm);
       toast.success('Member updated successfully');
+      
+      // Refresh stats for updated member
+      await fetchMemberStats();
     } catch (error) {
       console.error('Error updating member:', error);
       toast.error(error?.message || 'Failed to update member');
@@ -621,11 +658,12 @@ export default function LeadTeamMembers() {
               const color = member.avatar_color || colors[i % colors.length];
               const addedBy = getUserById(member.added_by);
               const skills = member.skills || '';
-              const onTimeRate = stats.completedTasks > 0
-                ? Math.round((stats.completedOnTime / stats.completedTasks) * 100) : 0;
+              const onTimeRate = stats?.onTimeRate || 0;
               const initials = getInitials(member.name);
-              const completionRate = stats.totalTasks > 0
-                ? Math.round((stats.completedTasks / stats.totalTasks) * 100) : 0;
+              const completionRate = stats?.completionRate || 0;
+              const totalTasks = stats?.totalTasks || 0;
+              const completedTasks = stats?.completedTasks || 0;
+              const inProgressTasks = stats?.inProgressTasks || 0;
 
               return (
                 <motion.div
@@ -683,15 +721,15 @@ export default function LeadTeamMembers() {
 
                   <div className="member-stats">
                     <div className="member-stat">
-                      <span className="member-stat-value">{stats.totalTasks}</span>
+                      <span className="member-stat-value">{totalTasks}</span>
                       <span className="member-stat-label">Tasks</span>
                     </div>
                     <div className="member-stat">
-                      <span className="member-stat-value" style={{ color: '#34d399' }}>{stats.completedTasks}</span>
+                      <span className="member-stat-value" style={{ color: '#34d399' }}>{completedTasks}</span>
                       <span className="member-stat-label">Done</span>
                     </div>
                     <div className="member-stat">
-                      <span className="member-stat-value" style={{ color: '#818cf8' }}>{stats.inProgressTasks}</span>
+                      <span className="member-stat-value" style={{ color: '#818cf8' }}>{inProgressTasks}</span>
                       <span className="member-stat-label">Active</span>
                     </div>
                   </div>
@@ -751,13 +789,14 @@ export default function LeadTeamMembers() {
         {drawer && (() => {
           const memberId = drawer.id;
           const stats = getMemberStats(memberId);
-          const onTimeRate = stats.completedTasks > 0
-            ? Math.round((stats.completedOnTime / stats.completedTasks) * 100) : 0;
+          const onTimeRate = stats?.onTimeRate || 0;
           const initials = getInitials(drawer.name);
           const color = drawer.avatar_color || '#818cf8';
           const addedBy = getUserById(drawer.added_by);
-          const completionRate = stats.totalTasks > 0
-            ? Math.round((stats.completedTasks / stats.totalTasks) * 100) : 0;
+          const completionRate = stats?.completionRate || 0;
+          const totalTasks = stats?.totalTasks || 0;
+          const completedTasks = stats?.completedTasks || 0;
+          const inProgressTasks = stats?.inProgressTasks || 0;
 
           const currentProjects = tasks
             .filter(t => {
@@ -786,7 +825,7 @@ export default function LeadTeamMembers() {
 
           const workHistory = [
             { year: new Date().getFullYear(), text: `Working as ${drawer.role || 'Team Member'}` },
-            ...(stats.completedTasks > 0 ? [{ year: new Date().getFullYear(), text: `Completed ${stats.completedTasks} tasks` }] : [])
+            ...(completedTasks > 0 ? [{ year: new Date().getFullYear(), text: `Completed ${completedTasks} tasks` }] : [])
           ];
 
           return (
@@ -853,15 +892,15 @@ export default function LeadTeamMembers() {
                   {/* STATS ROW */}
                   <div className="mm-stats-row">
                     <div className="mm-stat-item">
-                      <span className="mm-stat-value">{stats.totalTasks}</span>
+                      <span className="mm-stat-value">{totalTasks}</span>
                       <span className="mm-stat-label">Total Tasks</span>
                     </div>
                     <div className="mm-stat-item">
-                      <span className="mm-stat-value" style={{ color: '#34d399' }}>{stats.completedTasks}</span>
+                      <span className="mm-stat-value" style={{ color: '#34d399' }}>{completedTasks}</span>
                       <span className="mm-stat-label">Completed</span>
                     </div>
                     <div className="mm-stat-item">
-                      <span className="mm-stat-value" style={{ color: '#818cf8' }}>{stats.inProgressTasks}</span>
+                      <span className="mm-stat-value" style={{ color: '#818cf8' }}>{inProgressTasks}</span>
                       <span className="mm-stat-label">Active</span>
                     </div>
                     <div className="mm-stat-item">

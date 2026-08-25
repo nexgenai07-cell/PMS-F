@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import { Eye, EyeOff, Zap, ArrowRight, Shield, Users, BarChart3, UserPlus } from 'lucide-react';
+import { Eye, EyeOff, Zap, ArrowRight, Shield, Users, BarChart3, UserPlus, AlertCircle, CheckCircle2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 // Demo users data - use backend role names
@@ -33,12 +33,61 @@ const FEATURES = [
   { icon: Shield, color: 'var(--accent-amber)', title: 'Role-based access', desc: 'Supervisors see everything; leads see their scope.' }
 ];
 
+// Validation functions
+const validators = {
+  email: (value) => {
+    if (!value || value.trim() === '') {
+      return { valid: false, message: 'Email is required' };
+    }
+    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    if (!emailRegex.test(value.trim())) {
+      return { valid: false, message: 'Please enter a valid email address (e.g., user@domain.com)' };
+    }
+    if (value.length > 254) {
+      return { valid: false, message: 'Email address is too long (maximum 254 characters)' };
+    }
+    return { valid: true, message: '' };
+  },
+  
+  password: (value) => {
+    if (!value || value === '') {
+      return { valid: false, message: 'Password is required' };
+    }
+    if (value.length < 8) {
+      return { valid: false, message: 'Password must be at least 8 characters long' };
+    }
+    if (value.length > 128) {
+      return { valid: false, message: 'Password is too long (maximum 128 characters)' };
+    }
+    // Check for at least one uppercase letter
+    if (!/[A-Z]/.test(value)) {
+      return { valid: false, message: 'Password must contain at least one uppercase letter' };
+    }
+    // Check for at least one lowercase letter
+    if (!/[a-z]/.test(value)) {
+      return { valid: false, message: 'Password must contain at least one lowercase letter' };
+    }
+    // Check for at least one number
+    if (!/[0-9]/.test(value)) {
+      return { valid: false, message: 'Password must contain at least one number' };
+    }
+    // Check for at least one special character
+    if (!/[!@#$%^&*(),.?":{}|<>]/.test(value)) {
+      return { valid: false, message: 'Password must contain at least one special character (!@#$%^&*(),.?":{}|<>)' };
+    }
+    return { valid: true, message: '' };
+  }
+};
+
 export default function Login() {
   const location = useLocation();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [touched, setTouched] = useState({ email: false, password: false });
+  const [validationErrors, setValidationErrors] = useState({ email: '', password: '' });
+  
   const { login, setUser } = useAuth();
   const navigate = useNavigate();
 
@@ -52,17 +101,68 @@ export default function Login() {
     }
   }, [location.state]);
 
+  // Validate field on change
+  const validateField = (field, value) => {
+    if (field === 'email') {
+      const result = validators.email(value);
+      setValidationErrors(prev => ({ ...prev, email: result.valid ? '' : result.message }));
+      return result.valid;
+    } else if (field === 'password') {
+      const result = validators.password(value);
+      setValidationErrors(prev => ({ ...prev, password: result.valid ? '' : result.message }));
+      return result.valid;
+    }
+    return true;
+  };
+
+  // Handle field change with validation
+  const handleFieldChange = (field, value) => {
+    if (field === 'email') {
+      setEmail(value);
+      if (touched.email) {
+        validateField('email', value);
+      }
+    } else if (field === 'password') {
+      setPassword(value);
+      if (touched.password) {
+        validateField('password', value);
+      }
+    }
+  };
+
+  // Handle field blur
+  const handleBlur = (field) => {
+    setTouched(prev => ({ ...prev, [field]: true }));
+    if (field === 'email') {
+      validateField('email', email);
+    } else if (field === 'password') {
+      validateField('password', password);
+    }
+  };
+
+  // Validate all fields before submit
+  const validateForm = () => {
+    const emailValid = validators.email(email).valid;
+    const passwordValid = validators.password(password).valid;
+    
+    setTouched({ email: true, password: true });
+    
+    if (!emailValid) {
+      validateField('email', email);
+    }
+    if (!passwordValid) {
+      validateField('password', password);
+    }
+    
+    return emailValid && passwordValid;
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (!email || !password) {
-      toast.error('Please fill in all fields');
-      return;
-    }
-
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      toast.error('Please enter a valid email address');
+    // Validate all fields
+    if (!validateForm()) {
+      toast.error('Please fix all validation errors before submitting');
       return;
     }
 
@@ -133,6 +233,19 @@ export default function Login() {
     navigate(role === 'supervisor' ? '/supervisor' : '/lead', { replace: true });
   };
 
+  // Get field status for styling
+  const getFieldStatus = (field) => {
+    if (!touched[field]) return 'idle';
+    const error = validationErrors[field];
+    if (error) return 'error';
+    return 'success';
+  };
+
+  // Check if form is valid
+  const isFormValid = () => {
+    return validators.email(email).valid && validators.password(password).valid;
+  };
+
   return (
     <div className="login-screen">
       <div className="bg-fx" aria-hidden="true">
@@ -170,43 +283,140 @@ export default function Login() {
           </h1>
           <p className="subhead">Sign in to your workspace and get back to building.</p>
 
-          <form onSubmit={handleSubmit} className="form">
+          <form onSubmit={handleSubmit} className="form" noValidate>
+            {/* Email Field */}
             <div className="input-group">
-              <label>Email address</label>
-              <input
-                className="input"
-                type="email"
-                placeholder="your@email.com"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                disabled={loading}
-                autoFocus={!email}
-              />
-            </div>
-
-            <div className="input-group">
-              <label>Password</label>
-              <div className="password-field">
+              <label htmlFor="email">
+                Email address <span className="required-star">*</span>
+              </label>
+              <div className="field-wrapper">
                 <input
-                  className="input"
-                  type={showPass ? 'text' : 'password'}
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
+                  id="email"
+                  className={`input ${getFieldStatus('email') !== 'idle' ? `input-${getFieldStatus('email')}` : ''}`}
+                  type="email"
+                  placeholder="your@email.com"
+                  value={email}
+                  onChange={e => handleFieldChange('email', e.target.value)}
+                  onBlur={() => handleBlur('email')}
                   disabled={loading}
+                  autoFocus={!email}
+                  aria-invalid={!!validationErrors.email}
+                  aria-describedby="email-error"
                 />
-                <button
-                  type="button"
-                  className="password-toggle"
-                  onClick={() => setShowPass(!showPass)}
-                  aria-label={showPass ? 'Hide password' : 'Show password'}
-                >
-                  {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
+                {touched.email && validationErrors.email && (
+                  <div className="field-icon error-icon">
+                    <AlertCircle size={16} color="#f87171" />
+                  </div>
+                )}
+                {touched.email && !validationErrors.email && email && (
+                  <div className="field-icon success-icon">
+                    <CheckCircle2 size={16} color="#34d399" />
+                  </div>
+                )}
               </div>
+              {touched.email && validationErrors.email && (
+                <div className="error-message" id="email-error">
+                  {validationErrors.email}
+                </div>
+              )}
+              {touched.email && !validationErrors.email && email && (
+                <div className="hint-message">
+                  ✓ Email format is valid
+                </div>
+              )}
             </div>
 
-            <button type="submit" className="btn btn-primary submit-btn" disabled={loading}>
+            {/* Password Field */}
+            <div className="input-group">
+              <label htmlFor="password">
+                Password <span className="required-star">*</span>
+              </label>
+              <div className="field-wrapper">
+                <div className="password-field">
+                  <input
+                    id="password"
+                    className={`input ${getFieldStatus('password') !== 'idle' ? `input-${getFieldStatus('password')}` : ''}`}
+                    type={showPass ? 'text' : 'password'}
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={e => handleFieldChange('password', e.target.value)}
+                    onBlur={() => handleBlur('password')}
+                    disabled={loading}
+                    aria-invalid={!!validationErrors.password}
+                    aria-describedby="password-error"
+                  />
+                  <button
+                    type="button"
+                    className="password-toggle"
+                    onClick={() => setShowPass(!showPass)}
+                    aria-label={showPass ? 'Hide password' : 'Show password'}
+                  >
+                    {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                  {touched.password && validationErrors.password && (
+                    <div className="field-icon error-icon password-icon">
+                      <AlertCircle size={16} color="#f87171" />
+                    </div>
+                  )}
+                  {touched.password && !validationErrors.password && password && (
+                    <div className="field-icon success-icon password-icon">
+                      <CheckCircle2 size={16} color="#34d399" />
+                    </div>
+                  )}
+                </div>
+              </div>
+              {touched.password && validationErrors.password && (
+                <div className="error-message" id="password-error">
+                  {validationErrors.password}
+                </div>
+              )}
+              {touched.password && !validationErrors.password && password && (
+                <div className="hint-message">
+                  ✓ Password meets all requirements
+                </div>
+              )}
+              {/* Password requirements hint */}
+              {touched.password && validationErrors.password && (
+                <div className="password-requirements">
+                  <div className="requirement-item">
+                    <span className={`req-dot ${password.length >= 8 ? 'met' : ''}`} />
+                    <span className={`req-text ${password.length >= 8 ? 'met' : ''}`}>
+                      At least 8 characters
+                    </span>
+                  </div>
+                  <div className="requirement-item">
+                    <span className={`req-dot ${/[A-Z]/.test(password) ? 'met' : ''}`} />
+                    <span className={`req-text ${/[A-Z]/.test(password) ? 'met' : ''}`}>
+                      One uppercase letter
+                    </span>
+                  </div>
+                  <div className="requirement-item">
+                    <span className={`req-dot ${/[a-z]/.test(password) ? 'met' : ''}`} />
+                    <span className={`req-text ${/[a-z]/.test(password) ? 'met' : ''}`}>
+                      One lowercase letter
+                    </span>
+                  </div>
+                  <div className="requirement-item">
+                    <span className={`req-dot ${/[0-9]/.test(password) ? 'met' : ''}`} />
+                    <span className={`req-text ${/[0-9]/.test(password) ? 'met' : ''}`}>
+                      One number
+                    </span>
+                  </div>
+                  <div className="requirement-item">
+                    <span className={`req-dot ${/[!@#$%^&*(),.?":{}|<>]/.test(password) ? 'met' : ''}`} />
+                    <span className={`req-text ${/[!@#$%^&*(),.?":{}|<>]/.test(password) ? 'met' : ''}`}>
+                      One special character (!@#$%^&*(),.?":{}|&lt;&gt;)
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <button 
+              type="submit" 
+              className="btn btn-primary submit-btn" 
+              disabled={loading || !isFormValid()}
+            >
               {loading ? (
                 <>
                   <span className="spinner" />
@@ -415,6 +625,15 @@ export default function Login() {
           margin-bottom: 6px;
         }
 
+        .required-star {
+          color: #f87171;
+          margin-left: 2px;
+        }
+
+        .field-wrapper {
+          position: relative;
+        }
+
         .input {
           width: 100%;
           padding: 11px 14px;
@@ -433,6 +652,24 @@ export default function Login() {
           box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
         }
 
+        .input-error {
+          border-color: #f87171 !important;
+          background: rgba(248, 113, 113, 0.04) !important;
+        }
+
+        .input-error:focus {
+          box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.12) !important;
+        }
+
+        .input-success {
+          border-color: #34d399 !important;
+          background: rgba(52, 211, 153, 0.04) !important;
+        }
+
+        .input-success:focus {
+          box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.12) !important;
+        }
+
         .input::placeholder {
           color: var(--text-muted);
         }
@@ -441,12 +678,32 @@ export default function Login() {
           opacity: 0.6;
         }
 
+        .field-icon {
+          position: absolute;
+          right: 12px;
+          top: 50%;
+          transform: translateY(-50%);
+          pointer-events: none;
+        }
+
+        .error-icon {
+          color: #f87171;
+        }
+
+        .success-icon {
+          color: #34d399;
+        }
+
         .password-field {
           position: relative;
         }
 
         .password-field .input {
           padding-right: 42px;
+        }
+
+        .password-field .password-icon {
+          right: 40px;
         }
 
         .password-toggle {
@@ -465,6 +722,61 @@ export default function Login() {
 
         .password-toggle:hover {
           color: var(--text-primary);
+        }
+
+        .error-message {
+          color: #f87171;
+          font-size: 12px;
+          font-weight: 500;
+          margin-top: 4px;
+          display: flex;
+          align-items: center;
+          gap: 4px;
+        }
+
+        .hint-message {
+          color: #34d399;
+          font-size: 12px;
+          font-weight: 500;
+          margin-top: 4px;
+        }
+
+        .password-requirements {
+          margin-top: 6px;
+          padding: 8px 12px;
+          background: var(--bg-secondary);
+          border-radius: 8px;
+          border: 1px solid var(--border-subtle);
+        }
+
+        .requirement-item {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 2px 0;
+          font-size: 11.5px;
+        }
+
+        .req-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: var(--border-default);
+          flex-shrink: 0;
+          transition: background 0.3s;
+        }
+
+        .req-dot.met {
+          background: #34d399;
+        }
+
+        .req-text {
+          color: var(--text-muted);
+          transition: color 0.3s;
+        }
+
+        .req-text.met {
+          color: #34d399;
         }
 
         .btn {
@@ -491,8 +803,9 @@ export default function Login() {
         }
 
         .btn-primary:disabled {
-          opacity: 0.7;
+          opacity: 0.5;
           cursor: not-allowed;
+          transform: none;
         }
 
         .submit-btn {
@@ -697,6 +1010,12 @@ export default function Login() {
           .brand-mark svg {
             width: 16px;
             height: 16px;
+          }
+          .password-requirements {
+            font-size: 10px;
+          }
+          .requirement-item {
+            font-size: 10px;
           }
         }
       `}</style>

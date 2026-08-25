@@ -140,6 +140,7 @@ export default function SupervisorProjects() {
   const [users, setUsers] = useState([]);
   const [pteamEntries, setPteamEntries] = useState([]);
   const [allSupervisors, setAllSupervisors] = useState([]);
+  const [projectStatsMap, setProjectStatsMap] = useState({});
 
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
@@ -255,15 +256,12 @@ export default function SupervisorProjects() {
       const projectsWithMembers = userProjects.map(project => {
         const projectId = project.p_id || project.id;
         
-        // Get all PTeam entries for this project
         const projectPteamEntries = pteamList.filter(entry => Number(entry.p) === Number(projectId));
         
-        // Get members from PTeam entries - with deduplication
         const memberMap = new Map();
         projectPteamEntries.forEach(entry => {
           const member = activeMembersList.find(m => Number(m.id) === Number(entry.tm));
           if (member && member.is_deleted !== 1) {
-            // Use the member id as key to deduplicate
             if (!memberMap.has(member.id)) {
               memberMap.set(member.id, {
                 ...member,
@@ -276,13 +274,11 @@ export default function SupervisorProjects() {
         
         const projectMembers = Array.from(memberMap.values());
 
-        // Get supervisor members (users with role manager/admin/supervisor)
         const supervisorMembers = projectMembers.filter(m => {
           const userObj = usersList.find(u => Number(u.id) === Number(m.id));
           return userObj && (userObj.role === 'manager' || userObj.role === 'admin' || userObj.role === 'supervisor');
         });
 
-        // Get regular members (non-supervisors)
         const regularMembers = projectMembers.filter(m => {
           const userObj = usersList.find(u => Number(u.id) === Number(m.id));
           return !(userObj && (userObj.role === 'manager' || userObj.role === 'admin' || userObj.role === 'supervisor'));
@@ -306,6 +302,20 @@ export default function SupervisorProjects() {
       setTeamMembers(activeMembersList);
       setUsers(usersList);
       setPteamEntries(pteamList);
+
+      // ✅ Fetch stats for all projects
+      const statsMap = {};
+      for (const project of projectsWithMembers) {
+        const projectId = project.p_id || project.id;
+        try {
+          const statsResponse = await projectService.getProjectStats(projectId);
+          statsMap[projectId] = statsResponse?.data || {};
+        } catch (error) {
+          console.error(`Error fetching stats for project ${projectId}:`, error);
+        }
+      }
+      setProjectStatsMap(statsMap);
+
     } catch (error) {
       console.error('Error fetching data:', error);
       toast.error('Failed to load projects. Please refresh.');
@@ -378,7 +388,6 @@ export default function SupervisorProjects() {
       console.log('📤 Selected supervisors (User IDs):', form.supervisors);
       console.log('📤 Selected members (User IDs):', form.members);
 
-      // ✅ DEDUPLICATE the selected IDs BEFORE processing
       const uniqueSupervisors = [...new Set(form.supervisors)];
       const uniqueMembers = [...new Set(form.members)];
 
@@ -394,10 +403,8 @@ export default function SupervisorProjects() {
         createdProject = updated?.data || updated;
         const projectId = createdProject.p_id || createdProject.id;
         
-        // ✅ Get ALL current PTeam entries for this project
         const currentPteam = pteamEntries.filter(entry => Number(entry.p) === Number(projectId));
         
-        // ✅ Get current supervisor IDs from PTeam - with deduplication
         const currentSupervisorIds = [...new Set(
           currentPteam
             .filter(entry => {
@@ -408,10 +415,8 @@ export default function SupervisorProjects() {
             .map(entry => Number(entry.tm))
         )];
         
-        // Get current member IDs from PTeam - with deduplication
         const currentMemberIds = [...new Set(currentPteam.map(entry => Number(entry.tm)))];
         
-        // ✅ Convert User IDs to TeamMember IDs - with fallback and deduplication
         const newSupervisorIds = [...new Set(
           uniqueSupervisors
             .map(userId => {
@@ -433,7 +438,6 @@ export default function SupervisorProjects() {
         console.log('📤 New supervisor TeamMember IDs:', newSupervisorIds);
         console.log('📤 New member TeamMember IDs:', newMemberIds);
         
-        // ✅ Add new supervisors (only if not already present)
         for (const tmId of newSupervisorIds) {
           if (!currentSupervisorIds.includes(tmId)) {
             try {
@@ -447,7 +451,6 @@ export default function SupervisorProjects() {
           }
         }
         
-        // ✅ Add new members (non-supervisors)
         for (const tmId of newMemberIds) {
           if (!currentMemberIds.includes(tmId)) {
             try {
@@ -461,7 +464,6 @@ export default function SupervisorProjects() {
           }
         }
         
-        // ✅ Remove supervisors that are no longer selected
         for (const currentId of currentSupervisorIds) {
           if (!newSupervisorIds.includes(currentId)) {
             const entryToRemove = currentPteam.find(entry => Number(entry.tm) === currentId);
@@ -476,7 +478,6 @@ export default function SupervisorProjects() {
           }
         }
         
-        // ✅ Remove members that are no longer selected
         const allNewIds = [...newSupervisorIds, ...newMemberIds];
         for (const currentId of currentMemberIds) {
           if (!allNewIds.includes(currentId)) {
@@ -509,7 +510,6 @@ export default function SupervisorProjects() {
           }
         }
 
-        // ✅ Add supervisors with deduplication
         if (createdProject && uniqueSupervisors.length > 0) {
           const uniqueSupervisorIds = [...new Set(uniqueSupervisors)];
           for (const supervisorId of uniqueSupervisorIds) {
@@ -524,7 +524,6 @@ export default function SupervisorProjects() {
           }
         }
 
-        // ✅ Add members with deduplication
         if (createdProject && uniqueMembers.length > 0) {
           const uniqueMemberIds = [...new Set(uniqueMembers)];
           for (const memberId of uniqueMemberIds) {
@@ -657,12 +656,20 @@ export default function SupervisorProjects() {
     setTasks(tasks.map(t => (t.t_id || t.id) === taskId ? { ...t, priority } : t));
   };
 
-  // Helper functions
+  // ✅ Helper functions using stats map
   const getProjectProgress = (projectId) => {
-    const projectTasks = tasks.filter(t => Number(t.p_id || t.p) === Number(projectId));
-    if (projectTasks.length === 0) return 0;
-    const done = projectTasks.filter(t => t.status === 'done' || t.status === 'completed').length;
-    return Math.round((done / projectTasks.length) * 100);
+    const stats = projectStatsMap[projectId];
+    return stats?.completionRate || 0;
+  };
+
+  const getProjectTotalTasks = (projectId) => {
+    const stats = projectStatsMap[projectId];
+    return stats?.totalTasks || 0;
+  };
+
+  const getProjectDoneTasks = (projectId) => {
+    const stats = projectStatsMap[projectId];
+    return stats?.completedTasks || 0;
   };
 
   const getProjectMembers = (project) => {
@@ -680,7 +687,6 @@ export default function SupervisorProjects() {
   const handleEditProject = (project) => {
     setEditProject(project);
     
-    // ✅ Get all supervisor IDs from the project's supervisorMembers - deduplicate
     const supervisorIds = [...new Set(project.supervisorMembers?.map(s => s.id) || [])];
     const memberIds = [...new Set(project.memberIds || [])];
     
@@ -850,10 +856,14 @@ export default function SupervisorProjects() {
         ) : (
           <div className="lp-projects-grid">
             {paginatedProjects.map((project, index) => {
-              const progress = getProjectProgress(project.p_id || project.id);
+              const projectId = project.p_id || project.id;
+              
+              // ✅ Get stats from map (already fetched)
+              const progress = getProjectProgress(projectId);
+              const totalTasks = getProjectTotalTasks(projectId);
+              const doneTasks = getProjectDoneTasks(projectId);
+              
               const members = getProjectMembers(project);
-              const pTasks = tasks.filter(t => Number(t.p_id || t.p) === Number(project.p_id || project.id) && !t.is_deleted);
-              const doneTasks = pTasks.filter(t => t.status === 'done' || t.status === 'completed').length;
               const health = progress >= 70 ? '#34d399' : progress >= 40 ? '#f59e0b' : '#f87171';
 
               // Get supervisor names for display
@@ -872,7 +882,6 @@ export default function SupervisorProjects() {
                     <div className="lp-card-badges">
                       <PriorityBadge priority={project.priority} />
                       <StatusBadge status={project.status} />
-                      {/* Show supervisor badge if there are supervisors */}
                       {project.supervisorMembers && project.supervisorMembers.length > 0 && (
                         <span className="lp-supervisor-badge" title={`${project.supervisorMembers.length} supervisor(s): ${supervisorNames}`}>
                           <Crown size={10} />
@@ -926,7 +935,7 @@ export default function SupervisorProjects() {
                     </div>
                     <div style={{ textAlign: 'right' }}>
                       <p className="lp-meta-label">Tasks</p>
-                      <p className="lp-meta-value">{doneTasks}/{pTasks.length}</p>
+                      <p className="lp-meta-value">{doneTasks}/{totalTasks}</p>
                     </div>
                   </div>
 

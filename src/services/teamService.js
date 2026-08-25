@@ -47,7 +47,15 @@ class TeamService {
       throw this.handleError(error);
     }
   }
-
+async getTeamMemberStats(memberId) {
+  try {
+    const response = await api.get(`/api/team-members/${memberId}/stats`);
+    return response.data;
+  } catch (error) {
+    console.error('Error fetching team member stats:', error);
+    return { data: null };
+  }
+}
   async addTeamMember(memberData) {
     try {
       const payload = {

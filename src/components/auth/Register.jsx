@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import { Eye, EyeOff, Zap, ArrowRight, Shield, Users, CheckCircle } from 'lucide-react';
+import { Eye, EyeOff, Zap, ArrowRight, Shield, Users, CheckCircle, AlertCircle, CheckCircle2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 const ROLE_OPTIONS = [
@@ -46,6 +46,89 @@ function scorePassword(password) {
   return Math.min(score, 5);
 }
 
+// Validation functions
+const validators = {
+  username: (value) => {
+    if (!value || value.trim() === '') {
+      return { valid: false, message: 'Username is required' };
+    }
+    if (value.length < 3) {
+      return { valid: false, message: 'Username must be at least 3 characters' };
+    }
+    if (value.length > 50) {
+      return { valid: false, message: 'Username must be less than 50 characters' };
+    }
+    if (!/^[a-zA-Z0-9_]/.test(value)) {
+      return { valid: false, message: 'Username can only contain letters, numbers, and underscores' };
+    }
+    return { valid: true, message: '' };
+  },
+  
+  email: (value) => {
+    if (!value || value.trim() === '') {
+      return { valid: false, message: 'Email is required' };
+    }
+    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    if (!emailRegex.test(value.trim())) {
+      return { valid: false, message: 'Please enter a valid email address (e.g., user@domain.com)' };
+    }
+    if (value.length > 254) {
+      return { valid: false, message: 'Email address is too long (maximum 254 characters)' };
+    }
+    // Check for common email providers
+    const domain = value.split('@')[1]?.toLowerCase();
+    if (domain && !/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) {
+      return { valid: false, message: 'Please enter a valid email domain' };
+    }
+    return { valid: true, message: '' };
+  },
+  
+  password: (value) => {
+    if (!value || value === '') {
+      return { valid: false, message: 'Password is required' };
+    }
+    if (value.length < 8) {
+      return { valid: false, message: 'Password must be at least 8 characters long' };
+    }
+    if (value.length > 128) {
+      return { valid: false, message: 'Password is too long (maximum 128 characters)' };
+    }
+    if (!/[A-Z]/.test(value)) {
+      return { valid: false, message: 'Password must contain at least one uppercase letter' };
+    }
+    if (!/[a-z]/.test(value)) {
+      return { valid: false, message: 'Password must contain at least one lowercase letter' };
+    }
+    if (!/[0-9]/.test(value)) {
+      return { valid: false, message: 'Password must contain at least one number' };
+    }
+    if (!/[!@#$%^&*(),.?":{}|<>]/.test(value)) {
+      return { valid: false, message: 'Password must contain at least one special character (!@#$%^&*(),.?":{}|<>)' };
+    }
+    return { valid: true, message: '' };
+  },
+  
+  confirmPassword: (value, password) => {
+    if (!value || value === '') {
+      return { valid: false, message: 'Please confirm your password' };
+    }
+    if (value !== password) {
+      return { valid: false, message: 'Passwords do not match' };
+    }
+    return { valid: true, message: '' };
+  },
+  
+  role: (value) => {
+    if (!value) {
+      return { valid: false, message: 'Please select a role' };
+    }
+    if (!['manager', 'member'].includes(value)) {
+      return { valid: false, message: 'Invalid role selected' };
+    }
+    return { valid: true, message: '' };
+  }
+};
+
 export default function Register() {
   const [formData, setFormData] = useState({
     u_name: '',
@@ -57,70 +140,136 @@ export default function Register() {
   const [showPass, setShowPass] = useState(false);
   const [showConfirmPass, setShowConfirmPass] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [errors, setErrors] = useState({});
+  const [touched, setTouched] = useState({
+    u_name: false,
+    email: false,
+    password: false,
+    confirmPassword: false,
+    role: false
+  });
+  const [validationErrors, setValidationErrors] = useState({
+    u_name: '',
+    email: '',
+    password: '',
+    confirmPassword: '',
+    role: ''
+  });
+  
   const { register } = useAuth();
   const navigate = useNavigate();
 
   const strengthScore = scorePassword(formData.password);
   const strength = STRENGTH_MAP[strengthScore];
 
-  const handleChange = (e) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
-    if (errors[name]) {
-      setErrors(prev => ({ ...prev, [name]: '' }));
+  // Validate field
+  const validateField = (field, value) => {
+    let result;
+    switch (field) {
+      case 'u_name':
+        result = validators.username(value);
+        break;
+      case 'email':
+        result = validators.email(value);
+        break;
+      case 'password':
+        result = validators.password(value);
+        break;
+      case 'confirmPassword':
+        result = validators.confirmPassword(value, formData.password);
+        break;
+      case 'role':
+        result = validators.role(value);
+        break;
+      default:
+        result = { valid: true, message: '' };
+    }
+    setValidationErrors(prev => ({ ...prev, [field]: result.valid ? '' : result.message }));
+    return result.valid;
+  };
+
+  // Handle field change with validation
+  const handleFieldChange = (field, value) => {
+    setFormData(prev => ({ ...prev, [field]: value }));
+    if (touched[field]) {
+      validateField(field, value);
+      // If password changes, re-validate confirm password
+      if (field === 'password' && touched.confirmPassword) {
+        validateField('confirmPassword', formData.confirmPassword);
+      }
     }
   };
 
+  // Handle field blur
+  const handleBlur = (field) => {
+    setTouched(prev => ({ ...prev, [field]: true }));
+    const value = formData[field];
+    validateField(field, value);
+    // If password is blurred, validate confirm password too
+    if (field === 'password' && formData.confirmPassword) {
+      validateField('confirmPassword', formData.confirmPassword);
+    }
+  };
+
+  // Handle role selection
+  const handleRoleSelect = (role) => {
+    setFormData(prev => ({ ...prev, role }));
+    setTouched(prev => ({ ...prev, role: true }));
+    validateField('role', role);
+  };
+
+  // Validate all fields before submit
   const validateForm = () => {
-    const newErrors = {};
+    const fields = ['u_name', 'email', 'password', 'confirmPassword', 'role'];
+    let allValid = true;
+    
+    fields.forEach(field => {
+      setTouched(prev => ({ ...prev, [field]: true }));
+      const value = formData[field];
+      const isValid = validateField(field, value);
+      if (!isValid) allValid = false;
+    });
+    
+    return allValid;
+  };
 
-    if (!formData.u_name.trim()) {
-      newErrors.u_name = 'Username is required';
-    } else if (formData.u_name.length < 3) {
-      newErrors.u_name = 'Username must be at least 3 characters';
+  // Get field status for styling
+  const getFieldStatus = (field) => {
+    if (!touched[field]) return 'idle';
+    const error = validationErrors[field];
+    if (error) return 'error';
+    return 'success';
+  };
+
+  const getFieldStyle = (field) => {
+    const status = getFieldStatus(field);
+    if (status === 'error') {
+      return { borderColor: '#f87171', backgroundColor: 'rgba(248, 113, 113, 0.04)' };
     }
-
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!formData.email) {
-      newErrors.email = 'Email is required';
-    } else if (!emailRegex.test(formData.email)) {
-      newErrors.email = 'Please enter a valid email address';
+    if (status === 'success') {
+      return { borderColor: '#34d399', backgroundColor: 'rgba(52, 211, 153, 0.04)' };
     }
+    return {};
+  };
 
-    if (!formData.password) {
-      newErrors.password = 'Password is required';
-    } else if (formData.password.length < 8) {
-      newErrors.password = 'Password must be at least 8 characters';
-    }
-
-    if (!formData.confirmPassword) {
-      newErrors.confirmPassword = 'Please confirm your password';
-    } else if (formData.password !== formData.confirmPassword) {
-      newErrors.confirmPassword = 'Passwords do not match';
-    }
-
-    if (!formData.role) {
-      newErrors.role = 'Please select a role';
-    }
-
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+  // Check if form is valid
+  const isFormValid = () => {
+    return Object.values(validationErrors).every(e => e === '') &&
+           Object.values(formData).every(v => v !== '' || v === 'member');
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
 
     if (!validateForm()) {
-      toast.error('Please fix the errors before submitting');
+      toast.error('Please fix all errors before submitting');
       return;
     }
 
     setLoading(true);
     try {
       const registrationData = {
-        u_name: formData.u_name,
-        email: formData.email,
+        u_name: formData.u_name.trim(),
+        email: formData.email.trim(),
         password: formData.password,
         role: formData.role
       };
@@ -128,7 +277,6 @@ export default function Register() {
       await register(registrationData);
       toast.success('Registration successful! Please login.');
       
-      // ✅ FIX: Pass email to login page via state
       navigate('/login', { 
         state: { email: formData.email }
       });
@@ -178,15 +326,20 @@ export default function Register() {
       const finalMessage = typeof errorMessage === 'string' ? errorMessage : 'Registration failed. Please try again.';
       toast.error(finalMessage);
 
+      // Map errors to fields
       const lower = finalMessage.toLowerCase();
-      if (lower.includes('email')) {
-        setErrors(prev => ({ ...prev, email: finalMessage }));
+      if (lower.includes('email') || lower.includes('duplicate') || lower.includes('unique')) {
+        setValidationErrors(prev => ({ ...prev, email: finalMessage }));
+        setTouched(prev => ({ ...prev, email: true }));
       } else if (lower.includes('username') || lower.includes('u_name')) {
-        setErrors(prev => ({ ...prev, u_name: finalMessage }));
+        setValidationErrors(prev => ({ ...prev, u_name: finalMessage }));
+        setTouched(prev => ({ ...prev, u_name: true }));
       } else if (lower.includes('password')) {
-        setErrors(prev => ({ ...prev, password: finalMessage }));
+        setValidationErrors(prev => ({ ...prev, password: finalMessage }));
+        setTouched(prev => ({ ...prev, password: true }));
       } else if (lower.includes('role')) {
-        setErrors(prev => ({ ...prev, role: finalMessage }));
+        setValidationErrors(prev => ({ ...prev, role: finalMessage }));
+        setTouched(prev => ({ ...prev, role: true }));
       }
     } finally {
       setLoading(false);
@@ -230,81 +383,176 @@ export default function Register() {
           </h1>
           <p className="subhead">Choose your role and get started with AEEL-PMS.</p>
 
-          <form onSubmit={handleSubmit} className="form">
+          <form onSubmit={handleSubmit} className="form" noValidate>
+            {/* Username Field */}
             <div className="input-group">
-              <label>Username *</label>
-              <input
-                className={`input ${errors.u_name ? 'input-error' : ''}`}
-                type="text"
-                name="u_name"
-                placeholder="johndoe"
-                value={formData.u_name}
-                onChange={handleChange}
-                disabled={loading}
-                autoFocus
-              />
-              {errors.u_name && <span className="input-error-text">{errors.u_name}</span>}
+              <label htmlFor="u_name">
+                Username <span className="required-star">*</span>
+              </label>
+              <div className="field-wrapper">
+                <input
+                  id="u_name"
+                  className={`input ${getFieldStatus('u_name') !== 'idle' ? `input-${getFieldStatus('u_name')}` : ''}`}
+                  type="text"
+                  name="u_name"
+                  placeholder="johndoe"
+                  value={formData.u_name}
+                  onChange={e => handleFieldChange('u_name', e.target.value)}
+                  onBlur={() => handleBlur('u_name')}
+                  disabled={loading}
+                  autoFocus
+                  aria-invalid={!!validationErrors.u_name}
+                  aria-describedby="u_name-error"
+                />
+                {touched.u_name && validationErrors.u_name && (
+                  <div className="field-icon error-icon">
+                    <AlertCircle size={16} color="#f87171" />
+                  </div>
+                )}
+                {touched.u_name && !validationErrors.u_name && formData.u_name && (
+                  <div className="field-icon success-icon">
+                    <CheckCircle2 size={16} color="#34d399" />
+                  </div>
+                )}
+              </div>
+              {touched.u_name && validationErrors.u_name && (
+                <div className="error-message" id="u_name-error">
+                  {validationErrors.u_name}
+                </div>
+              )}
+              {touched.u_name && !validationErrors.u_name && formData.u_name && (
+                <div className="hint-message">
+                  ✓ Username is available
+                </div>
+              )}
             </div>
 
+            {/* Email Field */}
             <div className="input-group">
-              <label>Email address *</label>
-              <input
-                className={`input ${errors.email ? 'input-error' : ''}`}
-                type="email"
-                name="email"
-                placeholder="your@email.com"
-                value={formData.email}
-                onChange={handleChange}
-                disabled={loading}
-              />
-              {errors.email && <span className="input-error-text">{errors.email}</span>}
+              <label htmlFor="email">
+                Email address <span className="required-star">*</span>
+              </label>
+              <div className="field-wrapper">
+                <input
+                  id="email"
+                  className={`input ${getFieldStatus('email') !== 'idle' ? `input-${getFieldStatus('email')}` : ''}`}
+                  type="email"
+                  name="email"
+                  placeholder="your@email.com"
+                  value={formData.email}
+                  onChange={e => handleFieldChange('email', e.target.value)}
+                  onBlur={() => handleBlur('email')}
+                  disabled={loading}
+                  aria-invalid={!!validationErrors.email}
+                  aria-describedby="email-error"
+                />
+                {touched.email && validationErrors.email && (
+                  <div className="field-icon error-icon">
+                    <AlertCircle size={16} color="#f87171" />
+                  </div>
+                )}
+                {touched.email && !validationErrors.email && formData.email && (
+                  <div className="field-icon success-icon">
+                    <CheckCircle2 size={16} color="#34d399" />
+                  </div>
+                )}
+              </div>
+              {touched.email && validationErrors.email && (
+                <div className="error-message" id="email-error">
+                  {validationErrors.email}
+                </div>
+              )}
+              {touched.email && !validationErrors.email && formData.email && (
+                <div className="hint-message">
+                  ✓ Email format is valid
+                </div>
+              )}
             </div>
 
+            {/* Role Selection */}
             <div className="input-group">
-              <label>Select your role *</label>
+              <label>
+                Select your role <span className="required-star">*</span>
+              </label>
               <div className="role-grid">
                 {ROLE_OPTIONS.map((role) => {
                   const Icon = role.icon;
                   const isSelected = formData.role === role.value;
+                  const status = getFieldStatus('role');
+                  const isError = status === 'error' && touched.role;
+                  
                   return (
                     <button
                       key={role.value}
                       type="button"
-                      className={`role-card ${isSelected ? 'role-card--active' : ''}`}
-                      onClick={() => setFormData(prev => ({ ...prev, role: role.value }))}
+                      className={`role-card ${isSelected ? 'role-card--active' : ''} ${isError ? 'role-card--error' : ''}`}
+                      onClick={() => handleRoleSelect(role.value)}
+                      aria-selected={isSelected}
                     >
                       <Icon size={20} className="role-icon" />
                       <div className="role-label">{role.label}</div>
                       <div className="role-desc">{role.description}</div>
+                      {isSelected && (
+                        <div className="role-checkmark">
+                          <CheckCircle size={16} color="#6366f1" />
+                        </div>
+                      )}
                     </button>
                   );
                 })}
               </div>
-              {errors.role && <span className="input-error-text">{errors.role}</span>}
+              {touched.role && validationErrors.role && (
+                <div className="error-message">
+                  {validationErrors.role}
+                </div>
+              )}
             </div>
 
+            {/* Password Field */}
             <div className="input-group">
-              <label>Password *</label>
-              <div className="password-field">
-                <input
-                  className={`input ${errors.password ? 'input-error' : ''}`}
-                  type={showPass ? 'text' : 'password'}
-                  name="password"
-                  placeholder="••••••••"
-                  value={formData.password}
-                  onChange={handleChange}
-                  disabled={loading}
-                />
-                <button
-                  type="button"
-                  className="password-toggle"
-                  onClick={() => setShowPass(!showPass)}
-                  aria-label={showPass ? 'Hide password' : 'Show password'}
-                >
-                  {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
+              <label htmlFor="password">
+                Password <span className="required-star">*</span>
+              </label>
+              <div className="field-wrapper">
+                <div className="password-field">
+                  <input
+                    id="password"
+                    className={`input ${getFieldStatus('password') !== 'idle' ? `input-${getFieldStatus('password')}` : ''}`}
+                    type={showPass ? 'text' : 'password'}
+                    name="password"
+                    placeholder="••••••••"
+                    value={formData.password}
+                    onChange={e => handleFieldChange('password', e.target.value)}
+                    onBlur={() => handleBlur('password')}
+                    disabled={loading}
+                    aria-invalid={!!validationErrors.password}
+                    aria-describedby="password-error"
+                  />
+                  <button
+                    type="button"
+                    className="password-toggle"
+                    onClick={() => setShowPass(!showPass)}
+                    aria-label={showPass ? 'Hide password' : 'Show password'}
+                  >
+                    {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                  {touched.password && validationErrors.password && (
+                    <div className="field-icon error-icon password-icon">
+                      <AlertCircle size={16} color="#f87171" />
+                    </div>
+                  )}
+                  {touched.password && !validationErrors.password && formData.password && (
+                    <div className="field-icon success-icon password-icon">
+                      <CheckCircle2 size={16} color="#34d399" />
+                    </div>
+                  )}
+                </div>
               </div>
-              {errors.password && <span className="input-error-text">{errors.password}</span>}
+              {touched.password && validationErrors.password && (
+                <div className="error-message" id="password-error">
+                  {validationErrors.password}
+                </div>
+              )}
 
               {formData.password && (
                 <div className="strength">
@@ -321,42 +569,78 @@ export default function Register() {
                   <span className="strength-feedback">{strength.feedback}</span>
                 </div>
               )}
-            </div>
 
-            <div className="input-group">
-              <label>Confirm Password *</label>
-              <div className="password-field">
-                <input
-                  className={`input ${errors.confirmPassword ? 'input-error' : ''}`}
-                  type={showConfirmPass ? 'text' : 'password'}
-                  name="confirmPassword"
-                  placeholder="••••••••"
-                  value={formData.confirmPassword}
-                  onChange={handleChange}
-                  disabled={loading}
-                />
-                <button
-                  type="button"
-                  className="password-toggle"
-                  onClick={() => setShowConfirmPass(!showConfirmPass)}
-                  aria-label={showConfirmPass ? 'Hide password' : 'Show password'}
-                >
-                  {showConfirmPass ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
+              {/* Password Requirements */}
+              <div className="requirements">
+                {REQUIREMENTS.map(({ test, label }) => {
+                  const isMet = test(formData.password);
+                  return (
+                    <div className={`requirement ${isMet ? 'requirement--met' : ''}`} key={label}>
+                      <CheckCircle size={12} color={isMet ? '#10b981' : 'var(--text-muted)'} />
+                      <span>{label}</span>
+                    </div>
+                  );
+                })}
               </div>
-              {errors.confirmPassword && <span className="input-error-text">{errors.confirmPassword}</span>}
             </div>
 
-            <div className="requirements">
-              {REQUIREMENTS.map(({ test, label }) => (
-                <div className="requirement" key={label}>
-                  <CheckCircle size={12} color={test(formData.password) ? '#10b981' : 'var(--text-muted)'} />
-                  <span>{label}</span>
+            {/* Confirm Password Field */}
+            <div className="input-group">
+              <label htmlFor="confirmPassword">
+                Confirm Password <span className="required-star">*</span>
+              </label>
+              <div className="field-wrapper">
+                <div className="password-field">
+                  <input
+                    id="confirmPassword"
+                    className={`input ${getFieldStatus('confirmPassword') !== 'idle' ? `input-${getFieldStatus('confirmPassword')}` : ''}`}
+                    type={showConfirmPass ? 'text' : 'password'}
+                    name="confirmPassword"
+                    placeholder="••••••••"
+                    value={formData.confirmPassword}
+                    onChange={e => handleFieldChange('confirmPassword', e.target.value)}
+                    onBlur={() => handleBlur('confirmPassword')}
+                    disabled={loading}
+                    aria-invalid={!!validationErrors.confirmPassword}
+                    aria-describedby="confirmPassword-error"
+                  />
+                  <button
+                    type="button"
+                    className="password-toggle"
+                    onClick={() => setShowConfirmPass(!showConfirmPass)}
+                    aria-label={showConfirmPass ? 'Hide password' : 'Show password'}
+                  >
+                    {showConfirmPass ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                  {touched.confirmPassword && validationErrors.confirmPassword && (
+                    <div className="field-icon error-icon password-icon">
+                      <AlertCircle size={16} color="#f87171" />
+                    </div>
+                  )}
+                  {touched.confirmPassword && !validationErrors.confirmPassword && formData.confirmPassword && (
+                    <div className="field-icon success-icon password-icon">
+                      <CheckCircle2 size={16} color="#34d399" />
+                    </div>
+                  )}
                 </div>
-              ))}
+              </div>
+              {touched.confirmPassword && validationErrors.confirmPassword && (
+                <div className="error-message" id="confirmPassword-error">
+                  {validationErrors.confirmPassword}
+                </div>
+              )}
+              {touched.confirmPassword && !validationErrors.confirmPassword && formData.confirmPassword && formData.password && (
+                <div className="hint-message">
+                  ✓ Passwords match
+                </div>
+              )}
             </div>
 
-            <button type="submit" className="btn btn-primary submit-btn" disabled={loading}>
+            <button 
+              type="submit" 
+              className="btn btn-primary submit-btn" 
+              disabled={loading || !isFormValid()}
+            >
               {loading ? (
                 <>
                   <span className="spinner" />
@@ -565,6 +849,35 @@ export default function Register() {
           margin-bottom: 5px;
         }
 
+        .required-star {
+          color: #f87171;
+          margin-left: 2px;
+        }
+
+        .field-wrapper {
+          position: relative;
+        }
+
+        .field-icon {
+          position: absolute;
+          right: 12px;
+          top: 50%;
+          transform: translateY(-50%);
+          pointer-events: none;
+        }
+
+        .error-icon {
+          color: #f87171;
+        }
+
+        .success-icon {
+          color: #34d399;
+        }
+
+        .password-field .password-icon {
+          right: 40px;
+        }
+
         .input {
           width: 100%;
           padding: 10px 14px;
@@ -592,17 +905,35 @@ export default function Register() {
         }
 
         .input-error {
-          border-color: #ef4444 !important;
+          border-color: #f87171 !important;
+          background: rgba(248, 113, 113, 0.04) !important;
         }
+
         .input-error:focus {
-          border-color: #ef4444 !important;
-          box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1) !important;
+          box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.12) !important;
         }
-        .input-error-text {
-          color: #ef4444;
-          font-size: 11.5px;
+
+        .input-success {
+          border-color: #34d399 !important;
+          background: rgba(52, 211, 153, 0.04) !important;
+        }
+
+        .input-success:focus {
+          box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.12) !important;
+        }
+
+        .error-message {
+          color: #f87171;
+          font-size: 12px;
+          font-weight: 500;
           margin-top: 4px;
-          display: block;
+        }
+
+        .hint-message {
+          color: #34d399;
+          font-size: 12px;
+          font-weight: 500;
+          margin-top: 4px;
         }
 
         .role-grid {
@@ -613,6 +944,7 @@ export default function Register() {
         }
 
         .role-card {
+          position: relative;
           padding: 12px 10px;
           border-radius: 12px;
           border: 2px solid var(--border-default);
@@ -623,11 +955,14 @@ export default function Register() {
           color: var(--text-primary);
         }
         .role-card:hover {
-          transform: translateY(-1px);
+          transform: translateY(-2px);
         }
         .role-card--active {
           border-color: var(--accent-primary);
           background: rgba(99,102,241,0.08);
+        }
+        .role-card--error {
+          border-color: #f87171;
         }
 
         .role-icon {
@@ -654,6 +989,7 @@ export default function Register() {
           color: var(--text-muted);
           line-height: 1.3;
         }
+
 
         .password-field {
           position: relative;

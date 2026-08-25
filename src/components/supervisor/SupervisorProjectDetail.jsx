@@ -108,6 +108,18 @@ export default function SupervisorProjectDetail() {
   const [isModalCommenting, setIsModalCommenting] = useState(false);
   const [commentUpdateTrigger, setCommentUpdateTrigger] = useState(0);
 
+  // ✅ ADD STATS STATE
+  const [stats, setStats] = useState({
+    totalTasks: 0,
+    completedTasks: 0,
+    inProgressTasks: 0,
+    todoTasks: 0,
+    completionRate: 0,
+    onTimeRate: 0,
+    membersCount: 0,
+    avgProgress: 0
+  });
+
   const [newTask, setNewTask] = useState({
     title: "",
     desc: "",
@@ -150,57 +162,74 @@ export default function SupervisorProjectDetail() {
     try {
       setLoading(true);
       
-      const [projectData, tasksData, membersData, usersData, pteamData] = await Promise.all([
+      const [projectData, tasksData, membersData, usersData, pteamData, statsData] = await Promise.all([
         projectService.getProject(projectId),
         taskService.getTasks(),
         teamService.getTeamMembers(),
         userService.getUsers(),
         projectTeamService.getProjectTeams(),
+        projectService.getProjectStats(projectId), // ✅ Get stats from server
       ]);
 
-      console.log('📊 Supervisor Project Data:', projectData);
-      console.log('📊 All Tasks Data:', tasksData);
+      console.log('📊 Project Data:', projectData);
+      console.log('📊 Tasks Data:', tasksData);
       console.log('📊 Members Data:', membersData);
       console.log('📊 Users Data:', usersData);
       console.log('📊 PTeam Data:', pteamData);
+      console.log('📊 Stats Data:', statsData);
 
       const projectItem = projectData?.data || projectData;
       const allTasks = tasksData?.data || tasksData || [];
       const membersList = membersData?.data || membersData || [];
       const usersList = usersData?.data || usersData || [];
       const pteamList = pteamData?.data || pteamData || [];
+      const statsResponse = statsData?.data || statsData || {};
 
       setProject(projectItem);
       setAllTeamMembers(membersList);
       setUsers(usersList);
 
-      // Get project members from PTeam
-      const projectPteamEntries = pteamList.filter(entry => Number(entry.p) === Number(projectId));
-      console.log('📊 PTeam entries for project:', projectPteamEntries);
+      // ✅ Set stats from server
+      setStats({
+        totalTasks: statsResponse.totalTasks || 0,
+        completedTasks: statsResponse.completedTasks || 0,
+        inProgressTasks: statsResponse.inProgressTasks || 0,
+        todoTasks: statsResponse.todoTasks || 0,
+        completionRate: statsResponse.completionRate || 0,
+        onTimeRate: statsResponse.onTimeRate || 0,
+        membersCount: statsResponse.membersCount || 0,
+        avgProgress: statsResponse.avgProgress || 0
+      });
 
-      // Get all members (team members) from PTeam - filter out deleted members
-      let memberEntries = projectPteamEntries
-        .map(entry => {
-          const member = membersList.find(m => Number(m.id) === Number(entry.tm));
-          if (member && member.is_deleted !== 1) {
-            return {
-              ...member,
-              pt_id: entry.pt_id,
-              task_id: entry.t,
-            };
-          }
-          return null;
-        })
-        .filter(m => m !== null);
+      // ✅ Get project members from PTeam - use correct field names
+      let memberEntries = [];
+      
+      if (pteamList && Array.isArray(pteamList) && pteamList.length > 0) {
+        const projectPteamEntries = pteamList.filter(entry => {
+          const entryProjectId = entry.p || entry.p_id || entry.project || entry.projectId || entry.project_id;
+          return Number(entryProjectId) === Number(projectId);
+        });
 
-      console.log('📊 Found project members from PTeam:', memberEntries);
+        memberEntries = projectPteamEntries
+          .map(entry => {
+            const memberId = entry.tm || entry.tm_id || entry.team_member || entry.member || entry.member_id || entry.teamMember;
+            const member = membersList.find(m => Number(m.id) === Number(memberId));
+            if (member) {
+              return {
+                ...member,
+                pt_id: entry.pt_id || entry.id,
+                task_id: entry.t || entry.task_id || entry.task,
+              };
+            }
+            return null;
+          })
+          .filter(m => m !== null);
+      }
 
       // If no PTeam members found, try to get from tasks
       if (memberEntries.length === 0) {
-        console.log('⚠️ No PTeam entries found, trying to get members from tasks...');
-        
         const projectTasks = allTasks.filter(t => {
-          const taskProjectId = t.p_id || t.p;
+          const taskProjectId = t.p_id || t.p || t.project || t.project_id;
           return Number(taskProjectId) === Number(projectId);
         });
         
@@ -209,10 +238,8 @@ export default function SupervisorProjectDetail() {
           if (t.assign_to) memberIds.add(Number(t.assign_to));
         });
         
-        console.log('📊 Members from tasks:', Array.from(memberIds));
-        
         memberEntries = membersList
-          .filter(m => memberIds.has(Number(m.id)) && m.is_deleted !== 1)
+          .filter(m => memberIds.has(Number(m.id)))
           .map(m => ({
             ...m,
             pt_id: null,
@@ -222,26 +249,19 @@ export default function SupervisorProjectDetail() {
 
       setProjectMembers(memberEntries);
 
-      // Get supervisors (users with role manager/admin/supervisor)
+      // Get supervisors
       const supervisorEntries = memberEntries.filter(m => {
-        const user = usersList.find(u => Number(u.id) === Number(m.id));
-        const isSupervisor = user && (user.role === 'manager' || user.role === 'admin' || user.role === 'supervisor');
-        if (isSupervisor) {
-          console.log('👑 Found supervisor:', m.name, 'with role:', user?.role);
-        }
-        return isSupervisor;
+        const userObj = usersList.find(u => Number(u.id) === Number(m.id));
+        return userObj && (userObj.role === 'manager' || userObj.role === 'admin' || userObj.role === 'supervisor');
       });
       
-      console.log('📊 Project supervisors:', supervisorEntries);
       setProjectSupervisors(supervisorEntries);
 
+      // Filter tasks for this project
       const projectTasks = allTasks.filter(t => {
-        const taskProjectId = t.p_id || t.p;
+        const taskProjectId = t.p_id || t.p || t.project || t.project_id;
         return Number(taskProjectId) === Number(projectId);
       });
-
-      console.log('📊 Filtered project tasks:', projectTasks);
-      console.log('📊 Total tasks in project:', projectTasks.length);
 
       const mappedTasks = projectTasks.map(t => ({
         ...t,
@@ -256,7 +276,7 @@ export default function SupervisorProjectDetail() {
 
       setTasks(mappedTasks);
 
-      // FETCH COMMENTS FOR EACH TASK
+      // Fetch comments for each task
       if (mappedTasks.length > 0) {
         const allComments = [];
         for (const task of mappedTasks) {
@@ -556,12 +576,9 @@ export default function SupervisorProjectDetail() {
     }
   };
 
-  // Calculate progress
-  const progress = tasks.length
-    ? Math.round(tasks.reduce((sum, t) => sum + (t.progress || 0), 0) / tasks.length)
-    : 0;
-
-  const done = tasks.filter(t => t.status === "done" || t.status === "completed" || t.status === "Done").length;
+  // Use stats from server
+  const progress = stats.completionRate || 0;
+  const done = stats.completedTasks || 0;
 
   const getMemberName = (memberId) => {
     if (!memberId) return "Unassigned";
@@ -1233,7 +1250,7 @@ export default function SupervisorProjectDetail() {
 
         {/* RIGHT PANEL */}
         <div className="project-right">
-          {/* Overview Stats */}
+          {/* Overview Stats - ✅ Using server stats */}
           <div className="info-card">
             <h4 className="info-card-title">
               <Sparkles size={14} />
@@ -1246,7 +1263,7 @@ export default function SupervisorProjectDetail() {
                   <FolderKanban size={16} />
                 </div>
                 <div>
-                  <span className="info-stat-value">{tasks.length}</span>
+                  <span className="info-stat-value">{stats.totalTasks}</span>
                   <span className="info-stat-label">Total Tasks</span>
                 </div>
               </div>
@@ -1255,7 +1272,7 @@ export default function SupervisorProjectDetail() {
                   <CheckCircle2 size={16} />
                 </div>
                 <div>
-                  <span className="info-stat-value">{done}</span>
+                  <span className="info-stat-value">{stats.completedTasks}</span>
                   <span className="info-stat-label">Completed</span>
                 </div>
               </div>
@@ -1264,7 +1281,7 @@ export default function SupervisorProjectDetail() {
                   <Clock size={16} />
                 </div>
                 <div>
-                  <span className="info-stat-value">{tasks.length - done}</span>
+                  <span className="info-stat-value">{stats.inProgressTasks}</span>
                   <span className="info-stat-label">In Progress</span>
                 </div>
               </div>
@@ -1367,7 +1384,11 @@ export default function SupervisorProjectDetail() {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && e.ctrlKey) {
                     e.preventDefault();
-                    addComment();
+                    if (selectedTask) {
+                      addComment();
+                    } else {
+                      toast.info("Please select a task first");
+                    }
                   }
                 }}
               />
@@ -1456,7 +1477,7 @@ export default function SupervisorProjectDetail() {
         </div>
       </div>
 
-      {/* The rest of the styles remain the same */}
+      {/* The rest of the styles remain the same as in your original file */}
       <style>{`
         @keyframes spin {
           to { transform: rotate(360deg); }

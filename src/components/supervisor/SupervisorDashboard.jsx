@@ -45,7 +45,7 @@ import {
   StatusBadge,
   ProgressRing
 } from "../shared/UIComponents";
-import { getGreeting } from '../../utils/greeting';
+import { getGreeting } from "../../utils/greeting";
 
 import projectService from "../../services/projectService";
 import taskService from "../../services/taskService";
@@ -92,8 +92,7 @@ const daysAgo = (n, from = new Date()) => {
   return d;
 };
 
-// Percent change between two period counts, without inventing numbers
-// when there's nothing to compare against.
+// Percent change between two period counts
 const computeTrend = (current, previous) => {
   if (previous === 0 && current === 0) return { dir: "flat", percent: 0 };
   if (previous === 0) return { dir: "up", percent: 100 };
@@ -202,6 +201,7 @@ export default function SupervisorDashboard() {
   const [users, setUsers] = useState([]);
   const [activeIndex, setActiveIndex] = useState(null);
   const [timeRange, setTimeRange] = useState("month");
+  const [projectStatsMap, setProjectStatsMap] = useState({});
 
   // Stats
   const [stats, setStats] = useState({
@@ -235,8 +235,7 @@ export default function SupervisorDashboard() {
     fetchDashboardData();
   }, []);
 
-  // Recompute the trend chart whenever the range toggle changes,
-  // without re-fetching from the API.
+  // Recompute the trend chart whenever the range toggle changes
   const taskTrendData = useMemo(() => buildTrendData(tasks, timeRange), [tasks, timeRange]);
 
   const fetchDashboardData = async () => {
@@ -260,29 +259,49 @@ export default function SupervisorDashboard() {
       setTeamMembers(allMembers);
       setUsers(allUsers);
 
-      // ─── Calculate Stats ───
+      // ─── Calculate Stats using stats endpoint ───
+      let totalTasks = 0;
+      let doneTasks = 0;
+      let inProgressTasks = 0;
+      let totalCompletion = 0;
+      let totalOnTime = 0;
+      let totalCompletedTasks = 0;
+      const statsMap = {};
+
+      for (const project of allProjects) {
+        const projectId = project.p_id || project.id;
+        try {
+          const statsResponse = await projectService.getProjectStats(projectId);
+          const stats = statsResponse?.data || {};
+          statsMap[projectId] = stats;
+          totalTasks += stats.totalTasks || 0;
+          doneTasks += stats.completedTasks || 0;
+          inProgressTasks += stats.inProgressTasks || 0;
+          totalCompletion += stats.completionRate || 0;
+          totalOnTime += stats.onTimeRate || 0;
+          totalCompletedTasks += stats.completedTasks || 0;
+        } catch (error) {
+          console.error(`Error fetching stats for project ${projectId}:`, error);
+        }
+      }
+
+      setProjectStatsMap(statsMap);
+
       const totalProjects = allProjects.length;
       const activeProjects = allProjects.filter(p =>
         p.status === "active" || p.status === "in-progress" || p.status === "in_progress"
       ).length;
-      const totalTasks = allTasks.length;
-      const doneTasks = allTasks.filter(isDone).length;
-      const inProgressTasks = allTasks.filter(isInProgress).length;
-      const completionPercent = totalTasks === 0 ? 0 : Math.round((doneTasks / totalTasks) * 100);
+      
+      const completionPercent = totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 100) : 0;
+      const onTimeRate = totalCompletedTasks > 0 ? Math.round((totalOnTime / totalCompletedTasks) * 100) : 0;
 
       const leads = allUsers.filter(u =>
         u.role?.toLowerCase() === 'member' || u.role?.toLowerCase() === 'lead'
       ).length;
 
-      // On-time rate
-      const completedTasks = allTasks.filter(isDone);
-      const onTime = completedTasks.filter(t =>
-        t.due_date && new Date(t.due_date) >= new Date(t.updated_at || t.start_date || t.created_at)
-      ).length;
-      const onTimeRate = completedTasks.length === 0 ? 0 : Math.round((onTime / completedTasks.length) * 100);
-
       // Average completion time, computed from actual created→completed dates
-      const timedCompletions = completedTasks.filter(t => t.created_at && t.updated_at);
+      const completedTasksList = allTasks.filter(isDone);
+      const timedCompletions = completedTasksList.filter(t => t.created_at && t.updated_at);
       const avgCompletionDays = timedCompletions.length === 0 ? 0 : (
         timedCompletions.reduce((sum, t) => {
           const diff = (new Date(t.updated_at) - new Date(t.created_at)) / (1000 * 60 * 60 * 24);
@@ -303,7 +322,7 @@ export default function SupervisorDashboard() {
         avgCompletionDays
       });
 
-      // ─── Trends: this week vs the prior week, from real timestamps ───
+      // ─── Trends: this week vs the prior week ───
       const now = new Date();
       const weekStart = daysAgo(6, now);
       const prevWeekEnd = daysAgo(7, now);
@@ -317,11 +336,11 @@ export default function SupervisorDashboard() {
       const projectsThisWeek = allProjects.filter(p => inRange(p, weekStart, now)).length;
       const projectsPrevWeek = allProjects.filter(p => inRange(p, prevWeekStart, prevWeekEnd)).length;
 
-      const doneThisWeek = completedTasks.filter(t => {
+      const doneThisWeek = completedTasksList.filter(t => {
         const d = new Date(t.updated_at || t.created_at);
         return d >= weekStart && d <= now;
       }).length;
-      const donePrevWeek = completedTasks.filter(t => {
+      const donePrevWeek = completedTasksList.filter(t => {
         const d = new Date(t.updated_at || t.created_at);
         return d >= prevWeekStart && d <= prevWeekEnd;
       }).length;
@@ -385,19 +404,15 @@ export default function SupervisorDashboard() {
       // ─── Project Health ───
       const healthData = allProjects.slice(0, 8).map(project => {
         const projectId = project.p_id || project.id;
-        const projectTasks = allTasks.filter(t => {
-          const taskProjectId = t.p_id || t.p;
-          return taskProjectId === projectId;
-        });
-        const done = projectTasks.filter(isDone).length;
-        const progress = projectTasks.length === 0 ? 0 : Math.round((done / projectTasks.length) * 100);
+        const stats = statsMap[projectId] || {};
+        const progress = stats.completionRate || 0;
         const lead = allUsers.find(u => (u.id || u.u_id) === (project.created_by || project.lead_id));
 
         return {
           ...project,
           progress,
-          done,
-          total: projectTasks.length,
+          done: stats.completedTasks || 0,
+          total: stats.totalTasks || 0,
           lead: lead?.u_name || lead?.name || "Unassigned"
         };
       });
