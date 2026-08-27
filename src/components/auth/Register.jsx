@@ -2,8 +2,13 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import { Eye, EyeOff, Zap, ArrowRight, Shield, Users, CheckCircle, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { 
+  Eye, EyeOff, Zap, ArrowRight, Shield, Users, 
+  CheckCircle, AlertCircle, CheckCircle2, Loader2 
+} from 'lucide-react';
 import toast from 'react-hot-toast';
+import { sendVerificationEmail, generateToken } from '../../services/emailService';
+import teamService from '../../services/teamService';
 
 const ROLE_OPTIONS = [
   {
@@ -58,7 +63,7 @@ const validators = {
     if (value.length > 50) {
       return { valid: false, message: 'Username must be less than 50 characters' };
     }
-    if (!/^[a-zA-Z0-9_]/.test(value)) {
+    if (!/^[a-zA-Z0-9_]+$/.test(value)) {
       return { valid: false, message: 'Username can only contain letters, numbers, and underscores' };
     }
     return { valid: true, message: '' };
@@ -74,11 +79,6 @@ const validators = {
     }
     if (value.length > 254) {
       return { valid: false, message: 'Email address is too long (maximum 254 characters)' };
-    }
-    // Check for common email providers
-    const domain = value.split('@')[1]?.toLowerCase();
-    if (domain && !/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) {
-      return { valid: false, message: 'Please enter a valid email domain' };
     }
     return { valid: true, message: '' };
   },
@@ -129,6 +129,29 @@ const validators = {
   }
 };
 
+// Helper function to safely extract error message
+const getErrorMessage = (errorData) => {
+  if (!errorData) return null;
+  
+  // If it's already a string
+  if (typeof errorData === 'string') return errorData;
+  
+  // If it's an array, take the first element
+  if (Array.isArray(errorData) && errorData.length > 0) {
+    return typeof errorData[0] === 'string' ? errorData[0] : String(errorData[0]);
+  }
+  
+  // If it's an object, try to get a message
+  if (typeof errorData === 'object') {
+    if (errorData.message) return typeof errorData.message === 'string' ? errorData.message : String(errorData.message);
+    if (errorData.detail) return typeof errorData.detail === 'string' ? errorData.detail : String(errorData.detail);
+    if (errorData.error) return typeof errorData.error === 'string' ? errorData.error : String(errorData.error);
+  }
+  
+  // Fallback
+  return String(errorData) || null;
+};
+
 export default function Register() {
   const [formData, setFormData] = useState({
     u_name: '',
@@ -140,6 +163,7 @@ export default function Register() {
   const [showPass, setShowPass] = useState(false);
   const [showConfirmPass, setShowConfirmPass] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [sendingEmail, setSendingEmail] = useState(false);
   const [touched, setTouched] = useState({
     u_name: false,
     email: false,
@@ -192,7 +216,6 @@ export default function Register() {
     setFormData(prev => ({ ...prev, [field]: value }));
     if (touched[field]) {
       validateField(field, value);
-      // If password changes, re-validate confirm password
       if (field === 'password' && touched.confirmPassword) {
         validateField('confirmPassword', formData.confirmPassword);
       }
@@ -204,7 +227,6 @@ export default function Register() {
     setTouched(prev => ({ ...prev, [field]: true }));
     const value = formData[field];
     validateField(field, value);
-    // If password is blurred, validate confirm password too
     if (field === 'password' && formData.confirmPassword) {
       validateField('confirmPassword', formData.confirmPassword);
     }
@@ -240,17 +262,6 @@ export default function Register() {
     return 'success';
   };
 
-  const getFieldStyle = (field) => {
-    const status = getFieldStatus(field);
-    if (status === 'error') {
-      return { borderColor: '#f87171', backgroundColor: 'rgba(248, 113, 113, 0.04)' };
-    }
-    if (status === 'success') {
-      return { borderColor: '#34d399', backgroundColor: 'rgba(52, 211, 153, 0.04)' };
-    }
-    return {};
-  };
-
   // Check if form is valid
   const isFormValid = () => {
     return Object.values(validationErrors).every(e => e === '') &&
@@ -274,80 +285,199 @@ export default function Register() {
         role: formData.role
       };
 
-      await register(registrationData);
-      toast.success('Registration successful! Please login.');
+      console.log('📤 Registration data:', registrationData);
+
+      // 1. Register the user
+      const user = await register(registrationData);
+      console.log('✅ User registered:', user);
       
-      navigate('/login', { 
-        state: { email: formData.email }
-      });
+      // 2. Create a Team Member entry for this user
+      try {
+        const teamMemberData = {
+          name: formData.u_name.trim(),
+          role: formData.role === 'manager' ? 'Supervisor' : 'Team Lead',
+          email: formData.email.trim(),
+          qualification: 'New Member',
+          experience: 0,
+          skills: 'New User',
+          description: `Auto-created team member for ${formData.u_name}`,
+          added_by: user?.id || 1
+        };
+        
+        const teamMember = await teamService.addTeamMember(teamMemberData);
+        console.log('✅ Team Member created:', teamMember);
+      } catch (teamError) {
+        console.error('❌ Error creating team member:', teamError);
+        toast.warning('Account created but team member profile could not be created.');
+      }
+      
+      // 3. Send verification email
+      setSendingEmail(true);
+      const verificationToken = generateToken(formData.email);
+      const verificationLink = `${window.location.origin}/verify-email?token=${verificationToken}`;
+      
+      console.log('🔗 Verification link:', verificationLink);
+      
+      const emailResult = await sendVerificationEmail(
+        formData.email,
+        formData.u_name,
+        verificationLink
+      );
+
+      console.log('📧 Email result:', emailResult);
+
+      if (emailResult.success) {
+        toast.success('Registration successful! Check your email for verification link.');
+        navigate('/verify-email', { 
+          state: { 
+            email: formData.email,
+            name: formData.u_name
+          }
+        });
+      } else {
+        toast.warning('Account created but verification email could not be sent.');
+        navigate('/login', { 
+          state: { 
+            email: formData.email,
+            warning: 'Please contact support to verify your email.'
+          }
+        });
+      }
+      
     } catch (err) {
-      let errorMessage = 'Registration failed. Please try again.';
-
-      if (err?.response?.data) {
-        const errorData = err.response.data;
-
-        if (typeof errorData === 'string') {
-          errorMessage = errorData;
-        } else if (errorData.detail) {
-          errorMessage = errorData.detail;
-        } else if (errorData.message) {
-          errorMessage = errorData.message;
-        } else if (errorData.error) {
-          if (typeof errorData.error === 'string') {
-            errorMessage = errorData.error;
-          } else if (typeof errorData.error === 'object') {
-            const firstKey = Object.keys(errorData.error)[0];
-            if (firstKey) {
-              const value = errorData.error[firstKey];
-              errorMessage = Array.isArray(value) ? value[0] : String(value);
+      console.error('🔴 Registration error:', err);
+      
+      // Extract error data
+      const errorData = err?.response?.data;
+      console.log('📋 Error data:', errorData);
+      
+      // Reset validation errors
+      setValidationErrors({
+        u_name: '',
+        email: '',
+        password: '',
+        confirmPassword: '',
+        role: ''
+      });
+      
+      let emailError = null;
+      let usernameError = null;
+      let passwordError = null;
+      let roleError = null;
+      let generalError = null;
+      
+      if (errorData) {
+        // Check for error in errorData.error
+        if (errorData.error) {
+          const errorMsg = getErrorMessage(errorData.error);
+          if (errorMsg) {
+            // Try to determine which field it belongs to
+            const lowerMsg = errorMsg.toLowerCase();
+            if (lowerMsg.includes('email') || lowerMsg.includes('exists') || lowerMsg.includes('already') || lowerMsg.includes('duplicate')) {
+              emailError = errorMsg;
+            } else if (lowerMsg.includes('username') || lowerMsg.includes('u_name')) {
+              usernameError = errorMsg;
+            } else if (lowerMsg.includes('password')) {
+              passwordError = errorMsg;
+            } else if (lowerMsg.includes('role')) {
+              roleError = errorMsg;
+            } else {
+              generalError = errorMsg;
             }
           }
-        } else if (errorData.email) {
-          errorMessage = Array.isArray(errorData.email) ? errorData.email[0] : errorData.email;
-        } else if (errorData.u_name) {
-          errorMessage = Array.isArray(errorData.u_name) ? errorData.u_name[0] : errorData.u_name;
-        } else if (errorData.password) {
-          errorMessage = Array.isArray(errorData.password) ? errorData.password[0] : errorData.password;
-        } else if (errorData.role) {
-          errorMessage = Array.isArray(errorData.role) ? errorData.role[0] : errorData.role;
-        } else if (errorData.non_field_errors) {
-          errorMessage = Array.isArray(errorData.non_field_errors) ? errorData.non_field_errors[0] : errorData.non_field_errors;
-        } else {
-          const firstKey = Object.keys(errorData)[0];
-          if (firstKey) {
-            const value = errorData[firstKey];
-            errorMessage = Array.isArray(value) ? value[0] : String(value);
+        }
+        
+        // Check specific fields
+        if (errorData.email) {
+          emailError = getErrorMessage(errorData.email) || 'Email is invalid';
+        }
+        
+        if (errorData.u_name) {
+          usernameError = getErrorMessage(errorData.u_name) || 'Username is invalid';
+        }
+        
+        if (errorData.password) {
+          passwordError = getErrorMessage(errorData.password) || 'Password is invalid';
+        }
+        
+        if (errorData.role) {
+          roleError = getErrorMessage(errorData.role) || 'Role is invalid';
+        }
+        
+        // Check non_field_errors
+        if (errorData.non_field_errors) {
+          const msg = getErrorMessage(errorData.non_field_errors);
+          if (msg) {
+            const lowerMsg = msg.toLowerCase();
+            if (lowerMsg.includes('email') || lowerMsg.includes('exists') || lowerMsg.includes('already')) {
+              emailError = msg;
+            } else {
+              generalError = msg;
+            }
           }
         }
-      } else if (err?.message) {
-        errorMessage = err.message;
+        
+        // Check message/detail fields
+        if (errorData.message) {
+          const msg = getErrorMessage(errorData.message);
+          if (msg) {
+            const lowerMsg = msg.toLowerCase();
+            if (lowerMsg.includes('email') || lowerMsg.includes('exists') || lowerMsg.includes('already')) {
+              emailError = msg;
+            } else {
+              generalError = msg;
+            }
+          }
+        }
+        
+        if (errorData.detail) {
+          const msg = getErrorMessage(errorData.detail);
+          if (msg) {
+            const lowerMsg = msg.toLowerCase();
+            if (lowerMsg.includes('email') || lowerMsg.includes('exists') || lowerMsg.includes('already')) {
+              emailError = msg;
+            } else {
+              generalError = msg;
+            }
+          }
+        }
       }
-
-      const finalMessage = typeof errorMessage === 'string' ? errorMessage : 'Registration failed. Please try again.';
-      toast.error(finalMessage);
-
-      // Map errors to fields
-      const lower = finalMessage.toLowerCase();
-      if (lower.includes('email') || lower.includes('duplicate') || lower.includes('unique')) {
-        setValidationErrors(prev => ({ ...prev, email: finalMessage }));
+      
+      // ✅ Set errors on the appropriate fields
+      if (emailError) {
+        setValidationErrors(prev => ({ ...prev, email: emailError }));
         setTouched(prev => ({ ...prev, email: true }));
-      } else if (lower.includes('username') || lower.includes('u_name')) {
-        setValidationErrors(prev => ({ ...prev, u_name: finalMessage }));
+        toast.error(emailError);
+      } else if (usernameError) {
+        setValidationErrors(prev => ({ ...prev, u_name: usernameError }));
         setTouched(prev => ({ ...prev, u_name: true }));
-      } else if (lower.includes('password')) {
-        setValidationErrors(prev => ({ ...prev, password: finalMessage }));
+        toast.error(usernameError);
+      } else if (passwordError) {
+        setValidationErrors(prev => ({ ...prev, password: passwordError }));
         setTouched(prev => ({ ...prev, password: true }));
-      } else if (lower.includes('role')) {
-        setValidationErrors(prev => ({ ...prev, role: finalMessage }));
+        toast.error(passwordError);
+      } else if (roleError) {
+        setValidationErrors(prev => ({ ...prev, role: roleError }));
         setTouched(prev => ({ ...prev, role: true }));
+        toast.error(roleError);
+      } else if (generalError) {
+        toast.error(generalError);
+      } else {
+        toast.error('Registration failed. Please try again.');
       }
+      
+      // ✅ Keep user on registration page
+      return;
+      
     } finally {
       setLoading(false);
+      setSendingEmail(false);
     }
   };
 
   return (
     <div className="register-screen">
+      {/* Background effects */}
       <div className="bg-fx" aria-hidden="true">
         <div className="bg-orb bg-orb--a" />
         <div className="bg-orb bg-orb--b" />
@@ -399,7 +529,7 @@ export default function Register() {
                   value={formData.u_name}
                   onChange={e => handleFieldChange('u_name', e.target.value)}
                   onBlur={() => handleBlur('u_name')}
-                  disabled={loading}
+                  disabled={loading || sendingEmail}
                   autoFocus
                   aria-invalid={!!validationErrors.u_name}
                   aria-describedby="u_name-error"
@@ -417,12 +547,8 @@ export default function Register() {
               </div>
               {touched.u_name && validationErrors.u_name && (
                 <div className="error-message" id="u_name-error">
+                  <AlertCircle size={14} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />
                   {validationErrors.u_name}
-                </div>
-              )}
-              {touched.u_name && !validationErrors.u_name && formData.u_name && (
-                <div className="hint-message">
-                  ✓ Username is available
                 </div>
               )}
             </div>
@@ -442,7 +568,7 @@ export default function Register() {
                   value={formData.email}
                   onChange={e => handleFieldChange('email', e.target.value)}
                   onBlur={() => handleBlur('email')}
-                  disabled={loading}
+                  disabled={loading || sendingEmail}
                   aria-invalid={!!validationErrors.email}
                   aria-describedby="email-error"
                 />
@@ -458,13 +584,9 @@ export default function Register() {
                 )}
               </div>
               {touched.email && validationErrors.email && (
-                <div className="error-message" id="email-error">
+                <div className="error-message error-email" id="email-error">
+                  <AlertCircle size={14} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />
                   {validationErrors.email}
-                </div>
-              )}
-              {touched.email && !validationErrors.email && formData.email && (
-                <div className="hint-message">
-                  ✓ Email format is valid
                 </div>
               )}
             </div>
@@ -478,15 +600,14 @@ export default function Register() {
                 {ROLE_OPTIONS.map((role) => {
                   const Icon = role.icon;
                   const isSelected = formData.role === role.value;
-                  const status = getFieldStatus('role');
-                  const isError = status === 'error' && touched.role;
                   
                   return (
                     <button
                       key={role.value}
                       type="button"
-                      className={`role-card ${isSelected ? 'role-card--active' : ''} ${isError ? 'role-card--error' : ''}`}
+                      className={`role-card ${isSelected ? 'role-card--active' : ''}`}
                       onClick={() => handleRoleSelect(role.value)}
+                      disabled={loading || sendingEmail}
                       aria-selected={isSelected}
                     >
                       <Icon size={20} className="role-icon" />
@@ -503,6 +624,7 @@ export default function Register() {
               </div>
               {touched.role && validationErrors.role && (
                 <div className="error-message">
+                  <AlertCircle size={14} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />
                   {validationErrors.role}
                 </div>
               )}
@@ -524,7 +646,7 @@ export default function Register() {
                     value={formData.password}
                     onChange={e => handleFieldChange('password', e.target.value)}
                     onBlur={() => handleBlur('password')}
-                    disabled={loading}
+                    disabled={loading || sendingEmail}
                     aria-invalid={!!validationErrors.password}
                     aria-describedby="password-error"
                   />
@@ -533,6 +655,7 @@ export default function Register() {
                     className="password-toggle"
                     onClick={() => setShowPass(!showPass)}
                     aria-label={showPass ? 'Hide password' : 'Show password'}
+                    disabled={loading || sendingEmail}
                   >
                     {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
                   </button>
@@ -550,6 +673,7 @@ export default function Register() {
               </div>
               {touched.password && validationErrors.password && (
                 <div className="error-message" id="password-error">
+                  <AlertCircle size={14} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />
                   {validationErrors.password}
                 </div>
               )}
@@ -570,7 +694,6 @@ export default function Register() {
                 </div>
               )}
 
-              {/* Password Requirements */}
               <div className="requirements">
                 {REQUIREMENTS.map(({ test, label }) => {
                   const isMet = test(formData.password);
@@ -600,7 +723,7 @@ export default function Register() {
                     value={formData.confirmPassword}
                     onChange={e => handleFieldChange('confirmPassword', e.target.value)}
                     onBlur={() => handleBlur('confirmPassword')}
-                    disabled={loading}
+                    disabled={loading || sendingEmail}
                     aria-invalid={!!validationErrors.confirmPassword}
                     aria-describedby="confirmPassword-error"
                   />
@@ -609,6 +732,7 @@ export default function Register() {
                     className="password-toggle"
                     onClick={() => setShowConfirmPass(!showConfirmPass)}
                     aria-label={showConfirmPass ? 'Hide password' : 'Show password'}
+                    disabled={loading || sendingEmail}
                   >
                     {showConfirmPass ? <EyeOff size={16} /> : <Eye size={16} />}
                   </button>
@@ -626,12 +750,8 @@ export default function Register() {
               </div>
               {touched.confirmPassword && validationErrors.confirmPassword && (
                 <div className="error-message" id="confirmPassword-error">
+                  <AlertCircle size={14} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />
                   {validationErrors.confirmPassword}
-                </div>
-              )}
-              {touched.confirmPassword && !validationErrors.confirmPassword && formData.confirmPassword && formData.password && (
-                <div className="hint-message">
-                  ✓ Passwords match
                 </div>
               )}
             </div>
@@ -639,12 +759,17 @@ export default function Register() {
             <button 
               type="submit" 
               className="btn btn-primary submit-btn" 
-              disabled={loading || !isFormValid()}
+              disabled={loading || sendingEmail || !isFormValid()}
             >
               {loading ? (
                 <>
                   <span className="spinner" />
                   Creating account...
+                </>
+              ) : sendingEmail ? (
+                <>
+                  <Loader2 size={17} className="spin" />
+                  Sending verification email...
                 </>
               ) : (
                 <>Create Account <ArrowRight size={17} /></>
@@ -927,13 +1052,18 @@ export default function Register() {
           font-size: 12px;
           font-weight: 500;
           margin-top: 4px;
+          display: flex;
+          align-items: center;
+          gap: 4px;
         }
 
-        .hint-message {
-          color: #34d399;
-          font-size: 12px;
-          font-weight: 500;
-          margin-top: 4px;
+        .error-email {
+          color: #dc2626;
+          font-weight: 600;
+          background: rgba(220, 38, 38, 0.08);
+          padding: 6px 10px;
+          border-radius: 6px;
+          border-left: 3px solid #dc2626;
         }
 
         .role-grid {
@@ -961,9 +1091,6 @@ export default function Register() {
           border-color: var(--accent-primary);
           background: rgba(99,102,241,0.08);
         }
-        .role-card--error {
-          border-color: #f87171;
-        }
 
         .role-icon {
           display: block;
@@ -990,6 +1117,11 @@ export default function Register() {
           line-height: 1.3;
         }
 
+        .role-checkmark {
+          position: absolute;
+          top: 6px;
+          right: 6px;
+        }
 
         .password-field {
           position: relative;
@@ -1021,7 +1153,7 @@ export default function Register() {
           display: flex;
           align-items: center;
           gap: 4px;
-          margin-bottom: 4px;
+          margin-bottom: 2px;
         }
         .strength-bar {
           height: 3px;
@@ -1043,14 +1175,19 @@ export default function Register() {
         .requirements {
           display: grid;
           grid-template-columns: 1fr 1fr;
-          gap: 5px;
-          font-size: 11px;
-          color: var(--text-muted);
+          gap: 4px;
+          margin-top: 6px;
         }
         .requirement {
           display: flex;
           align-items: center;
           gap: 5px;
+          font-size: 11px;
+          color: var(--text-muted);
+          transition: color 0.3s;
+        }
+        .requirement--met {
+          color: #10b981;
         }
 
         .btn {
@@ -1077,8 +1214,9 @@ export default function Register() {
         }
 
         .btn-primary:disabled {
-          opacity: 0.7;
+          opacity: 0.5;
           cursor: not-allowed;
+          transform: none;
         }
 
         .submit-btn {
@@ -1224,6 +1362,10 @@ export default function Register() {
           width: 1px;
           height: 22px;
           background: var(--border-subtle);
+        }
+
+        .spin {
+          animation: spin 1s linear infinite;
         }
 
         @keyframes spin { to { transform: rotate(360deg); } }

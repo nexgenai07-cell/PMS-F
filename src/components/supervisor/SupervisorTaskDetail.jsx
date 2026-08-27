@@ -19,6 +19,7 @@ import taskService from "../../services/taskService";
 import teamService from "../../services/teamService";
 import commentService from "../../services/commentService";
 import { useAuth } from "../../context/AuthContext";
+import NotificationHelper from '../../services/notificationHelper';
 
 const STATUS_CONFIG = {
   todo: { label: "To Do", color: "#94a3b8" },
@@ -197,34 +198,53 @@ export default function SupervisorTaskDetail() {
   };
 
   const handleUpdateTask = async () => {
-  try {
-    // Ensure assignTo is a number
-    const assignTo = editForm.assignTo ? Number(editForm.assignTo) : null;
-    
-    const response = await taskService.updateTask(tId, {
-      title: editForm.title,
-      description: editForm.desc,
-      status: editForm.status,
-      priority: editForm.priority,
-      assignTo: assignTo,
-    });
+    try {
+      const previousAssignee = task?.assign_to;
+      const assignTo = editForm.assignTo ? Number(editForm.assignTo) : null;
+      
+      const response = await taskService.updateTask(tId, {
+        title: editForm.title,
+        description: editForm.desc,
+        status: editForm.status,
+        priority: editForm.priority,
+        assignTo: assignTo,
+      });
 
-    const updatedTask = response?.data || response;
-    setTask(updatedTask);
-    
-    // Update assignee
-    if (updatedTask.assign_to) {
-      const found = teamMembers.find(m => Number(m.id) === Number(updatedTask.assign_to));
-      setAssignee(found);
+      const updatedTask = response?.data || response;
+      setTask(updatedTask);
+      
+      // ✅ Create notification for task update
+      await NotificationHelper.taskUpdated(updatedTask, user);
+      
+      // ✅ If task is marked as done/completed, create completion notification
+      if (editForm.status === 'done' || editForm.status === 'completed') {
+        await NotificationHelper.taskCompleted(updatedTask, user);
+      }
+      
+      // ✅ If task was assigned to someone, send email notification
+      if (assignTo && previousAssignee !== assignTo) {
+        const assignee = teamMembers.find(m => Number(m.id) === Number(assignTo));
+        if (assignee) {
+          // Get the project for the email
+          const projectData = project;
+          await NotificationHelper.taskAssigned(updatedTask, assignee, user, projectData);
+          toast.success(`Task assigned to ${assignee.name} and notification sent!`);
+        }
+      }
+      
+      // Update assignee
+      if (updatedTask.assign_to) {
+        const found = teamMembers.find(m => Number(m.id) === Number(updatedTask.assign_to));
+        setAssignee(found);
+      }
+      
+      setEditMode(false);
+      toast.success("Task updated successfully");
+    } catch (error) {
+      console.error("Error updating task:", error);
+      toast.error(error.response?.data?.message || "Failed to update task");
     }
-    
-    setEditMode(false);
-    toast.success("Task updated successfully");
-  } catch (error) {
-    console.error("Error updating task:", error);
-    toast.error(error.response?.data?.message || "Failed to update task");
-  }
-};
+  };
 
   const getMemberName = (memberId) => {
     if (!memberId) return "Unassigned";

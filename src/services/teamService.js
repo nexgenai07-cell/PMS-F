@@ -13,11 +13,14 @@ class TeamService {
           ...member,
           id: Number(member.id),
           added_by: member.added_by ? Number(member.added_by) : null,
+          // Ensure role is present
+          role: member.role || 'Member',
         }));
       } else if (Array.isArray(data)) {
         data.forEach(member => {
           member.id = Number(member.id);
           member.added_by = member.added_by ? Number(member.added_by) : null;
+          member.role = member.role || 'Member';
         });
       }
       
@@ -37,9 +40,11 @@ class TeamService {
       if (data?.data) {
         data.data.id = Number(data.data.id);
         data.data.added_by = data.data.added_by ? Number(data.data.added_by) : null;
+        data.data.role = data.data.role || 'Member';
       } else if (data) {
         data.id = Number(data.id);
         data.added_by = data.added_by ? Number(data.added_by) : null;
+        data.role = data.role || 'Member';
       }
       
       return data;
@@ -47,22 +52,24 @@ class TeamService {
       throw this.handleError(error);
     }
   }
-async getTeamMemberStats(memberId) {
-  try {
-    const response = await api.get(`/api/team-members/${memberId}/stats`);
-    return response.data;
-  } catch (error) {
-    console.error('Error fetching team member stats:', error);
-    return { data: null };
+
+  async getTeamMemberStats(memberId) {
+    try {
+      const response = await api.get(`/api/team-members/${memberId}/stats`);
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching team member stats:', error);
+      return { data: null };
+    }
   }
-}
+
   async addTeamMember(memberData) {
     try {
       const payload = {
         name: memberData.name,
         desc: memberData.description || '',
         skills: memberData.skills || '',
-        role: memberData.role || '',
+        role: memberData.role || 'Member',
         qualitifcation: memberData.qualification || '',
         experience: parseInt(memberData.experience) || 0,
       };
@@ -74,8 +81,10 @@ async getTeamMemberStats(memberId) {
       
       if (data?.data) {
         data.data.id = Number(data.data.id);
+        data.data.role = data.data.role || 'Member';
       } else if (data) {
         data.id = Number(data.id);
+        data.role = data.role || 'Member';
       }
       
       return data;
@@ -84,13 +93,51 @@ async getTeamMemberStats(memberId) {
     }
   }
 
+   async createUserAndTeamMember(userData, memberData) {
+    try {
+      // Step 1: Create user
+      const userPayload = {
+        u_name: userData.u_name || memberData.name,
+        email: userData.email,
+        password: userData.password,
+        role: userData.role || memberData.role || 'member',
+      };
+
+      const userResponse = await api.post(endpoints.auth.register, userPayload);
+      const newUser = userResponse.data?.data || userResponse.data || userResponse;
+
+      // Step 2: Create team member linked to user
+      const memberPayload = {
+        name: memberData.name,
+        desc: memberData.description || '',
+        skills: memberData.skills || '',
+        role: memberData.role || 'member',
+        qualitifcation: memberData.qualification || '',
+        experience: parseInt(memberData.experience) || 0,
+        added_by: newUser.id || newUser.user_id,
+      };
+
+      const memberResponse = await api.post(endpoints.teamMembers.list, memberPayload);
+      const newMember = memberResponse.data?.data || memberResponse.data || memberResponse;
+
+      return {
+        success: true,
+        user: newUser,
+        teamMember: newMember,
+      };
+    } catch (error) {
+      console.error('Error creating user and team member:', error);
+      throw this.handleError(error);
+    }
+  }
+  
   async updateTeamMember(id, memberData) {
     try {
       const payload = {
         name: memberData.name,
         desc: memberData.description || '',
         skills: memberData.skills || '',
-        role: memberData.role || '',
+        role: memberData.role || 'Member',
         qualitifcation: memberData.qualification || '',
         experience: parseInt(memberData.experience) || 0,
       };

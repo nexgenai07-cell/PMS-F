@@ -108,7 +108,7 @@ export default function SupervisorProjectDetail() {
   const [isModalCommenting, setIsModalCommenting] = useState(false);
   const [commentUpdateTrigger, setCommentUpdateTrigger] = useState(0);
 
-  // ✅ ADD STATS STATE
+  // Stats State
   const [stats, setStats] = useState({
     totalTasks: 0,
     completedTasks: 0,
@@ -168,7 +168,7 @@ export default function SupervisorProjectDetail() {
         teamService.getTeamMembers(),
         userService.getUsers(),
         projectTeamService.getProjectTeams(),
-        projectService.getProjectStats(projectId), // ✅ Get stats from server
+        projectService.getProjectStats(projectId),
       ]);
 
       console.log('📊 Project Data:', projectData);
@@ -189,7 +189,7 @@ export default function SupervisorProjectDetail() {
       setAllTeamMembers(membersList);
       setUsers(usersList);
 
-      // ✅ Set stats from server
+      // Set stats from server
       setStats({
         totalTasks: statsResponse.totalTasks || 0,
         completedTasks: statsResponse.completedTasks || 0,
@@ -201,8 +201,9 @@ export default function SupervisorProjectDetail() {
         avgProgress: statsResponse.avgProgress || 0
       });
 
-      // ✅ Get project members from PTeam - use correct field names
+      // ✅ Get project members from PTeam - FIXED with deduplication
       let memberEntries = [];
+      const memberMap = new Map();
       
       if (pteamList && Array.isArray(pteamList) && pteamList.length > 0) {
         const projectPteamEntries = pteamList.filter(entry => {
@@ -210,23 +211,76 @@ export default function SupervisorProjectDetail() {
           return Number(entryProjectId) === Number(projectId);
         });
 
-        memberEntries = projectPteamEntries
-          .map(entry => {
-            const memberId = entry.tm || entry.tm_id || entry.team_member || entry.member || entry.member_id || entry.teamMember;
-            const member = membersList.find(m => Number(m.id) === Number(memberId));
-            if (member) {
-              return {
-                ...member,
-                pt_id: entry.pt_id || entry.id,
-                task_id: entry.t || entry.task_id || entry.task,
+        console.log('📋 Project PTeam entries:', projectPteamEntries);
+
+        projectPteamEntries.forEach(entry => {
+          const memberId = entry.tm || entry.tm_id || entry.team_member || entry.member || entry.member_id || entry.teamMember;
+          console.log('🔍 Looking for member with TeamMember ID:', memberId);
+          
+          if (memberMap.has(memberId)) {
+            console.log(`⏭️ Member ${memberId} already exists, skipping duplicate`);
+            return;
+          }
+          
+          let member = membersList.find(m => Number(m.id) === Number(memberId));
+          
+          if (!member) {
+            const userObj = usersList.find(u => Number(u.id) === Number(memberId));
+            if (userObj) {
+              member = {
+                id: userObj.id,
+                name: userObj.u_name || userObj.name || 'Unknown',
+                email: userObj.email,
+                role: userObj.role,
+                is_deleted: 0,
               };
+              console.log('✅ Found member from users list:', member);
             }
-            return null;
-          })
-          .filter(m => m !== null);
+          }
+          
+          if (!member && entry.member_name) {
+            const userObj = usersList.find(u => u.u_name === entry.member_name || u.name === entry.member_name);
+            if (userObj) {
+              member = {
+                id: userObj.id,
+                name: userObj.u_name || userObj.name || 'Unknown',
+                email: userObj.email,
+                role: userObj.role,
+                is_deleted: 0,
+              };
+              console.log('✅ Found member by name:', member);
+            }
+          }
+          
+          if (member) {
+            // ✅ Add email to member from users list if not present
+            if (!member.email) {
+              const userObj = usersList.find(u => {
+                const userName = (u.u_name || u.name || '').toLowerCase().trim();
+                const memberName = (member.name || '').toLowerCase().trim();
+                return userName === memberName;
+              });
+              if (userObj) {
+                member.email = userObj.email;
+                console.log('✅ Added email to member:', member.name, member.email);
+              }
+            }
+            
+            memberMap.set(memberId, {
+              ...member,
+              pt_id: entry.pt_id || entry.id,
+              task_id: entry.t || entry.task_id || entry.task,
+            });
+          } else {
+            console.warn('⚠️ Member not found for TeamMember ID:', memberId);
+          }
+        });
+        
+        memberEntries = Array.from(memberMap.values());
       }
 
-      // If no PTeam members found, try to get from tasks
+      console.log('📋 Final member entries (deduplicated):', memberEntries);
+
       if (memberEntries.length === 0) {
         const projectTasks = allTasks.filter(t => {
           const taskProjectId = t.p_id || t.p || t.project || t.project_id;
@@ -249,12 +303,30 @@ export default function SupervisorProjectDetail() {
 
       setProjectMembers(memberEntries);
 
-      // Get supervisors
-      const supervisorEntries = memberEntries.filter(m => {
-        const userObj = usersList.find(u => Number(u.id) === Number(m.id));
-        return userObj && (userObj.role === 'manager' || userObj.role === 'admin' || userObj.role === 'supervisor');
+      // ✅ Get supervisors - FIXED with deduplication
+      const supervisorMap = new Map();
+      memberEntries.forEach(m => {
+        let isSupervisor = false;
+        if (m.role && (m.role === 'manager' || m.role === 'admin' || m.role === 'supervisor')) {
+          isSupervisor = true;
+        }
+        if (!isSupervisor) {
+          const userObj = usersList.find(u => Number(u.id) === Number(m.id));
+          if (userObj && (userObj.role === 'manager' || userObj.role === 'admin' || userObj.role === 'supervisor')) {
+            isSupervisor = true;
+          }
+        }
+        
+        if (isSupervisor) {
+          if (!supervisorMap.has(m.id)) {
+            supervisorMap.set(m.id, m);
+          }
+        }
       });
       
+      const supervisorEntries = Array.from(supervisorMap.values());
+      
+      console.log('📋 Supervisors found (deduplicated):', supervisorEntries);
       setProjectSupervisors(supervisorEntries);
 
       // Filter tasks for this project
@@ -338,6 +410,29 @@ export default function SupervisorProjectDetail() {
     }
   };
 
+  // ─── GET ASSIGNEE EMAIL ───
+  const getAssigneeEmail = (assignee) => {
+    if (!assignee) return null;
+    
+    // If assignee already has email, use it
+    if (assignee.email) return assignee.email;
+    
+    // Otherwise, find matching user by name in users list
+    const matchedUser = users.find(u => {
+      const userName = (u.u_name || u.name || '').toLowerCase().trim();
+      const memberName = (assignee.name || '').toLowerCase().trim();
+      return userName === memberName;
+    });
+    
+    if (matchedUser) {
+      console.log('📧 Found email from users table:', matchedUser.email);
+      return matchedUser.email;
+    }
+    
+    console.warn('⚠️ No email found for assignee:', assignee.name);
+    return null;
+  };
+
   // Task CRUD
   const handleAddTask = async () => {
     if (!newTask.title.trim()) {
@@ -368,11 +463,25 @@ export default function SupervisorProjectDetail() {
       console.log('✅ Task created response:', createdTask);
       console.log('✅ assign_to in response:', createdTask.assign_to);
       
+      // ✅ Task Created Notification
       await NotificationHelper.taskCreated(createdTask, user);
       
+      // ✅ Send email notification if task is assigned to someone
       if (createdTask.assign_to) {
         const assignee = allTeamMembers.find(m => Number(m.id) === Number(createdTask.assign_to));
-        await NotificationHelper.taskAssigned(createdTask, assignee, user);
+        if (assignee) {
+          // ✅ Get email from users table
+          const assigneeEmail = getAssigneeEmail(assignee);
+          
+          if (assigneeEmail) {
+            const assigneeWithEmail = { ...assignee, email: assigneeEmail };
+            const projectData = project;
+            await NotificationHelper.taskAssigned(createdTask, assigneeWithEmail, user, projectData);
+            toast.success(`Task created and notification sent to ${assignee.name} (${assigneeEmail})`);
+          } else {
+            toast.info(`Task created but ${assignee.name} has no email on file`);
+          }
+        }
       }
       
       const taskWithProject = {
@@ -396,7 +505,6 @@ export default function SupervisorProjectDetail() {
         milestones: [],
       });
       setShowAddTask(false);
-      toast.success("Task added successfully");
       
       await fetchProjectData();
     } catch (error) {
@@ -409,7 +517,8 @@ export default function SupervisorProjectDetail() {
 
   const handleUpdateTask = async (updated) => {
     try {
-      const assignTo = updated.assign_to || updated.assignTo ? Number(updated.assign_to || updated.assignTo) : null;
+      const previousAssignee = updated.assign_to || updated.assignTo;
+      const assignTo = previousAssignee ? Number(previousAssignee) : null;
       
       console.log('📤 Updating task with assignTo:', assignTo);
       
@@ -428,6 +537,23 @@ export default function SupervisorProjectDetail() {
       
       if (updated.status === 'done' || updated.status === 'completed') {
         await NotificationHelper.taskCompleted(updatedTask, user);
+      }
+      
+      // ✅ Send email notification if task is assigned to someone new
+      if (assignTo) {
+        const assignee = allTeamMembers.find(m => Number(m.id) === Number(assignTo));
+        if (assignee) {
+          const assigneeEmail = getAssigneeEmail(assignee);
+          
+          if (assigneeEmail) {
+            const assigneeWithEmail = { ...assignee, email: assigneeEmail };
+            const projectData = project;
+            await NotificationHelper.taskAssigned(updatedTask, assigneeWithEmail, user, projectData);
+            toast.success(`Task assigned to ${assignee.name} (${assigneeEmail}) and notification sent!`);
+          } else {
+            toast.info(`Task assigned to ${assignee.name} but no email on file`);
+          }
+        }
       }
       
       setTasks(prev => prev.map(t => 
@@ -1250,7 +1376,7 @@ export default function SupervisorProjectDetail() {
 
         {/* RIGHT PANEL */}
         <div className="project-right">
-          {/* Overview Stats - ✅ Using server stats */}
+          {/* Overview Stats - Using server stats */}
           <div className="info-card">
             <h4 className="info-card-title">
               <Sparkles size={14} />
@@ -1477,7 +1603,7 @@ export default function SupervisorProjectDetail() {
         </div>
       </div>
 
-      {/* The rest of the styles remain the same as in your original file */}
+      {/* The rest of the styles remain the same */}
       <style>{`
         @keyframes spin {
           to { transform: rotate(360deg); }

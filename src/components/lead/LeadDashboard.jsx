@@ -38,7 +38,6 @@ import {
   Area
 } from 'recharts';
 import Topbar from '../shared/Topbar';
-import StatCard from '../shared/StatCard';
 import { getGreeting } from '../../utils/greeting';
 import {
   PriorityBadge,
@@ -94,37 +93,60 @@ export default function LeadDashboard() {
       const tasksList = tasksData?.data || tasksData || [];
       const membersList = membersData?.data || membersData || [];
 
-      const userId = user?.id || user?.u_id;
+      // ✅ Get current user
+      const userId = Number(user?.id || user?.u_id);
+      const userName = (user?.u_name || '').toLowerCase().trim();
       
-      // Find projects where this lead is the creator
-      const userProjects = allProjects.filter(p => {
-        const isCreator = Number(p.created_by) === Number(userId);
-        return isCreator;
-      });
-      
-      // Also find TeamMember for this lead (match by name)
-      const teamMember = membersList.find(m => {
+      // ✅ Find TeamMember that matches this user
+      const userTeamMember = membersList.find(m => {
         const memberName = (m.name || '').toLowerCase().trim();
-        const userName = (user?.u_name || '').toLowerCase().trim();
         return memberName === userName;
       });
-      const teamMemberId = teamMember ? Number(teamMember.id) : null;
+      const teamMemberId = userTeamMember ? Number(userTeamMember.id) : null;
       
-      // Get project IDs from user's projects
-      const createdProjectIds = userProjects.map(p => Number(p.p_id || p.id));
+      // ✅ Find projects created by this user
+      const createdProjects = allProjects.filter(p => 
+        Number(p.created_by) === userId
+      );
+      const createdProjectIds = createdProjects.map(p => Number(p.p_id || p.id));
       
-      // Get project IDs from tasks assigned to this lead
-      const assignedProjectIds = tasksList
-        .filter(t => Number(t.assign_to) === teamMemberId)
-        .map(t => Number(t.p_id || t.p));
+      // ✅ Find projects where this user is assigned to tasks
+      const assignedProjectIds = new Set();
+      tasksList.forEach(t => {
+        const assignTo = Number(t.assign_to || t.assignedTo);
+        if (assignTo === teamMemberId) {
+          assignedProjectIds.add(Number(t.p_id || t.p));
+        }
+      });
       
-      // Combine all project IDs
+      // ✅ Also check by name (fallback)
+      tasksList.forEach(t => {
+        const assigneeName = (t.assign_to_name || '').toLowerCase().trim();
+        if (assigneeName === userName) {
+          assignedProjectIds.add(Number(t.p_id || t.p));
+        }
+      });
+      
+      // ✅ Combine all project IDs
       const allProjectIds = [...new Set([...createdProjectIds, ...assignedProjectIds])];
       
-      // Get all projects the lead is involved in
-      const involvedProjects = allProjects.filter(p => 
+      // ✅ Filter projects for this user
+      const userProjects = allProjects.filter(p => 
         allProjectIds.includes(Number(p.p_id || p.id))
       );
+      
+      // ✅ Filter tasks for this user's projects
+      const userTasks = tasksList.filter(t => 
+        allProjectIds.includes(Number(t.p_id || t.p))
+      );
+
+      console.log('📊 Lead Dashboard - User:', user?.u_name, 'TeamMember ID:', teamMemberId);
+      console.log('📊 Lead Dashboard - Projects found:', userProjects.length);
+      console.log('📊 Lead Dashboard - Tasks found:', userTasks.length);
+      
+      setProjects(userProjects);
+      setTasks(userTasks);
+      setTeamMembers(membersList);
 
       // ✅ Get stats for each project using the stats endpoint
       let totalTasks = 0;
@@ -133,7 +155,7 @@ export default function LeadDashboard() {
       let totalCompletion = 0;
       const statsMap = {};
 
-      for (const project of involvedProjects) {
+      for (const project of userProjects) {
         const projectId = Number(project.p_id || project.id);
         try {
           const statsResponse = await projectService.getProjectStats(projectId);
@@ -150,21 +172,21 @@ export default function LeadDashboard() {
 
       setProjectStatsMap(statsMap);
 
-      // Get unique team members from tasks
+      // ✅ Get unique team members from tasks
       const memberIds = new Set();
-      tasksList.forEach(t => {
+      userTasks.forEach(t => {
         if (t.assign_to) memberIds.add(Number(t.assign_to));
       });
       const uniqueMembers = membersList.filter(m => 
         memberIds.has(Number(m.id))
       );
 
-      const completionRate = involvedProjects.length > 0 
-        ? Math.round(totalCompletion / involvedProjects.length) 
+      const completionRate = userProjects.length > 0 
+        ? Math.round(totalCompletion / userProjects.length) 
         : 0;
       
       // Calculate on-time rate
-      const completedTasksList = tasksList.filter(t => 
+      const completedTasksList = userTasks.filter(t => 
         t.status === 'done' || t.status === 'completed'
       );
       const onTime = completedTasksList.filter(t => 
@@ -173,7 +195,7 @@ export default function LeadDashboard() {
       const onTimeRate = completedTasksList.length === 0 ? 0 : Math.round((onTime / completedTasksList.length) * 100);
 
       console.log('📊 Lead Dashboard Stats:', {
-        totalProjects: involvedProjects.length,
+        totalProjects: userProjects.length,
         totalTasks,
         completedTasks,
         inProgressTasks,
@@ -181,12 +203,8 @@ export default function LeadDashboard() {
         onTimeRate
       });
 
-      setProjects(involvedProjects);
-      setTasks(tasksList);
-      setTeamMembers(membersList);
-
       setStats({
-        totalProjects: involvedProjects.length,
+        totalProjects: userProjects.length,
         totalTasks: totalTasks,
         completedTasks: completedTasks,
         inProgressTasks: inProgressTasks,
@@ -224,7 +242,7 @@ export default function LeadDashboard() {
     return teamMembers.filter(m => memberIds.has(Number(m.id))).slice(0, 4);
   };
 
-  // Chart data
+  // Chart data - only from user's tasks
   const taskStatusData = [
     { 
       name: 'To Do', 
@@ -256,7 +274,7 @@ export default function LeadDashboard() {
     { month: 'Week 4', tasks: tasks.length > 0 ? Math.round(tasks.length * 0.6) : 0 }
   ];
 
-  // Upcoming deadlines
+  // Upcoming deadlines - only from user's tasks
   const upcoming = tasks
     .filter(t => t.status !== 'done' && t.status !== 'completed' && (t.due_date || t.deadline))
     .sort((a, b) => {
@@ -296,24 +314,24 @@ export default function LeadDashboard() {
   return (
     <div>
       <Topbar
-  title={
-    <span className="greeting-text">
-      {getGreeting()}, {user?.u_name?.split(' ')[0] || 'User'}
-      <span className="greeting-wave">👋</span>
-    </span>
-  }
-  onMenuClick={onMenuClick}
-  actions={
-    <button 
-      className="btn btn-secondary btn-sm refresh-btn" 
-      onClick={handleRefresh}
-      disabled={refreshing}
-    >
-      <RefreshCw size={14} className={refreshing ? 'spin' : ''} />
-      {refreshing ? 'Refreshing...' : 'Refresh'}
-    </button>
-  }
-/>
+        title={
+          <span className="greeting-text">
+            {getGreeting()}, {user?.u_name?.split(' ')[0] || 'User'}
+            <span className="greeting-wave">👋</span>
+          </span>
+        }
+        onMenuClick={onMenuClick}
+        actions={
+          <button 
+            className="btn btn-secondary btn-sm refresh-btn" 
+            onClick={handleRefresh}
+            disabled={refreshing}
+          >
+            <RefreshCw size={14} className={refreshing ? 'spin' : ''} />
+            {refreshing ? 'Refreshing...' : 'Refresh'}
+          </button>
+        }
+      />
 
       <div className="page-container lead-dashboard">
 

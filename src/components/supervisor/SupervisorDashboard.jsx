@@ -254,8 +254,59 @@ export default function SupervisorDashboard() {
       const allMembers = membersData?.data || membersData || [];
       const allUsers = usersData?.data || usersData || [];
 
-      setProjects(allProjects);
-      setTasks(allTasks);
+      // ✅ Get current user
+      const currentUserId = Number(user?.id || user?.u_id);
+      const userName = (user?.u_name || '').toLowerCase().trim();
+      
+      // ✅ Find TeamMember for this user
+      const userTeamMember = allMembers.find(m => 
+        (m.name || '').toLowerCase().trim() === userName
+      );
+      const teamMemberId = userTeamMember ? Number(userTeamMember.id) : null;
+      
+      console.log('👤 Current user:', userName, 'TeamMember ID:', teamMemberId);
+      
+      // ✅ Find projects created by this user
+      const createdProjects = allProjects.filter(p => 
+        Number(p.created_by) === currentUserId
+      );
+      const createdProjectIds = createdProjects.map(p => Number(p.p_id || p.id));
+      
+      // ✅ Find projects where this user is assigned to tasks
+      const assignedProjectIds = new Set();
+      allTasks.forEach(t => {
+        const assignTo = Number(t.assign_to || t.assignedTo);
+        if (assignTo === teamMemberId) {
+          assignedProjectIds.add(Number(t.p_id || t.p));
+        }
+      });
+      
+      // ✅ Also check by name (fallback)
+      allTasks.forEach(t => {
+        const assigneeName = (t.assign_to_name || '').toLowerCase().trim();
+        if (assigneeName === userName) {
+          assignedProjectIds.add(Number(t.p_id || t.p));
+        }
+      });
+      
+      // ✅ Combine all project IDs
+      const allProjectIds = [...new Set([...createdProjectIds, ...assignedProjectIds])];
+      
+      // ✅ Filter projects for this user
+      const userProjects = allProjects.filter(p => 
+        allProjectIds.includes(Number(p.p_id || p.id))
+      );
+      
+      // ✅ Filter tasks for this user's projects
+      const userTasks = allTasks.filter(t => 
+        allProjectIds.includes(Number(t.p_id || t.p))
+      );
+      
+      console.log('📊 Projects found:', userProjects.length);
+      console.log('📊 Tasks found:', userTasks.length);
+      
+      setProjects(userProjects);
+      setTasks(userTasks);
       setTeamMembers(allMembers);
       setUsers(allUsers);
 
@@ -268,7 +319,7 @@ export default function SupervisorDashboard() {
       let totalCompletedTasks = 0;
       const statsMap = {};
 
-      for (const project of allProjects) {
+      for (const project of userProjects) {
         const projectId = project.p_id || project.id;
         try {
           const statsResponse = await projectService.getProjectStats(projectId);
@@ -287,8 +338,8 @@ export default function SupervisorDashboard() {
 
       setProjectStatsMap(statsMap);
 
-      const totalProjects = allProjects.length;
-      const activeProjects = allProjects.filter(p =>
+      const totalProjects = userProjects.length;
+      const activeProjects = userProjects.filter(p =>
         p.status === "active" || p.status === "in-progress" || p.status === "in_progress"
       ).length;
       
@@ -299,8 +350,8 @@ export default function SupervisorDashboard() {
         u.role?.toLowerCase() === 'member' || u.role?.toLowerCase() === 'lead'
       ).length;
 
-      // Average completion time, computed from actual created→completed dates
-      const completedTasksList = allTasks.filter(isDone);
+      // Average completion time
+      const completedTasksList = userTasks.filter(isDone);
       const timedCompletions = completedTasksList.filter(t => t.created_at && t.updated_at);
       const avgCompletionDays = timedCompletions.length === 0 ? 0 : (
         timedCompletions.reduce((sum, t) => {
@@ -322,7 +373,7 @@ export default function SupervisorDashboard() {
         avgCompletionDays
       });
 
-      // ─── Trends: this week vs the prior week ───
+      // ─── Trends ───
       const now = new Date();
       const weekStart = daysAgo(6, now);
       const prevWeekEnd = daysAgo(7, now);
@@ -333,8 +384,8 @@ export default function SupervisorDashboard() {
         return d >= start && d <= end;
       };
 
-      const projectsThisWeek = allProjects.filter(p => inRange(p, weekStart, now)).length;
-      const projectsPrevWeek = allProjects.filter(p => inRange(p, prevWeekStart, prevWeekEnd)).length;
+      const projectsThisWeek = userProjects.filter(p => inRange(p, weekStart, now)).length;
+      const projectsPrevWeek = userProjects.filter(p => inRange(p, prevWeekStart, prevWeekEnd)).length;
 
       const doneThisWeek = completedTasksList.filter(t => {
         const d = new Date(t.updated_at || t.created_at);
@@ -345,11 +396,11 @@ export default function SupervisorDashboard() {
         return d >= prevWeekStart && d <= prevWeekEnd;
       }).length;
 
-      const inProgThisWeek = allTasks.filter(t => isInProgress(t) && inRange(t, weekStart, now)).length;
-      const inProgPrevWeek = allTasks.filter(t => isInProgress(t) && inRange(t, prevWeekStart, prevWeekEnd)).length;
+      const inProgThisWeek = userTasks.filter(t => isInProgress(t) && inRange(t, weekStart, now)).length;
+      const inProgPrevWeek = userTasks.filter(t => isInProgress(t) && inRange(t, prevWeekStart, prevWeekEnd)).length;
 
-      const tasksThisWeek = allTasks.filter(t => inRange(t, weekStart, now));
-      const tasksPrevWeek = allTasks.filter(t => inRange(t, prevWeekStart, prevWeekEnd));
+      const tasksThisWeek = userTasks.filter(t => inRange(t, weekStart, now));
+      const tasksPrevWeek = userTasks.filter(t => inRange(t, prevWeekStart, prevWeekEnd));
       const completionThisWeek = tasksThisWeek.length === 0 ? 0 : Math.round((tasksThisWeek.filter(isDone).length / tasksThisWeek.length) * 100);
       const completionPrevWeek = tasksPrevWeek.length === 0 ? 0 : Math.round((tasksPrevWeek.filter(isDone).length / tasksPrevWeek.length) * 100);
 
@@ -361,7 +412,7 @@ export default function SupervisorDashboard() {
       });
 
       // ─── Status Data ───
-      const statusCounts = allProjects.reduce((acc, p) => {
+      const statusCounts = userProjects.reduce((acc, p) => {
         const status = p.status || "planning";
         acc[status] = (acc[status] || 0) + 1;
         return acc;
@@ -373,7 +424,7 @@ export default function SupervisorDashboard() {
       })));
 
       // ─── Priority Data ───
-      const priorityCounts = allProjects.reduce((acc, p) => {
+      const priorityCounts = userProjects.reduce((acc, p) => {
         const priority = p.priority || "medium";
         acc[priority] = (acc[priority] || 0) + 1;
         return acc;
@@ -387,7 +438,7 @@ export default function SupervisorDashboard() {
       // ─── Team Productivity ───
       const productivityData = allMembers.slice(0, 8).map(member => {
         const memberId = member.id;
-        const memberTasks = allTasks.filter(t =>
+        const memberTasks = userTasks.filter(t =>
           t.assign_to === memberId ||
           t.assignedTo === memberId
         );
@@ -402,7 +453,7 @@ export default function SupervisorDashboard() {
       setTeamProductivity(productivityData);
 
       // ─── Project Health ───
-      const healthData = allProjects.slice(0, 8).map(project => {
+      const healthData = userProjects.slice(0, 8).map(project => {
         const projectId = project.p_id || project.id;
         const stats = statsMap[projectId] || {};
         const progress = stats.completionRate || 0;
@@ -419,7 +470,7 @@ export default function SupervisorDashboard() {
       setProjectHealth(healthData);
 
       // ─── Recent Activity ───
-      const recent = [...allTasks]
+      const recent = [...userTasks]
         .sort((a, b) => new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at))
         .slice(0, 5)
         .map(t => ({
@@ -464,24 +515,24 @@ export default function SupervisorDashboard() {
   return (
     <div>
       <Topbar
-  title={
-    <span className="greeting-text">
-      {getGreeting()}, {user?.u_name?.split(' ')[0] || 'User'}
-      <span className="greeting-wave">👋</span>
-    </span>
-  }
-  onMenuClick={onMenuClick}
-  actions={
-    <button 
-      className="btn btn-secondary btn-sm refresh-btn" 
-      onClick={handleRefresh}
-      disabled={refreshing}
-    >
-      <RefreshCw size={14} className={refreshing ? 'spin' : ''} />
-      {refreshing ? 'Refreshing...' : 'Refresh'}
-    </button>
-  }
-/>
+        title={
+          <span className="greeting-text">
+            {getGreeting()}, {user?.u_name?.split(' ')[0] || 'User'}
+            <span className="greeting-wave">👋</span>
+          </span>
+        }
+        onMenuClick={onMenuClick}
+        actions={
+          <button 
+            className="btn btn-secondary btn-sm refresh-btn" 
+            onClick={handleRefresh}
+            disabled={refreshing}
+          >
+            <RefreshCw size={14} className={refreshing ? 'spin' : ''} />
+            {refreshing ? 'Refreshing...' : 'Refresh'}
+          </button>
+        }
+      />
 
       <div className="page-container supervisor-dashboard">
 
@@ -493,7 +544,7 @@ export default function SupervisorDashboard() {
             </div>
             <div className="stat-card-content">
               <span className="stat-card-value">{stats.totalProjects}</span>
-              <span className="stat-card-label">Total Projects</span>
+              <span className="stat-card-label">My Projects</span>
             </div>
             <TrendPill trend={trends.projects} />
           </div>
@@ -908,12 +959,6 @@ export default function SupervisorDashboard() {
           font-size: 20px;
         }
 
-        .topbar-actions {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-        }
-
         .refresh-btn {
           display: flex;
           align-items: center;
@@ -956,10 +1001,10 @@ export default function SupervisorDashboard() {
           flex-shrink: 0;
         }
 
-        .stat-card-icon.purple { background: color-mix(in srgb, var(--accent-primary) 14%, transparent); color: var(--accent-primary); }
-        .stat-card-icon.emerald { background: color-mix(in srgb, var(--accent-emerald) 14%, transparent); color: var(--accent-emerald); }
-        .stat-card-icon.amber { background: color-mix(in srgb, var(--accent-amber) 14%, transparent); color: var(--accent-amber); }
-        .stat-card-icon.teal { background: color-mix(in srgb, var(--accent-teal) 14%, transparent); color: var(--accent-teal); }
+        .stat-card-icon.purple { background: rgba(129, 140, 248, 0.12); color: #818cf8; }
+        .stat-card-icon.emerald { background: rgba(52, 211, 153, 0.12); color: #34d399; }
+        .stat-card-icon.amber { background: rgba(245, 158, 11, 0.12); color: #f59e0b; }
+        .stat-card-icon.teal { background: rgba(45, 212, 191, 0.12); color: #2dd4bf; }
 
         .stat-card-content {
           flex: 1;
@@ -990,9 +1035,9 @@ export default function SupervisorDashboard() {
           flex-shrink: 0;
         }
 
-        .stat-card-trend.up { background: color-mix(in srgb, var(--accent-emerald) 14%, transparent); color: var(--accent-emerald); }
-        .stat-card-trend.down { background: color-mix(in srgb, var(--accent-rose) 14%, transparent); color: var(--accent-rose); }
-        .stat-card-trend.flat { background: color-mix(in srgb, var(--text-muted) 14%, transparent); color: var(--text-muted); }
+        .stat-card-trend.up { background: rgba(52, 211, 153, 0.12); color: #34d399; }
+        .stat-card-trend.down { background: rgba(248, 113, 113, 0.12); color: #f87171; }
+        .stat-card-trend.flat { background: rgba(148, 163, 184, 0.12); color: #94a3b8; }
 
         /* ─── SECONDARY STATS ─── */
         .stats-grid-secondary {
@@ -1056,6 +1101,7 @@ export default function SupervisorDashboard() {
           justify-content: space-between;
           margin-bottom: 16px;
           gap: 10px;
+          flex-wrap: wrap;
         }
 
         .chart-card-title {
@@ -1388,7 +1434,7 @@ export default function SupervisorDashboard() {
           font-weight: 700;
           text-transform: uppercase;
           color: var(--accent-emerald);
-          background: color-mix(in srgb, var(--accent-emerald) 14%, transparent);
+          background: rgba(52, 211, 153, 0.12);
           padding: 2px 10px;
           border-radius: 20px;
           animation: pulse-dot 2s ease-in-out infinite;

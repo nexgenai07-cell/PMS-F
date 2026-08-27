@@ -42,7 +42,7 @@ import taskService from "../../services/taskService";
 import teamService from "../../services/teamService";
 import commentService from "../../services/commentService";
 import { useAuth } from "../../context/AuthContext";
-import NotificationHelper from '../../services/notificationHelper'; // ✅ Add this import
+import NotificationHelper from '../../services/notificationHelper';
 
 
 const PRIORITY_OPTIONS = ["low", "medium", "high", "critical"];
@@ -174,55 +174,55 @@ export default function LeadTaskDetail() {
   };
 
   const handleAddComment = async () => {
-  if (!newComment.trim()) {
-    toast.error("Please enter a comment");
-    return;
-  }
+    if (!newComment.trim()) {
+      toast.error("Please enter a comment");
+      return;
+    }
 
-  setSubmitting(true);
-  try {
-    const response = await commentService.addComment({
-      taskId: tId,
-      desc: newComment,
-      priority: "normal",
-      pin: false,
-    });
+    setSubmitting(true);
+    try {
+      const response = await commentService.addComment({
+        taskId: tId,
+        desc: newComment,
+        priority: "normal",
+        pin: false,
+      });
 
-    const newC = response?.data || response;
-    
-    // ✅ Create notification for comment
-    await NotificationHelper.commentAdded(newC, user);
-    
-    setComments([newC, ...comments]);
-    setNewComment("");
-    toast.success("Comment added successfully");
-  } catch (error) {
-    console.error("Error adding comment:", error);
-    toast.error(error.response?.data?.message || "Failed to add comment");
-  } finally {
-    setSubmitting(false);
-  }
-};
+      const newC = response?.data || response;
+      
+      // ✅ Create notification for comment
+      await NotificationHelper.commentAdded(newC, user);
+      
+      setComments([newC, ...comments]);
+      setNewComment("");
+      toast.success("Comment added successfully");
+    } catch (error) {
+      console.error("Error adding comment:", error);
+      toast.error(error.response?.data?.message || "Failed to add comment");
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const togglePin = async (commentId) => {
-  try {
-    const response = await commentService.togglePin(commentId);
-    const updatedComment = response?.data || response;
-    
-    // ✅ Create notification for comment pin
-    if (updatedComment.pin) {
-      await NotificationHelper.commentPinned(updatedComment, user);
+    try {
+      const response = await commentService.togglePin(commentId);
+      const updatedComment = response?.data || response;
+      
+      // ✅ Create notification for comment pin
+      if (updatedComment.pin) {
+        await NotificationHelper.commentPinned(updatedComment, user);
+      }
+      
+      setComments(prev =>
+        prev.map(c => (c.c_id || c.id) === commentId ? { ...c, pin: updatedComment.pin || !c.pin } : c)
+      );
+      toast.success(updatedComment.pin ? "Comment pinned" : "Comment unpinned");
+    } catch (error) {
+      console.error("Error toggling pin:", error);
+      toast.error("Failed to update pin");
     }
-    
-    setComments(prev =>
-      prev.map(c => (c.c_id || c.id) === commentId ? { ...c, pin: updatedComment.pin || !c.pin } : c)
-    );
-    toast.success(updatedComment.pin ? "Comment pinned" : "Comment unpinned");
-  } catch (error) {
-    console.error("Error toggling pin:", error);
-    toast.error("Failed to update pin");
-  }
-};
+  };
 
   const deleteComment = async (commentId) => {
     if (!window.confirm("Are you sure you want to delete this comment?")) return;
@@ -238,41 +238,53 @@ export default function LeadTaskDetail() {
   };
 
   const handleUpdateTask = async () => {
-  try {
-    const assignTo = editForm.assignTo ? Number(editForm.assignTo) : null;
-    
-    const response = await taskService.updateTask(tId, {
-      title: editForm.title,
-      description: editForm.desc,
-      status: editForm.status,
-      priority: editForm.priority,
-      assignTo: assignTo,
-    });
+    try {
+      const previousAssignee = task?.assign_to;
+      const assignTo = editForm.assignTo ? Number(editForm.assignTo) : null;
+      
+      const response = await taskService.updateTask(tId, {
+        title: editForm.title,
+        description: editForm.desc,
+        status: editForm.status,
+        priority: editForm.priority,
+        assignTo: assignTo,
+      });
 
-    const updatedTask = response?.data || response;
-    setTask(updatedTask);
-    
-    // ✅ Create notification for task update
-    await NotificationHelper.taskUpdated(updatedTask, user);
-    
-    // If task is marked as done/completed, create completion notification
-    if (editForm.status === 'done' || editForm.status === 'completed') {
-      await NotificationHelper.taskCompleted(updatedTask, user);
+      const updatedTask = response?.data || response;
+      setTask(updatedTask);
+      
+      // ✅ Create notification for task update
+      await NotificationHelper.taskUpdated(updatedTask, user);
+      
+      // ✅ If task is marked as done/completed, create completion notification
+      if (editForm.status === 'done' || editForm.status === 'completed') {
+        await NotificationHelper.taskCompleted(updatedTask, user);
+      }
+      
+      // ✅ If task was assigned to someone, send email notification
+      if (assignTo && previousAssignee !== assignTo) {
+        const assignee = teamMembers.find(m => Number(m.id) === Number(assignTo));
+        if (assignee) {
+          // Get the project for the email
+          const projectData = project;
+          await NotificationHelper.taskAssigned(updatedTask, assignee, user, projectData);
+          toast.success(`Task assigned to ${assignee.name} and notification sent!`);
+        }
+      }
+      
+      // Update assignee
+      if (updatedTask.assign_to) {
+        const found = teamMembers.find(m => Number(m.id) === Number(updatedTask.assign_to));
+        setAssignee(found);
+      }
+      
+      setEditMode(false);
+      toast.success("Task updated successfully");
+    } catch (error) {
+      console.error("Error updating task:", error);
+      toast.error(error.response?.data?.message || "Failed to update task");
     }
-    
-    // Update assignee
-    if (updatedTask.assign_to) {
-      const found = teamMembers.find(m => Number(m.id) === Number(updatedTask.assign_to));
-      setAssignee(found);
-    }
-    
-    setEditMode(false);
-    toast.success("Task updated successfully");
-  } catch (error) {
-    console.error("Error updating task:", error);
-    toast.error(error.response?.data?.message || "Failed to update task");
-  }
-};
+  };
 
   const getMemberName = (memberId) => {
     if (!memberId) return "Unassigned";

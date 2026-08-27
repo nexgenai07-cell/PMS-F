@@ -25,6 +25,7 @@ import userService from '../../services/userService';
 import projectTeamService from '../../services/projectTeamService';
 import { useAuth } from '../../context/AuthContext';
 import toast from 'react-hot-toast';
+import NotificationHelper from '../../services/notificationHelper';
 
 const PRIORITY_OPTIONS = ['low', 'medium', 'high', 'critical'];
 const STATUS_OPTIONS = ['planning', 'active', 'on_hold', 'completed', 'cancelled'];
@@ -212,7 +213,6 @@ export default function LeadProjects() {
       
       console.log(`👤 Current user: ${userName} (ID: ${userId})`);
 
-      // ✅ IMPORTANT: Ensure current user is in teamMembers list
       let activeMembersList = membersList.filter(m => m.is_deleted !== 1);
       
       const currentUserInMembers = activeMembersList.some(m => Number(m.id) === Number(userId));
@@ -230,13 +230,11 @@ export default function LeadProjects() {
         }
       }
 
-      // ✅ Get supervisors
       const supervisors = usersList.filter(u => 
         u.role === 'manager' || u.role === 'admin' || u.role === 'supervisor'
       );
       setAllSupervisors(supervisors);
 
-      // ✅ For leads: Show only projects they created OR are added to via PTeam
       const userProjects = projectsList.filter(p => {
         const isCreator = Number(p.created_by) === Number(userId);
         const isMember = pteamList.some(pteam => 
@@ -246,7 +244,6 @@ export default function LeadProjects() {
         return isCreator || isMember;
       });
 
-      // ✅ Map project members from PTeam entries with deduplication
       const projectsWithMembers = userProjects.map(project => {
         const projectId = project.p_id || project.id;
         
@@ -316,7 +313,6 @@ export default function LeadProjects() {
       setUsers(usersList);
       setPteamEntries(pteamList);
 
-      // ✅ Fetch stats for all projects
       const statsMap = {};
       for (const project of projectsWithMembers) {
         const projectId = project.p_id || project.id;
@@ -348,7 +344,6 @@ export default function LeadProjects() {
     toast.success('Projects refreshed');
   };
 
-  // Filter and pagination
   const filtered = projects.filter(p => {
     const searchMatch = (p.p_name || p.name || '')?.toLowerCase().includes(search.toLowerCase()) || 
                        (p.desc || p.description || '')?.toLowerCase().includes(search.toLowerCase());
@@ -624,9 +619,19 @@ export default function LeadProjects() {
       const newTask = response?.data || response;
       console.log('✅ Task created with assign_to:', newTask.assign_to);
       
+      // ✅ Send email notification if task is assigned to someone
+      if (assignTo) {
+        const assignee = teamMembers.find(m => Number(m.id) === Number(assignTo));
+        if (assignee) {
+          const project = projects.find(p => (p.p_id || p.id) === (taskAddModal.p_id || taskAddModal.id));
+          await NotificationHelper.taskAssigned(newTask, assignee, user, project);
+          console.log('📧 Task assignment email sent to:', assignee.email);
+        }
+      }
+      
       setTasks([newTask, ...tasks]);
       setTaskAddModal(null);
-      toast.success('Task created successfully');
+      toast.success('Task created successfully' + (assignTo ? ' and notification sent!' : ''));
     } catch (error) {
       console.error('Error creating task:', error);
       toast.error(error.response?.data?.message || 'Failed to create task');
@@ -674,7 +679,6 @@ export default function LeadProjects() {
     setTasks(tasks.map(t => (t.t_id || t.id) === taskId ? { ...t, priority } : t));
   };
 
-  // ✅ Helper functions using stats map
   const getProjectProgress = (projectId) => {
     const stats = projectStatsMap[projectId];
     return stats?.completionRate || 0;
@@ -721,7 +725,6 @@ export default function LeadProjects() {
     setProjectModal(true);
   };
 
-  // Loading state
   if (loading) {
     return (
       <div>
@@ -753,16 +756,13 @@ export default function LeadProjects() {
       />
 
       <div className="page-container">
-        {/* Header Actions */}
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
           <button className="btn btn-primary btn-sm" onClick={openNewProject}>
             <Plus size={14} /> New Project
           </button>
         </div>
 
-        {/* ─── IMPROVED FILTERS ─── */}
         <div className="lp-filters-container">
-          {/* Search Bar */}
           <div className="lp-search-wrapper">
             <Search size={16} className="lp-search-icon" />
             <input
@@ -778,7 +778,6 @@ export default function LeadProjects() {
             )}
           </div>
 
-          {/* Filter Controls */}
           <div className="lp-filter-controls">
             <div className="lp-filter-group">
               <div className="lp-filter-label">
@@ -817,7 +816,6 @@ export default function LeadProjects() {
               </select>
             </div>
 
-            {/* Active Filters Display */}
             {(filterStatus !== 'all' || filterPriority !== 'all') && (
               <div className="lp-active-filters">
                 {filterStatus !== 'all' && (
@@ -840,7 +838,6 @@ export default function LeadProjects() {
             )}
           </div>
 
-          {/* Results Count */}
           <div className="lp-results-count">
             <span>{filtered.length} project{filtered.length !== 1 ? 's' : ''}</span>
             <span className="lp-results-dot">•</span>
@@ -860,7 +857,6 @@ export default function LeadProjects() {
           </div>
         </div>
 
-        {/* Projects Grid */}
         {paginatedProjects.length === 0 ? (
           <EmptyState 
             icon={FolderOpen} 
@@ -871,12 +867,9 @@ export default function LeadProjects() {
           <div className="lp-projects-grid">
             {paginatedProjects.map((project, index) => {
               const projectId = project.p_id || project.id;
-              
-              // ✅ Get stats from map (already fetched)
               const progress = getProjectProgress(projectId);
               const totalTasks = getProjectTotalTasks(projectId);
               const doneTasks = getProjectDoneTasks(projectId);
-              
               const members = getProjectMembers(project);
               const health = progress >= 70 ? '#34d399' : progress >= 40 ? '#f59e0b' : '#f87171';
 
@@ -966,7 +959,6 @@ export default function LeadProjects() {
           </div>
         )}
 
-        {/* Pagination */}
         {totalPages > 1 && (
           <div className="lp-pagination">
             <button 
@@ -989,9 +981,6 @@ export default function LeadProjects() {
       </div>
 
       {/* ─── MODALS ─── */}
-      {/* All modal code remains the same as your original file */}
-      {/* ... (task list modal, task detail modal, edit task modal, add task modal, delete confirm modals) ... */}
-      {/* PROJECT MODAL */}
       {projectModal && (
         <div className="lp-overlay" onClick={() => setProjectModal(false)}>
           <div className="lp-modal" onClick={e => e.stopPropagation()}>
@@ -1047,7 +1036,6 @@ export default function LeadProjects() {
                 </div>
               </div>
 
-              {/* SUPERVISORS PICKER */}
               <div>
                 <label className="lp-label">
                   <Crown size={14} style={{ display: 'inline', marginRight: 4 }} />
@@ -1171,7 +1159,9 @@ export default function LeadProjects() {
         </div>
       )}
 
-      {/* All styles remain the same as your original file */}
+      {/* Task List, Task Detail, Edit Task, Delete Confirm modals remain the same */}
+      {/* ... existing modal code ... */}
+
       <style>{`
         @keyframes spin {
           to { transform: rotate(360deg); }

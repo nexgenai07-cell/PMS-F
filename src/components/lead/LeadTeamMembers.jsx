@@ -17,7 +17,6 @@ import taskService from '../../services/taskService';
 import projectTeamService from '../../services/projectTeamService';
 import userService from '../../services/userService';
 import { useAuth } from '../../context/AuthContext';
-import NotificationHelper from '../../services/notificationHelper';
 
 const defaultForm = {
   name: '',
@@ -52,7 +51,7 @@ export default function LeadTeamMembers() {
   const [sortBy, setSortBy] = useState('name');
   const itemsPerPage = 6;
 
-  // ✅ Delete/Reassign state
+  // Delete/Reassign state
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
   const [memberToDelete, setMemberToDelete] = useState(null);
   const [assignedTasks, setAssignedTasks] = useState([]);
@@ -94,7 +93,7 @@ export default function LeadTeamMembers() {
         membersList = [];
       }
 
-      // ✅ Filter out deleted members (is_deleted === 1)
+      // Filter out deleted members (is_deleted === 1)
       const activeMembers = membersList.filter(m => m.is_deleted !== 1);
 
       setMembers(activeMembers);
@@ -116,14 +115,13 @@ export default function LeadTeamMembers() {
     }
   };
 
-  // ✅ Fetch stats for all members from backend
+  // Fetch stats for all members from backend
   const fetchMemberStats = async () => {
     try {
       const statsMap = {};
       for (const member of members) {
         try {
           const response = await teamService.getTeamMemberStats(member.id);
-          // The backend returns { success: true, data: {...} }
           const statsData = response?.data || response || {};
           statsMap[member.id] = statsData;
         } catch (err) {
@@ -144,17 +142,14 @@ export default function LeadTeamMembers() {
     toast.success('Team members refreshed');
   };
 
-  // ✅ Remove member from all projects by deleting PTeam entries
+  // Remove member from all projects by deleting PTeam entries
   const removeMemberFromAllProjects = async (memberId) => {
     try {
-      // Get all PTeam entries
       const pteamData = await projectTeamService.getProjectTeams();
       const pteamList = pteamData?.data || pteamData || [];
       
-      // Find entries for this member
       const memberEntries = pteamList.filter(entry => Number(entry.tm) === Number(memberId));
       
-      // Delete each entry
       for (const entry of memberEntries) {
         if (entry.pt_id) {
           await projectTeamService.removeMemberFromProject(entry.pt_id);
@@ -169,7 +164,7 @@ export default function LeadTeamMembers() {
     }
   };
 
-  // ✅ Get member stats from cached map or compute fallback
+  // Get member stats from cached map or compute fallback
   const getMemberStats = (memberId) => {
     const cachedStats = memberStatsMap[memberId];
     if (cachedStats && Object.keys(cachedStats).length > 0) {
@@ -200,13 +195,13 @@ export default function LeadTeamMembers() {
     };
   };
 
-  // ✅ Get tasks assigned to a member
+  // Get tasks assigned to a member
   const getTasksForMember = (memberId) => {
     const stats = getMemberStats(memberId);
     return stats.tasks || [];
   };
 
-  // ✅ Handle delete with reassign
+  // Handle delete with reassign
   const handleDeleteWithReassign = async () => {
     if (!memberToDelete) return;
 
@@ -239,23 +234,23 @@ export default function LeadTeamMembers() {
         toast.success(`Unassigned ${assignedTasks.length} tasks (parked)`);
       }
 
-      // ✅ Remove member from all projects first
+      // Remove member from all projects first
       await removeMemberFromAllProjects(memberToDelete.id);
 
-      // ✅ Then delete the member
+      // Then delete the member
       await teamService.deleteTeamMember(memberToDelete.id);
       
-      // ✅ Remove from local state
+      // Remove from local state
       setMembers(prev => prev.filter(m => (m.id) !== memberToDelete.id));
       
-      // ✅ Remove from stats map
+      // Remove from stats map
       setMemberStatsMap(prev => {
         const newMap = { ...prev };
         delete newMap[memberToDelete.id];
         return newMap;
       });
       
-      // ✅ Refresh data
+      // Refresh data
       await fetchData();
       
       setShowDeleteConfirm(null);
@@ -319,15 +314,26 @@ export default function LeadTeamMembers() {
   // ─── CRUD Operations ───
   
   const handleAdd = async () => {
-    const { name, role, email, qualification, experience, skills, description } = form;
-    if (!name.trim()) return toast.error('Name is required');
-    if (!role.trim()) return toast.error('Role is required');
-    if (!email.trim()) return toast.error('Email is required');
-    if (!qualification.trim()) return toast.error('Qualification is required');
-    if (!experience.toString().trim()) return toast.error('Experience is required');
-    if (!skills.trim()) return toast.error('Skills are required');
+  const { name, role, email, qualification, experience, skills, description } = form;
+  
+  // Validation
+  if (!name.trim()) return toast.error('Name is required');
+  if (!role.trim()) return toast.error('Role is required');
+  if (!email.trim()) return toast.error('Email is required');
+  if (!qualification.trim()) return toast.error('Qualification is required');
+  if (!experience.toString().trim()) return toast.error('Experience is required');
+  if (!skills.trim()) return toast.error('Skills are required');
 
-    try {
+  try {
+    // Check if user already exists
+    const usersResponse = await userService.getUsers();
+    const existingUsers = usersResponse?.data || usersResponse || [];
+    const existingUser = existingUsers.find(u => 
+      u.email?.toLowerCase() === email.trim().toLowerCase()
+    );
+
+    if (existingUser) {
+      // User exists → Just add team member
       const response = await teamService.addTeamMember({
         name: name.trim(),
         role: role.trim(),
@@ -340,29 +346,68 @@ export default function LeadTeamMembers() {
       });
 
       const newMember = response?.data || response;
-      console.log('✅ New member added:', newMember);
-
       if (newMember && newMember.id) {
-        await NotificationHelper.memberAdded(newMember, user);
-        
         setMembers(prev => [newMember, ...prev]);
         setShowAdd(false);
         setForm(defaultForm);
-        toast.success('Member added successfully');
-        
-        // Fetch stats for the new member
+        toast.success(`Team member "${name}" added to existing user!`);
         await fetchMemberStats();
-      } else {
-        await fetchData();
-        toast.success('Member added successfully');
       }
-    } catch (error) {
-      console.error('Error adding member:', error);
-      toast.error(error?.message || 'Failed to add team member');
-    }
-  };
+    } else {
+      // User doesn't exist → Create both
+      
+      // Generate temporary password
+      const tempPassword = generateSecurePassword();
+      
+      // Create user + team member
+      const result = await teamService.createUserAndTeamMember(
+        {
+          u_name: name.trim(),
+          email: email.trim(),
+          password: tempPassword,
+          role: role.trim(),
+        },
+        {
+          name: name.trim(),
+          description: description.trim(),
+          skills: skills.trim(),
+          role: role.trim(),
+          qualification: qualification.trim(),
+          experience: parseInt(experience) || 0,
+        }
+      );
 
-  // ✅ Updated delete function - shows modal with task reassign options
+      if (result.success) {
+        setMembers(prev => [result.teamMember, ...prev]);
+        setShowAdd(false);
+        setForm(defaultForm);
+        
+        toast.success(`✅ User "${name}" created with team member profile!`);
+        
+        // Show temporary password (in production, send via email)
+        toast.info(`📧 Temporary password: ${tempPassword} (please share with user)`);
+        
+        await fetchMemberStats();
+      }
+    }
+  } catch (error) {
+    console.error('Error adding member:', error);
+    toast.error(error?.message || 'Failed to add team member');
+  }
+};
+
+// Helper function
+const generateSecurePassword = () => {
+  const length = 14;
+  const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
+  let password = '';
+  for (let i = 0; i < length; i++) {
+    password += charset.charAt(Math.floor(Math.random() * charset.length));
+  }
+  return password;
+};
+
+  // Updated delete function - shows modal with task reassign options
   const handleDeleteClick = (member) => {
     const memberTasks = getTasksForMember(member.id);
     setMemberToDelete(member);
@@ -372,30 +417,25 @@ export default function LeadTeamMembers() {
     setShowDeleteConfirm(true);
   };
 
+  // ✅ FIXED: handleDelete without NotificationHelper
   const handleDelete = async () => {
     if (assignedTasks.length === 0) {
       try {
-        const memberToDeleteObj = members.find(m => (m.id) === memberToDelete.id);
-        
-        // ✅ Remove member from all projects first
+        // Remove member from all projects first
         await removeMemberFromAllProjects(memberToDelete.id);
         
-        // ✅ Then delete the member
+        // Then delete the member
         await teamService.deleteTeamMember(memberToDelete.id);
         setMembers(prev => prev.filter(m => (m.id) !== memberToDelete.id));
         
-        // ✅ Remove from stats map
+        // Remove from stats map
         setMemberStatsMap(prev => {
           const newMap = { ...prev };
           delete newMap[memberToDelete.id];
           return newMap;
         });
         
-        if (memberToDeleteObj) {
-          await NotificationHelper.memberDeleted(memberToDeleteObj, user);
-        }
-        
-        // ✅ Refresh data
+        // Refresh data
         await fetchData();
         
         setShowDeleteConfirm(null);
@@ -441,8 +481,6 @@ export default function LeadTeamMembers() {
       });
 
       const updatedMember = response?.data || response;
-
-      await NotificationHelper.memberUpdated(updatedMember, user);
 
       setMembers(members.map(m => 
         (m.id) === (selected.id) ? updatedMember : m

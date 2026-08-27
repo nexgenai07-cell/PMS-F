@@ -108,7 +108,7 @@ export default function LeadProjectDetail() {
   const [isModalCommenting, setIsModalCommenting] = useState(false);
   const [commentUpdateTrigger, setCommentUpdateTrigger] = useState(0);
 
-  // ✅ ADD STATS STATE - FIXED
+  // Stats State
   const [stats, setStats] = useState({
     totalTasks: 0,
     completedTasks: 0,
@@ -154,157 +154,226 @@ export default function LeadProjectDetail() {
     fetchProjectData();
   }, [projectId]);
 
-  const fetchProjectData = async () => {
-    try {
-      setLoading(true);
-      
-      const [projectData, tasksData, membersData, usersData, pteamData, statsData] = await Promise.all([
-        projectService.getProject(projectId),
-        taskService.getTasks(),
-        teamService.getTeamMembers(),
-        userService.getUsers(),
-        projectTeamService.getProjectTeams(),
-        projectService.getProjectStats(projectId), // ✅ Get stats from server
-      ]);
+ const fetchProjectData = async () => {
+  try {
+    setLoading(true);
+    
+    const [projectData, tasksData, membersData, usersData, pteamData, statsData] = await Promise.all([
+      projectService.getProject(projectId),
+      taskService.getTasks(),
+      teamService.getTeamMembers(),
+      userService.getUsers(),
+      projectTeamService.getProjectTeams(),
+      projectService.getProjectStats(projectId),
+    ]);
 
-      console.log('📊 Project Data:', projectData);
-      console.log('📊 Tasks Data:', tasksData);
-      console.log('📊 Members Data:', membersData);
-      console.log('📊 Users Data:', usersData);
-      console.log('📊 PTeam Data:', pteamData);
-      console.log('📊 Stats Data:', statsData);
+    console.log('📊 Project Data:', projectData);
+    console.log('📊 Tasks Data:', tasksData);
+    console.log('📊 Members Data:', membersData);
+    console.log('📊 Users Data:', usersData);
+    console.log('📊 PTeam Data:', pteamData);
+    console.log('📊 Stats Data:', statsData);
 
-      const projectItem = projectData?.data || projectData;
-      const allTasks = tasksData?.data || tasksData || [];
-      const membersList = membersData?.data || membersData || [];
-      const usersList = usersData?.data || usersData || [];
-      const pteamList = pteamData?.data || pteamData || [];
-      const statsResponse = statsData?.data || statsData || {};
+    const projectItem = projectData?.data || projectData;
+    const allTasks = tasksData?.data || tasksData || [];
+    const membersList = membersData?.data || membersData || [];
+    const usersList = usersData?.data || usersData || [];
+    const pteamList = pteamData?.data || pteamData || [];
+    const statsResponse = statsData?.data || statsData || {};
 
-      setProject(projectItem);
-      setAllTeamMembers(membersList);
-      setUsers(usersList);
+    setProject(projectItem);
+    setAllTeamMembers(membersList);
+    setUsers(usersList);
 
-      // ✅ Set stats from server - FIXED
-      setStats({
-        totalTasks: statsResponse.totalTasks || 0,
-        completedTasks: statsResponse.completedTasks || 0,
-        inProgressTasks: statsResponse.inProgressTasks || 0,
-        todoTasks: statsResponse.todoTasks || 0,
-        completionRate: statsResponse.completionRate || 0,
-        onTimeRate: statsResponse.onTimeRate || 0,
-        membersCount: statsResponse.membersCount || 0,
-        avgProgress: statsResponse.avgProgress || 0
+    // Set stats from server
+    setStats({
+      totalTasks: statsResponse.totalTasks || 0,
+      completedTasks: statsResponse.completedTasks || 0,
+      inProgressTasks: statsResponse.inProgressTasks || 0,
+      todoTasks: statsResponse.todoTasks || 0,
+      completionRate: statsResponse.completionRate || 0,
+      onTimeRate: statsResponse.onTimeRate || 0,
+      membersCount: statsResponse.membersCount || 0,
+      avgProgress: statsResponse.avgProgress || 0
+    });
+
+    // ✅ Get project members from PTeam - FIXED with deduplication
+    let memberEntries = [];
+    const memberMap = new Map(); // ✅ Use Map to deduplicate by ID
+    
+    if (pteamList && Array.isArray(pteamList) && pteamList.length > 0) {
+      const projectPteamEntries = pteamList.filter(entry => {
+        const entryProjectId = entry.p || entry.p_id || entry.project || entry.projectId || entry.project_id;
+        return Number(entryProjectId) === Number(projectId);
       });
 
-      // ✅ Get project members from PTeam - use correct field names
-      let memberEntries = [];
-      
-      if (pteamList && Array.isArray(pteamList) && pteamList.length > 0) {
-        const projectPteamEntries = pteamList.filter(entry => {
-          const entryProjectId = entry.p || entry.p_id || entry.project || entry.projectId || entry.project_id;
-          return Number(entryProjectId) === Number(projectId);
-        });
+      console.log('📋 Project PTeam entries:', projectPteamEntries);
 
-        memberEntries = projectPteamEntries
-          .map(entry => {
-            const memberId = entry.tm || entry.tm_id || entry.team_member || entry.member || entry.member_id || entry.teamMember;
-            const member = membersList.find(m => Number(m.id) === Number(memberId));
-            if (member) {
-              return {
-                ...member,
-                pt_id: entry.pt_id || entry.id,
-                task_id: entry.t || entry.task_id || entry.task,
-              };
-            }
-            return null;
-          })
-          .filter(m => m !== null);
-      }
-
-      // If no PTeam members found, try to get from tasks
-      if (memberEntries.length === 0) {
-        const projectTasks = allTasks.filter(t => {
-          const taskProjectId = t.p_id || t.p || t.project || t.project_id;
-          return Number(taskProjectId) === Number(projectId);
-        });
+      // ✅ Use Map to deduplicate by member ID
+      projectPteamEntries.forEach(entry => {
+        const memberId = entry.tm || entry.tm_id || entry.team_member || entry.member || entry.member_id || entry.teamMember;
+        console.log('🔍 Looking for member with TeamMember ID:', memberId);
         
-        const memberIds = new Set();
-        projectTasks.forEach(t => {
-          if (t.assign_to) memberIds.add(Number(t.assign_to));
-        });
+        // Skip if we already have this member
+        if (memberMap.has(memberId)) {
+          console.log(`⏭️ Member ${memberId} already exists, skipping duplicate`);
+          return;
+        }
         
-        memberEntries = membersList
-          .filter(m => memberIds.has(Number(m.id)))
-          .map(m => ({
-            ...m,
-            pt_id: null,
-            task_id: null,
-          }));
-      }
-
-      setProjectMembers(memberEntries);
-
-      // Get supervisors
-      const supervisorEntries = memberEntries.filter(m => {
-        const userObj = usersList.find(u => Number(u.id) === Number(m.id));
-        return userObj && (userObj.role === 'manager' || userObj.role === 'admin' || userObj.role === 'supervisor');
+        // ✅ First try to find in membersList (TeamMember)
+        let member = membersList.find(m => Number(m.id) === Number(memberId));
+        
+        // ✅ If not found, try to find in usersList
+        if (!member) {
+          const userObj = usersList.find(u => Number(u.id) === Number(memberId));
+          if (userObj) {
+            member = {
+              id: userObj.id,
+              name: userObj.u_name || userObj.name || 'Unknown',
+              email: userObj.email,
+              role: userObj.role,
+              is_deleted: 0,
+            };
+            console.log('✅ Found member from users list:', member);
+          }
+        }
+        
+        // ✅ Also check by name as fallback
+        if (!member && entry.member_name) {
+          const userObj = usersList.find(u => u.u_name === entry.member_name || u.name === entry.member_name);
+          if (userObj) {
+            member = {
+              id: userObj.id,
+              name: userObj.u_name || userObj.name || 'Unknown',
+              email: userObj.email,
+              role: userObj.role,
+              is_deleted: 0,
+            };
+            console.log('✅ Found member by name:', member);
+          }
+        }
+        
+        if (member) {
+          memberMap.set(memberId, {
+            ...member,
+            pt_id: entry.pt_id || entry.id,
+            task_id: entry.t || entry.task_id || entry.task,
+          });
+        } else {
+          console.warn('⚠️ Member not found for TeamMember ID:', memberId);
+        }
       });
       
-      setProjectSupervisors(supervisorEntries);
+      // Convert Map to array
+      memberEntries = Array.from(memberMap.values());
+    }
 
-      // Filter tasks for this project
+    console.log('📋 Final member entries (deduplicated):', memberEntries);
+
+    // If no PTeam members found, try to get from tasks
+    if (memberEntries.length === 0) {
       const projectTasks = allTasks.filter(t => {
         const taskProjectId = t.p_id || t.p || t.project || t.project_id;
         return Number(taskProjectId) === Number(projectId);
       });
-
-      const mappedTasks = projectTasks.map(t => ({
-        ...t,
-        progress: t.progress ?? (
-          t.status === "done" || t.status === "completed" ? 100 :
-          t.status === "in_progress" || t.status === "in-progress" ? 50 :
-          t.status === "review" ? 75 : 0
-        ),
-        milestones: t.milestones || [],
-        assigneeId: t.assign_to,
-      }));
-
-      setTasks(mappedTasks);
-
-      // Fetch comments for each task
-      if (mappedTasks.length > 0) {
-        const allComments = [];
-        for (const task of mappedTasks) {
-          try {
-            const commentsResponse = await commentService.getCommentsByTask(task.t_id || task.id);
-            const commentsList = commentsResponse?.data || commentsResponse || [];
-            commentsList.forEach(comment => {
-              allComments.push({
-                ...comment,
-                taskId: task.t_id || task.id
-              });
-            });
-          } catch (error) {
-            console.log(`No comments for task ${task.t_id || task.id}`);
-          }
-        }
-        
-        setComments(allComments);
-        console.log(`📊 Loaded ${allComments.length} comments from backend`);
-      }
-
-    } catch (error) {
-      console.error('Error fetching project data:', error);
-      toast.error('Failed to load project details');
-      if (error.status === 404) {
-        navigate('/lead/projects');
-      }
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+      
+      const memberIds = new Set();
+      projectTasks.forEach(t => {
+        if (t.assign_to) memberIds.add(Number(t.assign_to));
+      });
+      
+      memberEntries = membersList
+        .filter(m => memberIds.has(Number(m.id)))
+        .map(m => ({
+          ...m,
+          pt_id: null,
+          task_id: null,
+        }));
     }
-  };
+
+    setProjectMembers(memberEntries);
+
+    // ✅ Get supervisors - FIXED with deduplication
+    const supervisorMap = new Map(); // ✅ Use Map to deduplicate
+    memberEntries.forEach(m => {
+      // Check if the member has a role that indicates supervisor
+      let isSupervisor = false;
+      if (m.role && (m.role === 'manager' || m.role === 'admin' || m.role === 'supervisor')) {
+        isSupervisor = true;
+      }
+      // Also check in usersList for role
+      if (!isSupervisor) {
+        const userObj = usersList.find(u => Number(u.id) === Number(m.id));
+        if (userObj && (userObj.role === 'manager' || userObj.role === 'admin' || userObj.role === 'supervisor')) {
+          isSupervisor = true;
+        }
+      }
+      
+      if (isSupervisor) {
+        // ✅ Only add if not already in map
+        if (!supervisorMap.has(m.id)) {
+          supervisorMap.set(m.id, m);
+        }
+      }
+    });
+    
+    const supervisorEntries = Array.from(supervisorMap.values());
+    
+    console.log('📋 Supervisors found (deduplicated):', supervisorEntries);
+    setProjectSupervisors(supervisorEntries);
+
+    // Filter tasks for this project
+    const projectTasks = allTasks.filter(t => {
+      const taskProjectId = t.p_id || t.p || t.project || t.project_id;
+      return Number(taskProjectId) === Number(projectId);
+    });
+
+    const mappedTasks = projectTasks.map(t => ({
+      ...t,
+      progress: t.progress ?? (
+        t.status === "done" || t.status === "completed" ? 100 :
+        t.status === "in_progress" || t.status === "in-progress" ? 50 :
+        t.status === "review" ? 75 : 0
+      ),
+      milestones: t.milestones || [],
+      assigneeId: t.assign_to,
+    }));
+
+    setTasks(mappedTasks);
+
+    // Fetch comments for each task
+    if (mappedTasks.length > 0) {
+      const allComments = [];
+      for (const task of mappedTasks) {
+        try {
+          const commentsResponse = await commentService.getCommentsByTask(task.t_id || task.id);
+          const commentsList = commentsResponse?.data || commentsResponse || [];
+          commentsList.forEach(comment => {
+            allComments.push({
+              ...comment,
+              taskId: task.t_id || task.id
+            });
+          });
+        } catch (error) {
+          console.log(`No comments for task ${task.t_id || task.id}`);
+        }
+      }
+      
+      setComments(allComments);
+      console.log(`📊 Loaded ${allComments.length} comments from backend`);
+    }
+
+  } catch (error) {
+    console.error('Error fetching project data:', error);
+    toast.error('Failed to load project details');
+    if (error.status === 404) {
+      navigate('/lead/projects');
+    }
+  } finally {
+    setLoading(false);
+    setRefreshing(false);
+  }
+};
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -542,7 +611,7 @@ export default function LeadProjectDetail() {
     }
   };
 
-  // ✅ Use stats from server instead of client-side calculation
+  // Use stats from server
   const progress = stats.completionRate || 0;
   const done = stats.completedTasks || 0;
 
@@ -1214,7 +1283,7 @@ export default function LeadProjectDetail() {
 
         {/* RIGHT PANEL */}
         <div className="project-right">
-          {/* Overview Stats - ✅ Using server stats */}
+          {/* Overview Stats - Using server stats */}
           <div className="info-card">
             <h4 className="info-card-title">
               <Sparkles size={14} />
@@ -1441,7 +1510,7 @@ export default function LeadProjectDetail() {
         </div>
       </div>
 
-      {/* Styles - same as before */}
+      {/* Styles */}
       <style>{`
         @keyframes spin {
           to { transform: rotate(360deg); }

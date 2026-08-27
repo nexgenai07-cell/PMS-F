@@ -53,12 +53,17 @@ export default function LeadNotifications() {
   const fetchData = async () => {
     try {
       setLoading(true);
+      
+      // Get current user ID and role
+      const userId = user?.id || user?.u_id;
+      const userRole = user?.role || 'member';
+      
       const [projectsData, tasksData, membersData, usersData, notificationsData] = await Promise.all([
         projectService.getProjects(),
         taskService.getTasks(),
         teamService.getTeamMembers(),
         userService.getUsers(),
-        notificationService.getNotifications(), // Now fetches from existing data
+        notificationService.getNotifications(userId, userRole), // ✅ Pass user info for filtering
       ]);
 
       const projectsList = projectsData?.data || projectsData || [];
@@ -66,109 +71,16 @@ export default function LeadNotifications() {
       const membersList = membersData?.data || membersData || [];
       const usersList = usersData?.data || usersData || [];
       
-      // Get notifications (now activities from existing data)
+      // Get notifications filtered for this user
       let notificationsList = notificationsData?.data || [];
 
-      console.log('📊 All activities generated:', notificationsList.length);
-
-      // ─── FILTER FOR LEAD ───
-      const userId = user?.id || user?.u_id;
-      
-      // Get projects where this lead is the creator
-      const createdProjects = projectsList.filter(p => 
-        Number(p.created_by) === Number(userId)
-      );
-      const createdProjectIds = createdProjects.map(p => Number(p.p_id || p.id));
-      
-      // Find the TeamMember for this user (match by name)
-      const teamMember = membersList.find(m => {
-        const memberName = (m.name || '').toLowerCase().trim();
-        const userName = (user?.u_name || '').toLowerCase().trim();
-        return memberName === userName;
-      });
-      const teamMemberId = teamMember ? Number(teamMember.id) : null;
-      
-      // Get tasks assigned to this lead
-      const assignedTaskIds = tasksList
-        .filter(t => Number(t.assign_to) === teamMemberId)
-        .map(t => Number(t.t_id || t.id));
-      
-      // Get project IDs from assigned tasks
-      const assignedProjectIds = tasksList
-        .filter(t => Number(t.assign_to) === teamMemberId)
-        .map(t => Number(t.p_id || t.p));
-      
-      // Combine all project IDs the lead is involved in
-      const allProjectIds = [...new Set([...createdProjectIds, ...assignedProjectIds])];
-      
-      console.log('📊 Created projects:', createdProjectIds);
-      console.log('📊 Assigned task IDs:', assignedTaskIds);
-      console.log('📊 Assigned project IDs:', assignedProjectIds);
-      console.log('📊 All project IDs for lead:', allProjectIds);
-      console.log('📊 Team member ID:', teamMemberId);
-      
-      // Filter notifications: show those related to user's projects OR assigned tasks
-      const filteredNotifications = notificationsList.filter(n => {
-        const entityId = Number(n.entity_id);
-        const entityType = n.entity_type;
-        const message = n.message || '';
-        
-        // If notification is about a project, check if it's in user's projects
-        if (entityType === 'project') {
-          return allProjectIds.includes(entityId);
-        }
-        
-        // If notification is about a task, check if it's in user's projects OR assigned to user
-        if (entityType === 'task') {
-          const task = tasksList.find(t => Number(t.t_id || t.id) === entityId);
-          if (task) {
-            const taskProjectId = Number(task.p_id || task.p);
-            const isAssignedToUser = Number(task.assign_to) === teamMemberId;
-            const isInUserProject = allProjectIds.includes(taskProjectId);
-            return isAssignedToUser || isInUserProject;
-          }
-          return false;
-        }
-        
-        // If notification is about a team member, check if they're in user's projects
-        if (entityType === 'team_member') {
-          const memberTasks = tasksList.filter(t => 
-            Number(t.assign_to) === entityId && 
-            allProjectIds.includes(Number(t.p_id || t.p))
-          );
-          return memberTasks.length > 0 || allProjectIds.length === 0;
-        }
-        
-        // For other types, check if related to user's projects or assigned tasks
-        // Check if message contains any project name from user's projects
-        const isRelatedToProject = projectsList.some(p => {
-          const projectName = p.p_name || p.name || '';
-          return allProjectIds.includes(Number(p.p_id || p.id)) && message.includes(projectName);
-        });
-        
-        // Check if message contains the user's name (assigned to them)
-        const isAssignedToUser = message.includes(user?.u_name || '');
-        
-        // Check if message contains any task title from assigned tasks
-        const isRelatedToAssignedTask = tasksList.some(t => {
-          const taskTitle = t.title || '';
-          return assignedTaskIds.includes(Number(t.t_id || t.id)) && message.includes(taskTitle);
-        });
-        
-        // Check if notification is created by this user
-        const isCreatedByUser = message.includes(user?.u_name || '');
-        
-        // Show if related to user's projects, assigned tasks, or created by user
-        return isRelatedToProject || isAssignedToUser || isRelatedToAssignedTask || isCreatedByUser || allProjectIds.length === 0;
-      });
-
-      console.log('📊 Filtered notifications for lead:', filteredNotifications.length);
+      console.log('📊 All activities for lead:', notificationsList.length);
 
       setProjects(projectsList);
       setTasks(tasksList);
       setTeamMembers(membersList);
       setUsers(usersList);
-      setNotifications(filteredNotifications);
+      setNotifications(notificationsList);
 
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -241,8 +153,8 @@ export default function LeadNotifications() {
       return task?.title || 'Unknown Task';
     }
     if (entityType === 'user') {
-      const user = users.find(u => Number(u.id || u.u_id) === Number(entityId));
-      return user?.u_name || user?.name || 'Unknown User';
+      const userObj = users.find(u => Number(u.id || u.u_id) === Number(entityId));
+      return userObj?.u_name || userObj?.name || 'Unknown User';
     }
     if (entityType === 'team_member') {
       const member = teamMembers.find(m => Number(m.id) === Number(entityId));
@@ -491,11 +403,6 @@ export default function LeadNotifications() {
           animation: spin 0.8s linear infinite;
         }
 
-        /* Action buttons in the Topbar. Row-based at every size — never
-           stacks into a column — and the label collapses to an
-           icon-only button on narrow screens so it matches the visual
-           weight of the Topbar's own icon buttons instead of fighting
-           them for space. */
         .topbar-actions {
           display: flex;
           align-items: center;
@@ -853,10 +760,6 @@ export default function LeadNotifications() {
           }
         }
 
-        /* Below this width, drop the button text and switch the two
-           topbar action buttons to compact square icon buttons that
-           match the Topbar's own icon-button sizing, so the header
-           stays on one row instead of wrapping awkwardly. */
         @media (max-width: 560px) {
           .topbar-actions .btn {
             width: 32px;
@@ -893,8 +796,6 @@ export default function LeadNotifications() {
           }
         }
 
-        /* Comfortable tap targets on touch devices even where the
-           icon-only buttons are visually small for density. */
         @media (hover: none) and (pointer: coarse) {
           .topbar-actions .btn {
             width: 40px !important;

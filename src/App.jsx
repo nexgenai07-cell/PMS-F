@@ -9,6 +9,8 @@ import ProfilePage from "./components/shared/ProfilePage";
 
 import LeadTaskDetail from "./components/lead/LeadTaskDetail";
 import SupervisorTaskDetail from "./components/supervisor/SupervisorTaskDetail";
+import TeamMembersPage from './components/shared/TeamMembersPage';
+
 // AUTH
 import Login from "./components/auth/Login";
 import Register from './components/auth/Register';
@@ -167,6 +169,7 @@ function AppRoutes() {
         <Route path="projects/:id" element={<SupervisorProjectDetail />} />
         <Route path="projects/:id/tasks/:taskId" element={<SupervisorTaskDetail />} />
         <Route path="teams" element={<SupervisorTeams />} />
+        <Route path="/supervisor/members" element={<TeamMembersPage />} />
         <Route path="notifications" element={<SupervisorNotifications />} />
         <Route path="leads" element={<SupervisorLeads />} />
         <Route path="profile" element={<ProfilePage />} />
@@ -186,6 +189,7 @@ function AppRoutes() {
         <Route path="projects/:id" element={<ProjectDetail />} />
         <Route path="projects/:id/tasks/:taskId" element={<LeadTaskDetail />} />
         <Route path="team-members" element={<LeadTeamMembers />} />
+        <Route path="/lead/members" element={<TeamMembersPage />} />
         <Route path="notifications" element={<LeadNotifications />} />
         <Route path="profile" element={<ProfilePage />} />
       </Route>

@@ -25,6 +25,7 @@ import userService from '../../services/userService';
 import projectTeamService from '../../services/projectTeamService';
 import { useAuth } from '../../context/AuthContext';
 import toast from 'react-hot-toast';
+import NotificationHelper from '../../services/notificationHelper'; // ✅ ADD THIS IMPORT
 
 const PRIORITY_OPTIONS = ['low', 'medium', 'high', 'critical'];
 const STATUS_OPTIONS = ['planning', 'active', 'on_hold', 'completed', 'cancelled'];
@@ -581,6 +582,7 @@ export default function SupervisorProjects() {
     });
   };
 
+  // ✅ UPDATED: handleAddTask with email notification
   const handleAddTask = async () => {
     if (!taskForm.title.trim()) {
       toast.error('Task title is required');
@@ -606,9 +608,21 @@ export default function SupervisorProjects() {
       const newTask = response?.data || response;
       console.log('✅ Task created with assign_to:', newTask.assign_to);
       
+      // ✅ Send email notification if task is assigned to someone
+      if (assignTo) {
+        const assignee = teamMembers.find(m => Number(m.id) === Number(assignTo));
+        if (assignee) {
+          const project = projects.find(p => (p.p_id || p.id) === (taskAddModal.p_id || taskAddModal.id));
+          // ✅ Send email notification
+          await NotificationHelper.taskAssigned(newTask, assignee, user, project);
+          console.log('📧 Task assignment email sent to:', assignee.email);
+          toast.success(`Task created and notification sent to ${assignee.name}`);
+        }
+      }
+      
       setTasks([newTask, ...tasks]);
       setTaskAddModal(null);
-      toast.success('Task created successfully');
+      toast.success('Task created successfully' + (assignTo ? ' and notification sent!' : ''));
     } catch (error) {
       console.error('Error creating task:', error);
       toast.error(error.response?.data?.message || 'Failed to create task');

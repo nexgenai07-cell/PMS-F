@@ -56,13 +56,17 @@ export default function SupervisorNotifications() {
     try {
       setLoading(true);
       
+      // Get current user ID and role
+      const userId = user?.id || user?.u_id;
+      const userRole = user?.role || 'member';
+      
       // Get all data
       const [projectsData, tasksData, membersData, usersData, notificationsData] = await Promise.all([
         projectService.getProjects(),
         taskService.getTasks(),
         teamService.getTeamMembers(),
         userService.getUsers(),
-        notificationService.getNotifications(), // Now fetches from existing data
+        notificationService.getNotifications(userId, userRole), // ✅ Pass user info for filtering
       ]);
 
       const projectsList = projectsData?.data || projectsData || [];
@@ -70,22 +74,16 @@ export default function SupervisorNotifications() {
       const membersList = membersData?.data || membersData || [];
       const usersList = usersData?.data || usersData || [];
       
-      // Get notifications (now activities from existing data)
+      // Get notifications filtered for this user
       let notificationsList = notificationsData?.data || [];
 
-      console.log('📊 All activities generated:', notificationsList.length);
-
-      // ─── FOR SUPERVISOR: Show ALL notifications ───
-      // Supervisors see everything - no filtering
-      const filteredNotifications = notificationsList;
-
-      console.log('📊 Supervisor notifications (all activities):', filteredNotifications.length);
+      console.log('📊 All activities for user:', notificationsList.length);
 
       setProjects(projectsList);
       setTasks(tasksList);
       setTeamMembers(membersList);
       setUsers(usersList);
-      setNotifications(filteredNotifications);
+      setNotifications(notificationsList);
 
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -153,8 +151,8 @@ export default function SupervisorNotifications() {
       return task?.title || 'Unknown Task';
     }
     if (entityType === 'user') {
-      const user = users.find(u => Number(u.id || u.u_id) === Number(entityId));
-      return user?.u_name || user?.name || 'Unknown User';
+      const userObj = users.find(u => Number(u.id || u.u_id) === Number(entityId));
+      return userObj?.u_name || userObj?.name || 'Unknown User';
     }
     if (entityType === 'team_member') {
       const member = teamMembers.find(m => Number(m.id) === Number(entityId));
@@ -407,11 +405,6 @@ export default function SupervisorNotifications() {
           animation: spin 0.8s linear infinite;
         }
 
-        /* Action buttons in the Topbar. Row-based at every size — never
-           stacks into a column — and the label collapses to an
-           icon-only button on narrow screens so it matches the visual
-           weight of the Topbar's own icon buttons instead of fighting
-           them for space. */
         .topbar-actions {
           display: flex;
           align-items: center;
@@ -432,7 +425,6 @@ export default function SupervisorNotifications() {
           margin: 0 auto;
         }
 
-        /* Filter Bar */
         .filter-bar {
           margin-bottom: 20px;
           overflow-x: auto;
@@ -491,7 +483,6 @@ export default function SupervisorNotifications() {
           color: #fff;
         }
 
-        /* Empty State */
         .empty-state {
           text-align: center;
           padding: 60px 20px;
@@ -515,7 +506,6 @@ export default function SupervisorNotifications() {
           font-size: 14px;
         }
 
-        /* Notifications List */
         .notifications-list {
           display: flex;
           flex-direction: column;
@@ -643,7 +633,6 @@ export default function SupervisorNotifications() {
           background: rgba(248, 113, 113, 0.1);
         }
 
-        /* Modal */
         .modal-overlay {
           position: fixed;
           inset: 0;
@@ -773,10 +762,6 @@ export default function SupervisorNotifications() {
           }
         }
 
-        /* Below this width, drop the button text and switch the two
-           topbar action buttons to compact square icon buttons that
-           match the Topbar's own icon-button sizing, so the header
-           stays on one row instead of wrapping awkwardly. */
         @media (max-width: 560px) {
           .topbar-actions .btn {
             width: 32px;
@@ -813,8 +798,6 @@ export default function SupervisorNotifications() {
           }
         }
 
-        /* Comfortable tap targets on touch devices even where the
-           icon-only buttons are visually small for density. */
         @media (hover: none) and (pointer: coarse) {
           .topbar-actions .btn {
             width: 40px !important;
