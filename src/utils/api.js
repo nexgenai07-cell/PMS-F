@@ -1,9 +1,10 @@
 // src/utils/api.js
 import axios from 'axios';
 
-// API Base URL - use proxy in development
+// API Base URL - use from environment or fallback
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
+console.log('🔵 Environment:', import.meta.env.MODE);
 console.log('🔵 API Base URL:', API_BASE_URL || 'Using proxy (relative path)');
 
 const api = axios.create({
