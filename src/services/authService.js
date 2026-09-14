@@ -5,14 +5,14 @@ class AuthService {
   async register(userData) {
     try {
       console.log('AuthService: Registering user:', userData);
-      
+
       const payload = {
         u_name: userData.u_name || userData.name,
         email: userData.email,
         password: userData.password,
         role: userData.role || 'member',
       };
-      
+
       const response = await api.post(endpoints.auth.register, payload);
       return response.data;
     } catch (error) {
@@ -24,21 +24,20 @@ class AuthService {
   async login(credentials) {
     try {
       console.log('AuthService: Logging in user:', credentials.email);
-      
+
       const response = await api.post(endpoints.auth.login, {
         email: credentials.email,
         password: credentials.password,
       });
-      
+
       console.log('AuthService: Login response:', response.data);
-      
-      // Extract data from response
+
       const data = response.data;
-      
+
       // Get tokens - handle both nested and flat responses
       const accessToken = data.data?.access || data.access || data.data?.access_token;
       const refreshToken = data.data?.refresh || data.refresh || data.data?.refresh_token;
-      
+
       // Get user data - the API returns user_id, not u_id
       const userData = {
         id: data.data?.user_id || data.user_id || data.data?.id,
@@ -46,27 +45,27 @@ class AuthService {
         email: data.data?.email || data.email || credentials.email,
         role: data.data?.role || data.role || 'member',
       };
-      
+
       console.log('✅ Access Token:', accessToken?.substring(0, 20) + '...');
       console.log('✅ Refresh Token:', refreshToken?.substring(0, 20) + '...');
       console.log('✅ User Data:', userData);
-      
+
       // Store tokens in localStorage
       if (accessToken) {
         localStorage.setItem('access_token', accessToken);
         localStorage.setItem('token', accessToken);
         console.log('✅ Access token stored');
       }
-      
+
       if (refreshToken) {
         localStorage.setItem('refresh_token', refreshToken);
         console.log('✅ Refresh token stored');
       }
-      
+
       // Store user data
       if (userData.id || userData.u_name) {
         const userToStore = {
-          u_id: userData.id,  // Store as u_id for backward compatibility
+          u_id: userData.id, // Store as u_id for backward compatibility
           id: userData.id,
           u_name: userData.u_name,
           email: userData.email,
@@ -77,7 +76,7 @@ class AuthService {
         localStorage.setItem('user_role', userData.role || 'member');
         console.log('✅ User data stored');
       }
-      
+
       return response.data;
     } catch (error) {
       console.error('AuthService: Login error:', error);
@@ -117,11 +116,11 @@ class AuthService {
         email: userData.email,
         role: userData.role,
       };
-      
+
       console.log('📤 Updating profile with payload:', payload);
-      
+
       const response = await api.patch(endpoints.auth.me, payload);
-      
+
       // ✅ Update stored user data after successful update
       if (response.data) {
         const updatedUser = {
@@ -135,7 +134,7 @@ class AuthService {
         localStorage.setItem('pms_user', JSON.stringify(updatedUser));
         localStorage.setItem('user_role', updatedUser.role || 'member');
       }
-      
+
       return response.data;
     } catch (error) {
       console.error('AuthService: Error updating profile:', error);
@@ -143,10 +142,10 @@ class AuthService {
     }
   }
 
-  // ✅ Change password
+  // ✅ Change password — path relative to baseURL (no /api prefix)
   async changePassword(passwordData) {
     try {
-      const response = await api.post('/api/auth/change-password', {
+      const response = await api.post('/auth/change-password', {
         current_password: passwordData.current_password,
         new_password: passwordData.new_password,
       });
@@ -157,10 +156,10 @@ class AuthService {
     }
   }
 
-  // ✅ Request password reset
+  // ✅ Request password reset — path relative to baseURL
   async requestPasswordReset(email) {
     try {
-      const response = await api.post('/api/auth/password-reset-request', { email });
+      const response = await api.post('/auth/password-reset-request', { email });
       return response.data;
     } catch (error) {
       console.error('AuthService: Error requesting password reset:', error);
@@ -168,10 +167,10 @@ class AuthService {
     }
   }
 
-  // ✅ Reset password with token
+  // ✅ Reset password with token — path relative to baseURL
   async resetPassword(token, newPassword) {
     try {
-      const response = await api.post('/api/auth/password-reset', {
+      const response = await api.post('/auth/password-reset', {
         token,
         new_password: newPassword,
       });
@@ -195,10 +194,11 @@ class AuthService {
     if (error.response) {
       return {
         status: error.response.status,
-        message: error.response.data.message || 
-                 error.response.data.detail || 
-                 error.response.data.error ||
-                 'An error occurred',
+        message:
+          error.response.data.message ||
+          error.response.data.detail ||
+          error.response.data.error ||
+          'An error occurred',
         data: error.response.data,
       };
     }
