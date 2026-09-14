@@ -61,9 +61,9 @@ api.interceptors.response.use(
         try {
           // NOTE: API_BASE_URL already ends with /api (prod) or is '' (dev proxy).
           // So the refresh path must NOT repeat /api.
-          const response = await axios.post(`${API_BASE_URL}/auth/refresh`, {
-            refresh: refreshToken,
-          });
+          const response = await axios.post(`${API_BASE_URL}/auth/refresh/`, {
+  refresh: refreshToken,
+});
 
           if (response.data.access) {
             localStorage.setItem('access_token', response.data.access);
@@ -94,66 +94,51 @@ api.interceptors.response.use(
 
 // All endpoint paths are RELATIVE to API_BASE_URL (which already includes /api).
 export const endpoints = {
-  // Auth endpoints
   auth: {
-    register: '/auth/register',
-    login: '/auth/login',
-    logout: '/auth/logout',
-    me: '/auth/me',
-    refresh: '/auth/refresh',
+    register: '/auth/register/',
+    login: '/auth/login/',
+    logout: '/auth/logout/',
+    me: '/auth/me/',
+    refresh: '/auth/refresh/',
   },
-
-  // Users endpoints
   users: {
-    list: '/users',
-    byId: (id) => `/users/${id}`,
+    list: '/users/',
+    byId: (id) => `/users/${id}/`,
   },
-
-  // Team Members endpoints
   teamMembers: {
-    list: '/team_members',
-    byId: (id) => `/team_members/${id}`,
+    list: '/team_members/',
+    byId: (id) => `/team_members/${id}/`,
   },
-
-  // Projects endpoints
   projects: {
-    list: '/projects',
-    byId: (id) => `/projects/${id}`,
-    tasks: (id) => `/projects/${id}/tasks`,
+    list: '/projects/',
+    byId: (id) => `/projects/${id}/`,
+    tasks: (id) => `/projects/${id}/tasks/`,
   },
-
-  // Tasks endpoints
   tasks: {
-    list: '/task',
-    byId: (id) => `/task/${id}`,
-    comments: (id) => `/tasks/${id}/comments`,
+    list: '/task/',
+    byId: (id) => `/task/${id}/`,
+    comments: (id) => `/tasks/${id}/comments/`,
   },
-
-  // Comments endpoints
   comments: {
-    list: '/comments',
-    byId: (id) => `/comments/${id}`,
-    byTask: (taskId) => `/tasks/${taskId}/comments`,
-    pin: (id) => `/comments/${id}/pin`,
+    list: '/comments/',
+    byId: (id) => `/comments/${id}/`,
+    byTask: (taskId) => `/tasks/${taskId}/comments/`,
+    pin: (id) => `/comments/${id}/pin/`,
   },
-
-  // Notifications endpoints
   notifications: {
-    list: '/notifications',
-    byId: (id) => `/notifications/${id}`,
-    read: (id) => `/notifications/${id}/read`,
-    readAll: '/notifications/read-all',
-    delete: (id) => `/notifications/del/${id}`,
-    unreadCount: '/notifications/unread-count',
+    list: '/notifications/',
+    byId: (id) => `/notifications/${id}/`,
+    read: (id) => `/notifications/${id}/read/`,
+    readAll: '/notifications/read-all/',
+    delete: (id) => `/notifications/del/${id}/`,
+    unreadCount: '/notifications/unread-count/',
   },
-
-  // PTeam endpoints (Project-Team Member junction table)
   pteam: {
-    list: '/pteam',
-    byId: (id) => `/pteam/${id}`,
-    byProject: (projectId) => `/pteam?project=${projectId}`,
-    add: '/pteam',
-    remove: (id) => `/pteam/${id}`,
+    list: '/pteam/',
+    byId: (id) => `/pteam/${id}/`,
+    byProject: (projectId) => `/pteam/?project=${projectId}`,
+    add: '/pteam/',
+    remove: (id) => `/pteam/${id}/`,
   },
 };
 

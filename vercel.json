@@ -1,6 +1,10 @@
 {
   "rewrites": [
     {
+      "source": "/api/:path*",
+      "destination": "https://pmsbackend.nxgenai.pro/api/:path*"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
