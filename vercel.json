@@ -1,10 +1,6 @@
 {
   "rewrites": [
     {
-      "source": "/test-proxy",
-      "destination": "https://pmsbackend.nxgenai.pro/api/auth/login/"
-    },
-    {
       "source": "/api/:path*",
       "destination": "https://pmsbackend.nxgenai.pro/api/:path*"
     },
