@@ -110,38 +110,38 @@ class TaskService {
   }
   
   async updateTask(id, taskData) {
-    try {
-      const payload = {
-        title: taskData.title,
-        desc: taskData.description || '',
-        status: taskData.status,
-        priority: taskData.priority,
-        assign_to: taskData.assignTo || null,
-        due_date: taskData.dueDate || null,
-        start_date: taskData.startDate || null,
-      };
-      
-      console.log('📤 Updating task with payload:', payload);
-      
-      const response = await api.patch(endpoints.tasks.byId(id), payload);
-      const data = response.data;
-      
-      // ✅ Normalize assign_to
-      if (data?.data) {
-        data.data.assign_to = data.data.assign_to ? Number(data.data.assign_to) : null;
-        data.data.t_id = data.data.t_id ? Number(data.data.t_id) : null;
-        data.data.id = data.data.id ? Number(data.data.id) : null;
-      } else if (data) {
-        data.assign_to = data.assign_to ? Number(data.assign_to) : null;
-        data.t_id = data.t_id ? Number(data.t_id) : null;
-        data.id = data.id ? Number(data.id) : null;
-      }
-      
-      return data;
-    } catch (error) {
-      throw this.handleError(error);
+  try {
+    const payload = {
+      title: taskData.title,
+      desc: taskData.description || '',
+      status: taskData.status,
+      priority: taskData.priority,
+      progress: taskData.progress ?? undefined,   // ← add this
+      assign_to: taskData.assignTo || null,
+      due_date: taskData.dueDate || null,
+      start_date: taskData.startDate || null,
+    };
+
+    console.log('📤 Updating task with payload:', payload);
+
+    const response = await api.patch(endpoints.tasks.byId(id), payload);
+    const data = response.data;
+
+    if (data?.data) {
+      data.data.assign_to = data.data.assign_to ? Number(data.data.assign_to) : null;
+      data.data.t_id = data.data.t_id ? Number(data.data.t_id) : null;
+      data.data.id = data.data.id ? Number(data.data.id) : null;
+    } else if (data) {
+      data.assign_to = data.assign_to ? Number(data.assign_to) : null;
+      data.t_id = data.t_id ? Number(data.t_id) : null;
+      data.id = data.id ? Number(data.id) : null;
     }
+
+    return data;
+  } catch (error) {
+    throw this.handleError(error);
   }
+}
 
   async assignTask(taskId, memberId) {
     try {

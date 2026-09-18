@@ -13,6 +13,14 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 console.log('🔵 Environment:', import.meta.env.MODE);
 console.log('🔵 API Base URL:', API_BASE_URL || 'Using proxy (relative path)');
 
+// Paths that should NOT trigger the auth-refresh-and-redirect behavior.
+// A 401 from these is a legitimate credential failure, not a stale token.
+const AUTH_ENDPOINTS = ['/auth/login', '/auth/register', '/auth/refresh'];
+
+// Pages where we should NOT clear localStorage or redirect to /login.
+// These are the pages a user can legitimately be on without being logged in.
+const PUBLIC_PATHS = ['/login', '/register', '/verify-email', '/'];
+
 const api = axios.create({
   baseURL: API_BASE_URL,
   headers: {
@@ -51,19 +59,23 @@ api.interceptors.response.use(
     return response;
   },
   async (error) => {
-    const originalRequest = error.config;
-    console.error('🔴 Response Error:', error.response?.status, error.response?.data);
+    const originalRequest = error.config || {};
+    const status = error.response?.status;
+    const url = originalRequest.url || '';
 
-    // If token is invalid and we haven't tried to refresh yet
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    console.error('🔴 Response Error:', status, url, error.response?.data);
+
+    // Only run refresh logic for 401s on non-auth endpoints,
+    // and only once per request.
+    const isAuthEndpoint = AUTH_ENDPOINTS.some((p) => url.includes(p));
+
+    if (status === 401 && !originalRequest._retry && !isAuthEndpoint) {
       originalRequest._retry = true;
 
       const refreshToken = localStorage.getItem('refresh_token');
 
       if (refreshToken) {
         try {
-          // NOTE: API_BASE_URL already ends with /api (prod) or is '' (dev proxy).
-          // Django has no trailing slash here either.
           const response = await axios.post(`${API_BASE_URL}/auth/refresh`, {
             refresh: refreshToken,
           });
@@ -71,23 +83,26 @@ api.interceptors.response.use(
           if (response.data.access) {
             localStorage.setItem('access_token', response.data.access);
             localStorage.setItem('token', response.data.access);
-
             originalRequest.headers.Authorization = `Bearer ${response.data.access}`;
             return api(originalRequest);
           }
         } catch (refreshError) {
           console.error('Token refresh failed:', refreshError);
-          localStorage.clear();
-          if (!window.location.pathname.includes('/login')) {
-            window.location.href = '/login';
-          }
         }
-      } else {
-        // No refresh token, clear and redirect
+      }
+
+      // Refresh failed or no refresh token.
+      // Only clear + redirect if we're NOT already on a public page.
+      const onPublicPage = PUBLIC_PATHS.some((p) =>
+        p === '/' ? window.location.pathname === '/' : window.location.pathname.startsWith(p)
+      );
+
+      if (!onPublicPage) {
+        console.warn('🚪 Clearing session and redirecting to /login');
         localStorage.clear();
-        if (!window.location.pathname.includes('/login')) {
-          window.location.href = '/login';
-        }
+        window.location.href = '/login';
+      } else {
+        console.warn('⚠️ 401 on public page — not clearing session, not redirecting:', url);
       }
     }
 

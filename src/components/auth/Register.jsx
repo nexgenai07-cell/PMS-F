@@ -1,28 +1,17 @@
 // src/components/auth/Register.jsx
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import { 
-  Eye, EyeOff, Zap, ArrowRight, Shield, Users, 
-  CheckCircle, AlertCircle, CheckCircle2, Loader2 
+import {
+  Eye, EyeOff, Zap, ArrowRight, Shield, Users,
+  CheckCircle, AlertCircle, CheckCircle2
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { sendVerificationEmail, generateToken } from '../../services/emailService';
 import teamService from '../../services/teamService';
 
 const ROLE_OPTIONS = [
-  {
-    value: 'manager',
-    label: 'Supervisor',
-    icon: Shield,
-    description: 'Oversee multiple projects and teams'
-  },
-  {
-    value: 'member',
-    label: 'Team Lead',
-    icon: Users,
-    description: 'Manage projects and team members'
-  }
+  { value: 'manager', label: 'Supervisor', icon: Shield, description: 'Oversee multiple projects and teams' },
+  { value: 'member', label: 'Team Lead', icon: Users, description: 'Manage projects and team members' }
 ];
 
 const STRENGTH_MAP = {
@@ -34,12 +23,16 @@ const STRENGTH_MAP = {
   5: { label: 'Very Strong', color: '#10b981', feedback: 'Excellent password security!' }
 };
 
-const REQUIREMENTS = [
-  { test: (p) => p.length >= 8, label: 'Min 8 characters' },
-  { test: (p) => /[a-z]/.test(p) && /[A-Z]/.test(p), label: 'Uppercase & lowercase' },
-  { test: (p) => /\d/.test(p), label: 'Number' },
-  { test: (p) => /[^a-zA-Z0-9]/.test(p), label: 'Special character' }
+// Single source of truth for password rules (validator + checklist)
+const PASSWORD_RULES = [
+  { key: 'length', label: 'Min 8 characters', test: (p) => p.length >= 8 },
+  { key: 'case', label: 'Uppercase & lowercase', test: (p) => /[a-z]/.test(p) && /[A-Z]/.test(p) },
+  { key: 'number', label: 'Number', test: (p) => /\d/.test(p) },
+  { key: 'special', label: 'Special character', test: (p) => /[^a-zA-Z0-9]/.test(p) }
 ];
+
+const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+const USERNAME_REGEX = /^[a-zA-Z0-9_]+$/;
 
 function scorePassword(password) {
   let score = 0;
@@ -54,103 +47,104 @@ function scorePassword(password) {
 // Validation functions
 const validators = {
   username: (value) => {
-    if (!value || value.trim() === '') {
-      return { valid: false, message: 'Username is required' };
-    }
-    if (value.length < 3) {
-      return { valid: false, message: 'Username must be at least 3 characters' };
-    }
-    if (value.length > 50) {
-      return { valid: false, message: 'Username must be less than 50 characters' };
-    }
-    if (!/^[a-zA-Z0-9_]+$/.test(value)) {
+    const v = (value ?? '').trim();
+    if (!v) return { valid: false, message: 'Username is required' };
+    if (v.length < 3) return { valid: false, message: 'Username must be at least 3 characters' };
+    if (v.length > 50) return { valid: false, message: 'Username must be less than 50 characters' };
+    if (!USERNAME_REGEX.test(v)) {
       return { valid: false, message: 'Username can only contain letters, numbers, and underscores' };
     }
     return { valid: true, message: '' };
   },
-  
+
   email: (value) => {
-    if (!value || value.trim() === '') {
-      return { valid: false, message: 'Email is required' };
-    }
-    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-    if (!emailRegex.test(value.trim())) {
+    const v = (value ?? '').trim();
+    if (!v) return { valid: false, message: 'Email is required' };
+    if (v.length > 254) return { valid: false, message: 'Email address is too long (maximum 254 characters)' };
+    if (!EMAIL_REGEX.test(v)) {
       return { valid: false, message: 'Please enter a valid email address (e.g., user@domain.com)' };
     }
-    if (value.length > 254) {
-      return { valid: false, message: 'Email address is too long (maximum 254 characters)' };
-    }
     return { valid: true, message: '' };
   },
-  
+
   password: (value) => {
-    if (!value || value === '') {
-      return { valid: false, message: 'Password is required' };
-    }
-    if (value.length < 8) {
-      return { valid: false, message: 'Password must be at least 8 characters long' };
-    }
-    if (value.length > 128) {
-      return { valid: false, message: 'Password is too long (maximum 128 characters)' };
-    }
-    if (!/[A-Z]/.test(value)) {
-      return { valid: false, message: 'Password must contain at least one uppercase letter' };
-    }
-    if (!/[a-z]/.test(value)) {
-      return { valid: false, message: 'Password must contain at least one lowercase letter' };
-    }
-    if (!/[0-9]/.test(value)) {
-      return { valid: false, message: 'Password must contain at least one number' };
-    }
-    if (!/[!@#$%^&*(),.?":{}|<>]/.test(value)) {
-      return { valid: false, message: 'Password must contain at least one special character (!@#$%^&*(),.?":{}|<>)' };
-    }
+    const v = value ?? '';
+    if (!v) return { valid: false, message: 'Password is required' };
+    if (v.length > 128) return { valid: false, message: 'Password is too long (maximum 128 characters)' };
+    const failed = PASSWORD_RULES.find((rule) => !rule.test(v));
+    if (failed) return { valid: false, message: `Password must contain: ${failed.label.toLowerCase()}` };
     return { valid: true, message: '' };
   },
-  
+
   confirmPassword: (value, password) => {
-    if (!value || value === '') {
-      return { valid: false, message: 'Please confirm your password' };
-    }
-    if (value !== password) {
-      return { valid: false, message: 'Passwords do not match' };
-    }
+    const v = value ?? '';
+    if (!v) return { valid: false, message: 'Please confirm your password' };
+    if (v !== password) return { valid: false, message: 'Passwords do not match' };
     return { valid: true, message: '' };
   },
-  
+
   role: (value) => {
-    if (!value) {
-      return { valid: false, message: 'Please select a role' };
-    }
-    if (!['manager', 'member'].includes(value)) {
+    if (!value) return { valid: false, message: 'Please select a role' };
+    if (!ROLE_OPTIONS.some((r) => r.value === value)) {
       return { valid: false, message: 'Invalid role selected' };
     }
     return { valid: true, message: '' };
   }
 };
 
-// Helper function to safely extract error message
-const getErrorMessage = (errorData) => {
-  if (!errorData) return null;
-  
-  // If it's already a string
-  if (typeof errorData === 'string') return errorData;
-  
-  // If it's an array, take the first element
-  if (Array.isArray(errorData) && errorData.length > 0) {
-    return typeof errorData[0] === 'string' ? errorData[0] : String(errorData[0]);
+// Extract a human-readable message from an arbitrary backend error value.
+function unwrapError(value) {
+  if (value == null) return null;
+  if (Array.isArray(value)) return value.length ? unwrapError(value[0]) : null;
+  if (typeof value === 'object') {
+    const firstKey = Object.keys(value)[0];
+    return firstKey ? unwrapError(value[firstKey]) : null;
   }
-  
-  // If it's an object, try to get a message
-  if (typeof errorData === 'object') {
-    if (errorData.message) return typeof errorData.message === 'string' ? errorData.message : String(errorData.message);
-    if (errorData.detail) return typeof errorData.detail === 'string' ? errorData.detail : String(errorData.detail);
-    if (errorData.error) return typeof errorData.error === 'string' ? errorData.error : String(errorData.error);
+  return String(value);
+}
+
+// Turn a backend error response into { fieldName: message } + optional generalError
+function extractFieldErrors(errorData) {
+  const fieldMap = {};
+  let generalError = null;
+
+  if (!errorData || typeof errorData !== 'object') {
+    if (errorData) generalError = String(errorData);
+    return { fieldMap, generalError };
   }
-  
-  // Fallback
-  return String(errorData) || null;
-};
+
+  const inner =
+    errorData.error && typeof errorData.error === 'object' && !Array.isArray(errorData.error)
+      ? errorData.error
+      : errorData;
+
+  const knownFields = ['u_name', 'username', 'email', 'password', 'role',
+                       'non_field_errors', 'detail', 'message'];
+
+  knownFields.forEach((key) => {
+    if (inner[key] != null) {
+      const msg = unwrapError(inner[key]);
+      if (msg) {
+        const field = key === 'username' ? 'u_name' : key;
+        if (!fieldMap[field]) fieldMap[field] = msg;
+      }
+    }
+  });
+
+  if (Object.keys(fieldMap).length === 0) {
+    Object.keys(inner).forEach((key) => {
+      if (key === 'success' || key === 'error') return;
+      const msg = unwrapError(inner[key]);
+      if (msg) fieldMap[key] = msg;
+    });
+  }
+
+  if (Object.keys(fieldMap).length === 0) {
+    generalError = unwrapError(errorData) || 'Registration failed. Please try again.';
+  }
+
+  return { fieldMap, generalError };
+}
 
 export default function Register() {
   const [formData, setFormData] = useState({
@@ -163,7 +157,6 @@ export default function Register() {
   const [showPass, setShowPass] = useState(false);
   const [showConfirmPass, setShowConfirmPass] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [sendingEmail, setSendingEmail] = useState(false);
   const [touched, setTouched] = useState({
     u_name: false,
     email: false,
@@ -171,309 +164,163 @@ export default function Register() {
     confirmPassword: false,
     role: false
   });
-  const [validationErrors, setValidationErrors] = useState({
-    u_name: '',
-    email: '',
-    password: '',
-    confirmPassword: '',
-    role: ''
-  });
-  
+  // Server-side errors (kept separate from derived client errors)
+  const [serverErrors, setServerErrors] = useState({});
+
   const { register } = useAuth();
   const navigate = useNavigate();
 
   const strengthScore = scorePassword(formData.password);
   const strength = STRENGTH_MAP[strengthScore];
 
-  // Validate field
-  const validateField = (field, value) => {
-    let result;
-    switch (field) {
-      case 'u_name':
-        result = validators.username(value);
-        break;
-      case 'email':
-        result = validators.email(value);
-        break;
-      case 'password':
-        result = validators.password(value);
-        break;
-      case 'confirmPassword':
-        result = validators.confirmPassword(value, formData.password);
-        break;
-      case 'role':
-        result = validators.role(value);
-        break;
-      default:
-        result = { valid: true, message: '' };
-    }
-    setValidationErrors(prev => ({ ...prev, [field]: result.valid ? '' : result.message }));
-    return result.valid;
-  };
+  // Derived client-side validation errors
+  const clientErrors = useMemo(() => ({
+    u_name: validators.username(formData.u_name).message,
+    email: validators.email(formData.email).message,
+    password: validators.password(formData.password).message,
+    confirmPassword: validators.confirmPassword(formData.confirmPassword, formData.password).message,
+    role: validators.role(formData.role).message
+  }), [formData]);
 
-  // Handle field change with validation
+  // Merge: server error wins until the user edits the field
+  const validationErrors = useMemo(() => {
+    const merged = { ...clientErrors };
+    Object.keys(serverErrors).forEach((field) => {
+      if (serverErrors[field]) merged[field] = serverErrors[field];
+    });
+    return merged;
+  }, [clientErrors, serverErrors]);
+
+  const isFormValid = Object.values(clientErrors).every((e) => e === '');
+
+  // Handle field change
   const handleFieldChange = (field, value) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
-    if (touched[field]) {
-      validateField(field, value);
-      if (field === 'password' && touched.confirmPassword) {
-        validateField('confirmPassword', formData.confirmPassword);
-      }
+    setFormData((prev) => ({ ...prev, [field]: value }));
+    // Clear the server error for this field once the user edits it
+    setServerErrors((prev) => {
+      if (!prev[field]) return prev;
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
+    if (field === 'password') {
+      setServerErrors((prev) => {
+        if (!prev.confirmPassword) return prev;
+        const next = { ...prev };
+        delete next.confirmPassword;
+        return next;
+      });
     }
   };
 
   // Handle field blur
   const handleBlur = (field) => {
-    setTouched(prev => ({ ...prev, [field]: true }));
-    const value = formData[field];
-    validateField(field, value);
+    setTouched((prev) => ({ ...prev, [field]: true }));
     if (field === 'password' && formData.confirmPassword) {
-      validateField('confirmPassword', formData.confirmPassword);
+      setTouched((prev) => ({ ...prev, confirmPassword: true }));
     }
   };
 
   // Handle role selection
   const handleRoleSelect = (role) => {
-    setFormData(prev => ({ ...prev, role }));
-    setTouched(prev => ({ ...prev, role: true }));
-    validateField('role', role);
-  };
-
-  // Validate all fields before submit
-  const validateForm = () => {
-    const fields = ['u_name', 'email', 'password', 'confirmPassword', 'role'];
-    let allValid = true;
-    
-    fields.forEach(field => {
-      setTouched(prev => ({ ...prev, [field]: true }));
-      const value = formData[field];
-      const isValid = validateField(field, value);
-      if (!isValid) allValid = false;
-    });
-    
-    return allValid;
+    handleFieldChange('role', role);
+    setTouched((prev) => ({ ...prev, role: true }));
   };
 
   // Get field status for styling
   const getFieldStatus = (field) => {
     if (!touched[field]) return 'idle';
-    const error = validationErrors[field];
-    if (error) return 'error';
-    return 'success';
-  };
-
-  // Check if form is valid
-  const isFormValid = () => {
-    return Object.values(validationErrors).every(e => e === '') &&
-           Object.values(formData).every(v => v !== '' || v === 'member');
+    return validationErrors[field] ? 'error' : 'success';
   };
 
   const handleSubmit = async (e) => {
-    e.preventDefault();
+  e.preventDefault();
 
-    if (!validateForm()) {
-      toast.error('Please fix all errors before submitting');
-      return;
-    }
+  // Mark everything touched so all errors surface
+  setTouched({
+    u_name: true,
+    email: true,
+    password: true,
+    confirmPassword: true,
+    role: true
+  });
 
-    setLoading(true);
-    try {
-      const registrationData = {
-        u_name: formData.u_name.trim(),
+  if (!isFormValid) {
+    toast.error('Please fix all errors before submitting');
+    return;
+  }
+
+  setLoading(true);
+  try {
+    const registrationData = {
+      u_name: formData.u_name.trim(),
+      email: formData.email.trim(),
+      password: formData.password,
+      role: formData.role
+    };
+
+    // 1. Register the user
+    const user = await register(registrationData);
+
+    // 2. Fire-and-forget: create a Team Member entry (best-effort)
+    const teamMemberData = {
+      name: formData.u_name.trim(),
+      role: formData.role === 'manager' ? 'Supervisor' : 'Team Lead',
+      email: formData.email.trim(),
+      qualification: 'New Member',
+      experience: 0,
+      skills: 'New User',
+      description: `Auto-created team member for ${formData.u_name}`,
+      added_by: user?.id || 1
+    };
+
+    teamService.addTeamMember(teamMemberData).catch((teamError) => {
+      console.warn('⚠️ Team member creation failed (non-fatal):', teamError);
+    });
+
+    // 3. Set the "verifying" flag so AppRoutes doesn't redirect
+    //    /register or /login to the role home while verification is pending.
+    localStorage.setItem('verifying_email', formData.email.trim());
+
+    // 4. Navigate immediately. `replace: true` removes /register from history.
+    toast.success('Account created! Check your email to verify.');
+    navigate('/verify-email', {
+      replace: true,
+      state: {
         email: formData.email.trim(),
-        password: formData.password,
-        role: formData.role
-      };
-
-      console.log('📤 Registration data:', registrationData);
-
-      // 1. Register the user
-      const user = await register(registrationData);
-      console.log('✅ User registered:', user);
-      
-      // 2. Create a Team Member entry for this user
-      try {
-        const teamMemberData = {
-          name: formData.u_name.trim(),
-          role: formData.role === 'manager' ? 'Supervisor' : 'Team Lead',
-          email: formData.email.trim(),
-          qualification: 'New Member',
-          experience: 0,
-          skills: 'New User',
-          description: `Auto-created team member for ${formData.u_name}`,
-          added_by: user?.id || 1
-        };
-        
-        const teamMember = await teamService.addTeamMember(teamMemberData);
-        console.log('✅ Team Member created:', teamMember);
-      } catch (teamError) {
-        console.error('❌ Error creating team member:', teamError);
-        toast.warning('Account created but team member profile could not be created.');
+        name: formData.u_name.trim()
       }
-      
-      // 3. Send verification email
-      setSendingEmail(true);
-      const verificationToken = generateToken(formData.email);
-      const verificationLink = `${window.location.origin}/verify-email?token=${verificationToken}`;
-      
-      console.log('🔗 Verification link:', verificationLink);
-      
-      const emailResult = await sendVerificationEmail(
-        formData.email,
-        formData.u_name,
-        verificationLink
-      );
+    });
+  } catch (err) {
+    console.error('🔴 Registration error:', err);
 
-      console.log('📧 Email result:', emailResult);
+    const errorData = err?.response?.data;
+    console.log('📋 Error data:', errorData);
 
-      if (emailResult.success) {
-        toast.success('Registration successful! Check your email for verification link.');
-        navigate('/verify-email', { 
-          state: { 
-            email: formData.email,
-            name: formData.u_name
-          }
-        });
-      } else {
-        toast.warning('Account created but verification email could not be sent.');
-        navigate('/login', { 
-          state: { 
-            email: formData.email,
-            warning: 'Please contact support to verify your email.'
-          }
-        });
-      }
-      
-    } catch (err) {
-      console.error('🔴 Registration error:', err);
-      
-      // Extract error data
-      const errorData = err?.response?.data;
-      console.log('📋 Error data:', errorData);
-      
-      // Reset validation errors
-      setValidationErrors({
-        u_name: '',
-        email: '',
-        password: '',
-        confirmPassword: '',
-        role: ''
+    setServerErrors({});
+
+    const { fieldMap, generalError } = extractFieldErrors(errorData);
+
+    if (Object.keys(fieldMap).length > 0) {
+      setServerErrors(fieldMap);
+      setTouched((prev) => {
+        const next = { ...prev };
+        Object.keys(fieldMap).forEach((f) => { next[f] = true; });
+        return next;
       });
-      
-      let emailError = null;
-      let usernameError = null;
-      let passwordError = null;
-      let roleError = null;
-      let generalError = null;
-      
-      if (errorData) {
-        // Check for error in errorData.error
-        if (errorData.error) {
-          const errorMsg = getErrorMessage(errorData.error);
-          if (errorMsg) {
-            // Try to determine which field it belongs to
-            const lowerMsg = errorMsg.toLowerCase();
-            if (lowerMsg.includes('email') || lowerMsg.includes('exists') || lowerMsg.includes('already') || lowerMsg.includes('duplicate')) {
-              emailError = errorMsg;
-            } else if (lowerMsg.includes('username') || lowerMsg.includes('u_name')) {
-              usernameError = errorMsg;
-            } else if (lowerMsg.includes('password')) {
-              passwordError = errorMsg;
-            } else if (lowerMsg.includes('role')) {
-              roleError = errorMsg;
-            } else {
-              generalError = errorMsg;
-            }
-          }
-        }
-        
-        // Check specific fields
-        if (errorData.email) {
-          emailError = getErrorMessage(errorData.email) || 'Email is invalid';
-        }
-        
-        if (errorData.u_name) {
-          usernameError = getErrorMessage(errorData.u_name) || 'Username is invalid';
-        }
-        
-        if (errorData.password) {
-          passwordError = getErrorMessage(errorData.password) || 'Password is invalid';
-        }
-        
-        if (errorData.role) {
-          roleError = getErrorMessage(errorData.role) || 'Role is invalid';
-        }
-        
-        // Check non_field_errors
-        if (errorData.non_field_errors) {
-          const msg = getErrorMessage(errorData.non_field_errors);
-          if (msg) {
-            const lowerMsg = msg.toLowerCase();
-            if (lowerMsg.includes('email') || lowerMsg.includes('exists') || lowerMsg.includes('already')) {
-              emailError = msg;
-            } else {
-              generalError = msg;
-            }
-          }
-        }
-        
-        // Check message/detail fields
-        if (errorData.message) {
-          const msg = getErrorMessage(errorData.message);
-          if (msg) {
-            const lowerMsg = msg.toLowerCase();
-            if (lowerMsg.includes('email') || lowerMsg.includes('exists') || lowerMsg.includes('already')) {
-              emailError = msg;
-            } else {
-              generalError = msg;
-            }
-          }
-        }
-        
-        if (errorData.detail) {
-          const msg = getErrorMessage(errorData.detail);
-          if (msg) {
-            const lowerMsg = msg.toLowerCase();
-            if (lowerMsg.includes('email') || lowerMsg.includes('exists') || lowerMsg.includes('already')) {
-              emailError = msg;
-            } else {
-              generalError = msg;
-            }
-          }
-        }
-      }
-      
-      // ✅ Set errors on the appropriate fields
-      if (emailError) {
-        setValidationErrors(prev => ({ ...prev, email: emailError }));
-        setTouched(prev => ({ ...prev, email: true }));
-        toast.error(emailError);
-      } else if (usernameError) {
-        setValidationErrors(prev => ({ ...prev, u_name: usernameError }));
-        setTouched(prev => ({ ...prev, u_name: true }));
-        toast.error(usernameError);
-      } else if (passwordError) {
-        setValidationErrors(prev => ({ ...prev, password: passwordError }));
-        setTouched(prev => ({ ...prev, password: true }));
-        toast.error(passwordError);
-      } else if (roleError) {
-        setValidationErrors(prev => ({ ...prev, role: roleError }));
-        setTouched(prev => ({ ...prev, role: true }));
-        toast.error(roleError);
-      } else if (generalError) {
-        toast.error(generalError);
-      } else {
-        toast.error('Registration failed. Please try again.');
-      }
-      
-      // ✅ Keep user on registration page
-      return;
-      
-    } finally {
-      setLoading(false);
-      setSendingEmail(false);
+      toast.error(Object.values(fieldMap)[0]);
+    } else if (generalError) {
+      toast.error(generalError);
+    } else {
+      toast.error('Registration failed. Please try again.');
     }
-  };
+    return;
+  } finally {
+    setLoading(false);
+  }
+};
+
+  const passwordValue = formData.password;
 
   return (
     <div className="register-screen">
@@ -527,11 +374,12 @@ export default function Register() {
                   name="u_name"
                   placeholder="johndoe"
                   value={formData.u_name}
-                  onChange={e => handleFieldChange('u_name', e.target.value)}
+                  onChange={(e) => handleFieldChange('u_name', e.target.value)}
                   onBlur={() => handleBlur('u_name')}
-                  disabled={loading || sendingEmail}
+                  disabled={loading}
+                  autoComplete="username"
                   autoFocus
-                  aria-invalid={!!validationErrors.u_name}
+                  aria-invalid={touched.u_name && !!validationErrors.u_name}
                   aria-describedby="u_name-error"
                 />
                 {touched.u_name && validationErrors.u_name && (
@@ -566,10 +414,11 @@ export default function Register() {
                   name="email"
                   placeholder="your@email.com"
                   value={formData.email}
-                  onChange={e => handleFieldChange('email', e.target.value)}
+                  onChange={(e) => handleFieldChange('email', e.target.value)}
                   onBlur={() => handleBlur('email')}
-                  disabled={loading || sendingEmail}
-                  aria-invalid={!!validationErrors.email}
+                  disabled={loading}
+                  autoComplete="email"
+                  aria-invalid={touched.email && !!validationErrors.email}
                   aria-describedby="email-error"
                 />
                 {touched.email && validationErrors.email && (
@@ -600,14 +449,13 @@ export default function Register() {
                 {ROLE_OPTIONS.map((role) => {
                   const Icon = role.icon;
                   const isSelected = formData.role === role.value;
-                  
                   return (
                     <button
                       key={role.value}
                       type="button"
                       className={`role-card ${isSelected ? 'role-card--active' : ''}`}
                       onClick={() => handleRoleSelect(role.value)}
-                      disabled={loading || sendingEmail}
+                      disabled={loading}
                       aria-selected={isSelected}
                     >
                       <Icon size={20} className="role-icon" />
@@ -644,18 +492,20 @@ export default function Register() {
                     name="password"
                     placeholder="••••••••"
                     value={formData.password}
-                    onChange={e => handleFieldChange('password', e.target.value)}
+                    onChange={(e) => handleFieldChange('password', e.target.value)}
                     onBlur={() => handleBlur('password')}
-                    disabled={loading || sendingEmail}
-                    aria-invalid={!!validationErrors.password}
+                    disabled={loading}
+                    autoComplete="new-password"
+                    aria-invalid={touched.password && !!validationErrors.password}
                     aria-describedby="password-error"
                   />
                   <button
                     type="button"
                     className="password-toggle"
-                    onClick={() => setShowPass(!showPass)}
+                    onClick={() => setShowPass((s) => !s)}
                     aria-label={showPass ? 'Hide password' : 'Show password'}
-                    disabled={loading || sendingEmail}
+                    tabIndex={-1}
+                    disabled={loading}
                   >
                     {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
                   </button>
@@ -695,10 +545,10 @@ export default function Register() {
               )}
 
               <div className="requirements">
-                {REQUIREMENTS.map(({ test, label }) => {
-                  const isMet = test(formData.password);
+                {PASSWORD_RULES.map(({ key, label, test }) => {
+                  const isMet = test(passwordValue);
                   return (
-                    <div className={`requirement ${isMet ? 'requirement--met' : ''}`} key={label}>
+                    <div className={`requirement ${isMet ? 'requirement--met' : ''}`} key={key}>
                       <CheckCircle size={12} color={isMet ? '#10b981' : 'var(--text-muted)'} />
                       <span>{label}</span>
                     </div>
@@ -721,18 +571,20 @@ export default function Register() {
                     name="confirmPassword"
                     placeholder="••••••••"
                     value={formData.confirmPassword}
-                    onChange={e => handleFieldChange('confirmPassword', e.target.value)}
+                    onChange={(e) => handleFieldChange('confirmPassword', e.target.value)}
                     onBlur={() => handleBlur('confirmPassword')}
-                    disabled={loading || sendingEmail}
-                    aria-invalid={!!validationErrors.confirmPassword}
+                    disabled={loading}
+                    autoComplete="new-password"
+                    aria-invalid={touched.confirmPassword && !!validationErrors.confirmPassword}
                     aria-describedby="confirmPassword-error"
                   />
                   <button
                     type="button"
                     className="password-toggle"
-                    onClick={() => setShowConfirmPass(!showConfirmPass)}
+                    onClick={() => setShowConfirmPass((s) => !s)}
                     aria-label={showConfirmPass ? 'Hide password' : 'Show password'}
-                    disabled={loading || sendingEmail}
+                    tabIndex={-1}
+                    disabled={loading}
                   >
                     {showConfirmPass ? <EyeOff size={16} /> : <Eye size={16} />}
                   </button>
@@ -756,20 +608,15 @@ export default function Register() {
               )}
             </div>
 
-            <button 
-              type="submit" 
-              className="btn btn-primary submit-btn" 
-              disabled={loading || sendingEmail || !isFormValid()}
+            <button
+              type="submit"
+              className="btn btn-primary submit-btn"
+              disabled={loading || !isFormValid}
             >
               {loading ? (
                 <>
                   <span className="spinner" />
                   Creating account...
-                </>
-              ) : sendingEmail ? (
-                <>
-                  <Loader2 size={17} className="spin" />
-                  Sending verification email...
                 </>
               ) : (
                 <>Create Account <ArrowRight size={17} /></>
@@ -991,17 +838,10 @@ export default function Register() {
           pointer-events: none;
         }
 
-        .error-icon {
-          color: #f87171;
-        }
+        .error-icon { color: #f87171; }
+        .success-icon { color: #34d399; }
 
-        .success-icon {
-          color: #34d399;
-        }
-
-        .password-field .password-icon {
-          right: 40px;
-        }
+        .password-field .password-icon { right: 40px; }
 
         .input {
           width: 100%;
@@ -1021,13 +861,8 @@ export default function Register() {
           box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
         }
 
-        .input::placeholder {
-          color: var(--text-muted);
-        }
-
-        .input:disabled {
-          opacity: 0.6;
-        }
+        .input::placeholder { color: var(--text-muted); }
+        .input:disabled { opacity: 0.6; }
 
         .input-error {
           border-color: #f87171 !important;
@@ -1084,9 +919,7 @@ export default function Register() {
           text-align: center;
           color: var(--text-primary);
         }
-        .role-card:hover {
-          transform: translateY(-2px);
-        }
+        .role-card:hover { transform: translateY(-2px); }
         .role-card--active {
           border-color: var(--accent-primary);
           background: rgba(99,102,241,0.08);
@@ -1097,9 +930,7 @@ export default function Register() {
           margin: 0 auto 5px;
           color: var(--text-muted);
         }
-        .role-card--active .role-icon {
-          color: var(--accent-primary);
-        }
+        .role-card--active .role-icon { color: var(--accent-primary); }
 
         .role-label {
           font-size: 13px;
@@ -1123,12 +954,8 @@ export default function Register() {
           right: 6px;
         }
 
-        .password-field {
-          position: relative;
-        }
-        .password-field .input {
-          padding-right: 42px;
-        }
+        .password-field { position: relative; }
+        .password-field .input { padding-right: 42px; }
         .password-toggle {
           position: absolute;
           right: 10px;
@@ -1142,13 +969,9 @@ export default function Register() {
           display: flex;
           transition: color 0.2s;
         }
-        .password-toggle:hover {
-          color: var(--text-primary);
-        }
+        .password-toggle:hover { color: var(--text-primary); }
 
-        .strength {
-          margin-top: 6px;
-        }
+        .strength { margin-top: 6px; }
         .strength-bars {
           display: flex;
           align-items: center;
@@ -1186,9 +1009,7 @@ export default function Register() {
           color: var(--text-muted);
           transition: color 0.3s;
         }
-        .requirement--met {
-          color: #10b981;
-        }
+        .requirement--met { color: #10b981; }
 
         .btn {
           display: inline-flex;
@@ -1252,9 +1073,7 @@ export default function Register() {
           font-size: 13.5px;
           transition: color 0.2s;
         }
-        .signin-link:hover {
-          color: var(--accent-secondary);
-        }
+        .signin-link:hover { color: var(--accent-secondary); }
 
         .side-panel {
           width: 380px;
@@ -1324,9 +1143,7 @@ export default function Register() {
           font-size: 13.5px;
           color: var(--text-primary);
         }
-        .side-role--active .side-role-label {
-          color: var(--accent-primary);
-        }
+        .side-role--active .side-role-label { color: var(--accent-primary); }
 
         .side-role-desc {
           font-size: 11.5px;
@@ -1345,9 +1162,7 @@ export default function Register() {
           align-items: center;
           justify-content: space-around;
         }
-        .stat {
-          text-align: center;
-        }
+        .stat { text-align: center; }
         .stat-num {
           font-size: 17px;
           font-weight: 800;
@@ -1364,9 +1179,7 @@ export default function Register() {
           background: var(--border-subtle);
         }
 
-        .spin {
-          animation: spin 1s linear infinite;
-        }
+        .spin { animation: spin 1s linear infinite; }
 
         @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -1394,30 +1207,14 @@ export default function Register() {
         }
 
         @media (max-width: 480px) {
-          .register-panel {
-            padding: 16px;
-          }
+          .register-panel { padding: 16px; }
           .role-desc { display: none; }
-          .role-grid {
-            grid-template-columns: 1fr 1fr;
-          }
-          .requirements {
-            grid-template-columns: 1fr;
-          }
-          .headline {
-            font-size: 22px;
-          }
-          .brand-name {
-            font-size: 17px;
-          }
-          .brand-mark {
-            width: 32px;
-            height: 32px;
-          }
-          .brand-mark svg {
-            width: 16px;
-            height: 16px;
-          }
+          .role-grid { grid-template-columns: 1fr 1fr; }
+          .requirements { grid-template-columns: 1fr; }
+          .headline { font-size: 22px; }
+          .brand-name { font-size: 17px; }
+          .brand-mark { width: 32px; height: 32px; }
+          .brand-mark svg { width: 16px; height: 16px; }
         }
       `}</style>
     </div>

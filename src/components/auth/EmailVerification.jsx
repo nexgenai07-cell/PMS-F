@@ -1,9 +1,12 @@
 // src/components/auth/EmailVerification.jsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { MailCheck, ArrowLeft, Zap, RefreshCw, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { sendVerificationEmail, verifyToken } from '../../services/emailService';
+
+const RESEND_COOLDOWN_SECONDS = 60;
+const REDIRECT_DELAY_MS = 4000;
 
 export default function EmailVerification() {
   const navigate = useNavigate();
@@ -14,7 +17,12 @@ export default function EmailVerification() {
   const [userEmail, setUserEmail] = useState('');
   const [userName, setUserName] = useState('');
 
-  // Get email from location state
+  // Guards so StrictMode can't cause double effects
+  const autoSentRef = useRef(false);
+  const verifyHandledRef = useRef(false);
+  const redirectTimerRef = useRef(null);
+
+  // --- Load user info ---
   useEffect(() => {
     const email = location.state?.email || localStorage.getItem('verification_email') || '';
     const name = location.state?.name || localStorage.getItem('verification_name') || '';
@@ -22,76 +30,109 @@ export default function EmailVerification() {
     setUserName(name);
     if (email) localStorage.setItem('verification_email', email);
     if (name) localStorage.setItem('verification_name', name);
-  }, [location]);
+  }, [location.state]);
 
-  // Check for token in URL
+  // --- Verify token from URL (only if a token is actually present) ---
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const token = params.get('token');
-    if (token) {
-      const result = verifyToken(token);
-      if (result.valid) {
-        setStatus('success');
-        toast.success('Email verified successfully! You can now login.');
-        setTimeout(() => {
-          navigate('/login', { 
-            state: { email: result.email, verified: true }
-          });
-        }, 3000);
-      } else {
-        setStatus('error');
-        toast.error(result.error || 'Invalid verification token');
-      }
-    }
-  }, [location, navigate]);
 
-  // Countdown for resend
-  useEffect(() => {
-    if (countdown > 0) {
-      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
-      return () => clearTimeout(timer);
+    // CRITICAL: bail out when no token. This is the normal case when the user
+    // first lands on /verify-email after registration.
+    if (!token) return;
+
+    if (verifyHandledRef.current) return;
+    verifyHandledRef.current = true;
+
+    const result = verifyToken(token);
+
+    if (result.valid) {
+      // Clear the "verifying" flag so normal auth redirects resume
+      localStorage.removeItem('verifying_email');
+      localStorage.removeItem('verification_email');
+      localStorage.removeItem('verification_name');
+
+      setStatus('success');
+      toast.success('Email verified successfully! You can now login.');
+
+      // Redirect to login ONLY on successful verification
+      redirectTimerRef.current = setTimeout(() => {
+        navigate('/login', {
+          replace: true,
+          state: { email: result.email, verified: true }
+        });
+      }, REDIRECT_DELAY_MS);
+    } else {
+      setStatus('error');
+      toast.error(result.error || 'Invalid verification token');
     }
+  }, [location.search, navigate]);
+
+  // Cancel the redirect timer + clear the verifying flag if the user leaves
+  useEffect(() => {
+    return () => {
+      if (redirectTimerRef.current) clearTimeout(redirectTimerRef.current);
+      // If we're unmounting without verifying, clear the flag so the app
+      // returns to normal redirect behavior.
+      if (!verifyHandledRef.current) {
+        localStorage.removeItem('verifying_email');
+      }
+    };
+  }, []);
+
+  // --- Countdown tick ---
+  useEffect(() => {
+    if (countdown <= 0) return;
+    const t = setTimeout(() => setCountdown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
   }, [countdown]);
 
-  // Handle resend
-  const handleResend = async () => {
+  // --- Resend handler ---
+  const handleResend = useCallback(async () => {
     if (!userEmail) {
       toast.error('Email address is required');
       return;
     }
+    if (resendLoading || countdown > 0) return;
 
     setResendLoading(true);
     try {
-      const verificationLink = `${window.location.origin}/verify-email?token=${btoa(encodeURIComponent(`${userEmail}|${Date.now()}|${Math.random().toString(36).substring(2, 15)}`))}`;
+      const verificationToken = btoa(
+        encodeURIComponent(`${userEmail}|${Date.now()}|${Math.random().toString(36).substring(2, 15)}`)
+      );
+      const verificationLink = `${window.location.origin}/verify-email?token=${encodeURIComponent(verificationToken)}`;
+
       const result = await sendVerificationEmail(userEmail, userName, verificationLink);
-      
+
       if (result.success) {
-        setCountdown(60);
-        setStatus('success');
-        toast.success('Verification email sent successfully!');
+        setCountdown(RESEND_COOLDOWN_SECONDS);
+        toast.success(`Verification email sent to ${userEmail}`);
       } else {
-        setStatus('error');
         toast.error(result.message || 'Failed to send verification email');
       }
     } catch (error) {
-      setStatus('error');
+      console.error('Resend verification email failed:', error);
       toast.error('Failed to send verification email.');
     } finally {
       setResendLoading(false);
     }
-  };
+  }, [userEmail, userName, resendLoading, countdown]);
 
-  // Auto-send on mount
+  // --- Auto-send on mount, ONLY when arriving from Register ---
   useEffect(() => {
-    if (userEmail && !status && !location.search.includes('token')) {
-      handleResend();
-    }
-  }, [userEmail]);
+    if (autoSentRef.current) return;
+    if (location.search.includes('token=')) return;   // user clicked the email link
+    if (!location.state?.email) return;               // not from register — don't spam
+    if (!userEmail) return;
+
+    autoSentRef.current = true;
+    const t = setTimeout(() => { handleResend(); }, 800);
+    return () => clearTimeout(t);
+  }, [location.state, location.search, userEmail, handleResend]);
 
   return (
     <div className="verify-screen">
       <div className="verify-card animate-fade-in">
-        {/* Brand */}
         <div className="brand">
           <div className="brand-mark">
             <Zap size={20} color="white" fill="white" />
@@ -99,7 +140,6 @@ export default function EmailVerification() {
           <span className="brand-name">AEEL-PMS</span>
         </div>
 
-        {/* Icon */}
         <div className="verify-icon-wrapper">
           {status === 'success' ? (
             <div className="verify-icon success">
@@ -116,56 +156,58 @@ export default function EmailVerification() {
           )}
         </div>
 
-        {/* Title */}
         <h1 className="verify-title">
           {status === 'success' ? 'Email Verified!' :
            status === 'error' ? 'Verification Failed' :
            'Check Your Email'}
         </h1>
 
-        {/* Description */}
         <p className="verify-desc">
           {status === 'success' ? (
             'Your email has been verified successfully! Redirecting to login...'
           ) : status === 'error' ? (
             'The verification link is invalid or expired. Please request a new one.'
           ) : (
-            `We've sent a verification link to <strong>${userEmail}</strong>. Click the link to activate your account.`
+            <>We've sent a verification link to <strong>{userEmail || 'your email'}</strong>. Click the link in the email to activate your account. Don't forget to check your spam folder.</>
           )}
         </p>
 
-        {/* Email display */}
         {userEmail && status !== 'success' && (
           <div className="verify-email-display">
             📧 {userEmail}
           </div>
         )}
 
-        {/* Actions */}
         <div className="verify-actions">
-          {status === 'error' && (
+          {(status === 'error' || status === null) && (
             <button
               className="verify-btn primary"
               onClick={handleResend}
-              disabled={resendLoading}
+              disabled={resendLoading || countdown > 0 || !userEmail}
             >
               {resendLoading ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}
-              Resend Verification Email
+              {resendLoading
+                ? 'Sending...'
+                : countdown > 0
+                  ? `Resend in ${countdown}s`
+                  : 'Resend Verification Email'}
             </button>
           )}
           {status === 'success' && (
             <button
               className="verify-btn secondary"
-              onClick={() => navigate('/login')}
+              onClick={() => {
+                if (redirectTimerRef.current) clearTimeout(redirectTimerRef.current);
+                navigate('/login', { replace: true });
+              }}
             >
-              Go to Login
+              Go to Login Now
             </button>
           )}
         </div>
 
-        {/* Back button */}
-        <button 
-          className="verify-btn ghost" 
+        <button
+          className="verify-btn ghost"
           onClick={() => navigate('/login')}
         >
           <ArrowLeft size={16} /> Back to Sign In
@@ -236,13 +278,8 @@ export default function EmailVerification() {
           justify-content: center;
         }
 
-        .verify-icon.success {
-          background: rgba(52, 211, 153, 0.1);
-        }
-
-        .verify-icon.error {
-          background: rgba(248, 113, 113, 0.1);
-        }
+        .verify-icon.success { background: rgba(52, 211, 153, 0.1); }
+        .verify-icon.error   { background: rgba(248, 113, 113, 0.1); }
 
         .verify-title {
           font-size: 24px;
@@ -292,10 +329,14 @@ export default function EmailVerification() {
           background: var(--accent-primary);
           color: #fff;
         }
-
         .verify-btn.primary:hover:not(:disabled) {
           opacity: 0.85;
           transform: translateY(-1px);
+        }
+        .verify-btn.primary:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+          transform: none;
         }
 
         .verify-btn.secondary {
@@ -303,7 +344,6 @@ export default function EmailVerification() {
           color: var(--text-primary);
           border: 1px solid var(--border-default);
         }
-
         .verify-btn.secondary:hover {
           border-color: var(--accent-primary);
           color: var(--accent-primary);
@@ -315,23 +355,11 @@ export default function EmailVerification() {
           justify-content: center;
           width: 100%;
         }
+        .verify-btn.ghost:hover { color: var(--accent-primary); }
 
-        .verify-btn.ghost:hover {
-          color: var(--accent-primary);
-        }
+        .spin { animation: spin 1s linear infinite; }
 
-        .verify-btn:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
-        }
-
-        .spin {
-          animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
 
         @keyframes fadeIn {
           from { opacity: 0; transform: translateY(8px); }
@@ -339,12 +367,8 @@ export default function EmailVerification() {
         }
 
         @media (max-width: 480px) {
-          .verify-card {
-            padding: 32px 20px;
-          }
-          .verify-title {
-            font-size: 20px;
-          }
+          .verify-card { padding: 32px 20px; }
+          .verify-title { font-size: 20px; }
         }
       `}</style>
     </div>

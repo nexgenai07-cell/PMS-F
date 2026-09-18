@@ -51,6 +51,57 @@ import NotificationHelper from '../../services/notificationHelper';
 const PRIORITY_OPTIONS = ["low", "medium", "high", "critical"];
 const STATUS_OPTIONS = ["todo", "in_progress", "review", "done", "cancelled"];
 
+const SUPERVISOR_ROLES = ['manager', 'admin', 'supervisor'];
+
+/* ─────────── Local supervisor fallback (only for supervisors WITHOUT a TeamMember row) ─────────── */
+const SUPERVISOR_STORAGE_KEY = 'pms_project_supervisors';
+
+function readLocalSupervisors() {
+  try {
+    const raw = localStorage.getItem(SUPERVISOR_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function getLocalSupervisors(projectId) {
+  if (!projectId) return [];
+  const map = readLocalSupervisors();
+  const ids = map[String(projectId)];
+  return Array.isArray(ids) ? ids.map(Number) : [];
+}
+
+/* ─────────── Helpers: resolve any id → unified user object ─────────── */
+// The users table is the source of truth for names, roles, emails.
+// Given any ID, look it up there first, then fall back to TeamMember.
+function resolveUserFromId(id, usersList, membersList) {
+  if (id == null) return null;
+  const numId = Number(id);
+
+  const userObj = usersList.find(u => Number(u.id) === numId);
+  if (userObj) {
+    return {
+      id: userObj.id,
+      name: userObj.u_name || userObj.name || 'Unknown',
+      email: userObj.email || '',
+      role: (userObj.role || '').toLowerCase(),
+    };
+  }
+
+  const tm = membersList.find(m => Number(m.id) === numId);
+  if (tm) {
+    return {
+      id: tm.id,
+      name: tm.name || 'Unknown',
+      email: tm.email || '',
+      role: (tm.role || '').toLowerCase(),
+    };
+  }
+
+  return null;
+}
+
 const getStatusLabel = (status) => {
   const labels = {
     todo: "To Do",
@@ -136,16 +187,14 @@ export default function LeadProjectDetail() {
     return comments.filter(c => Number(c.taskId || c.t) === Number(taskId));
   };
 
-  // Sorted comments for right panel (all comments)
   const sortedComments = [...comments].sort((a, b) =>
     (b.pin || b.pinned) === (a.pin || a.pinned) ? 0 : (b.pin || b.pinned) ? 1 : -1
   );
 
-  // Sorted comments for modal (filtered by selected task)
-  const modalTaskComments = selectedTask 
+  const modalTaskComments = selectedTask
     ? getTaskComments(selectedTask.t_id || selectedTask.id)
     : [];
-  
+
   const sortedModalComments = [...modalTaskComments].sort((a, b) =>
     (b.pin || b.pinned) === (a.pin || a.pinned) ? 0 : (b.pin || b.pinned) ? 1 : -1
   );
@@ -154,226 +203,184 @@ export default function LeadProjectDetail() {
     fetchProjectData();
   }, [projectId]);
 
- const fetchProjectData = async () => {
-  try {
-    setLoading(true);
-    
-    const [projectData, tasksData, membersData, usersData, pteamData, statsData] = await Promise.all([
-      projectService.getProject(projectId),
-      taskService.getTasks(),
-      teamService.getTeamMembers(),
-      userService.getUsers(),
-      projectTeamService.getProjectTeams(),
-      projectService.getProjectStats(projectId),
-    ]);
+  const fetchProjectData = async () => {
+    try {
+      setLoading(true);
 
-    console.log('📊 Project Data:', projectData);
-    console.log('📊 Tasks Data:', tasksData);
-    console.log('📊 Members Data:', membersData);
-    console.log('📊 Users Data:', usersData);
-    console.log('📊 PTeam Data:', pteamData);
-    console.log('📊 Stats Data:', statsData);
+      const [projectData, tasksData, membersData, usersData, pteamData, statsData] = await Promise.all([
+        projectService.getProject(projectId),
+        taskService.getTasks(),
+        teamService.getTeamMembers(),
+        userService.getUsers(),
+        projectTeamService.getProjectTeams(),
+        projectService.getProjectStats(projectId),
+      ]);
 
-    const projectItem = projectData?.data || projectData;
-    const allTasks = tasksData?.data || tasksData || [];
-    const membersList = membersData?.data || membersData || [];
-    const usersList = usersData?.data || usersData || [];
-    const pteamList = pteamData?.data || pteamData || [];
-    const statsResponse = statsData?.data || statsData || {};
+      const projectItem = projectData?.data || projectData;
+      const allTasks = tasksData?.data || tasksData || [];
+      const membersList = membersData?.data || membersData || [];
+      const usersList = usersData?.data || usersData || [];
+      const pteamList = pteamData?.data || pteamData || [];
+      const statsResponse = statsData?.data || statsData || {};
 
-    setProject(projectItem);
-    setAllTeamMembers(membersList);
-    setUsers(usersList);
+      console.log('📊 Users table (source of truth):', usersList.length);
+      console.log('📊 Local supervisor fallback for project', projectId, ':', getLocalSupervisors(projectId));
 
-    // Set stats from server
-    setStats({
-      totalTasks: statsResponse.totalTasks || 0,
-      completedTasks: statsResponse.completedTasks || 0,
-      inProgressTasks: statsResponse.inProgressTasks || 0,
-      todoTasks: statsResponse.todoTasks || 0,
-      completionRate: statsResponse.completionRate || 0,
-      onTimeRate: statsResponse.onTimeRate || 0,
-      membersCount: statsResponse.membersCount || 0,
-      avgProgress: statsResponse.avgProgress || 0
-    });
+      setProject(projectItem);
+      setAllTeamMembers(membersList);
+      setUsers(usersList);
 
-    // ✅ Get project members from PTeam - FIXED with deduplication
-    let memberEntries = [];
-    const memberMap = new Map(); // ✅ Use Map to deduplicate by ID
-    
-    if (pteamList && Array.isArray(pteamList) && pteamList.length > 0) {
-      const projectPteamEntries = pteamList.filter(entry => {
-        const entryProjectId = entry.p || entry.p_id || entry.project || entry.projectId || entry.project_id;
-        return Number(entryProjectId) === Number(projectId);
+      setStats({
+        totalTasks: statsResponse.totalTasks || 0,
+        completedTasks: statsResponse.completedTasks || 0,
+        inProgressTasks: statsResponse.inProgressTasks || 0,
+        todoTasks: statsResponse.todoTasks || 0,
+        completionRate: statsResponse.completionRate || 0,
+        onTimeRate: statsResponse.onTimeRate || 0,
+        membersCount: statsResponse.membersCount || 0,
+        avgProgress: statsResponse.avgProgress || 0
       });
 
-      console.log('📋 Project PTeam entries:', projectPteamEntries);
+      // ─── Build member map from PTeam ───
+      const memberMap = new Map();
 
-      // ✅ Use Map to deduplicate by member ID
-      projectPteamEntries.forEach(entry => {
-        const memberId = entry.tm || entry.tm_id || entry.team_member || entry.member || entry.member_id || entry.teamMember;
-        console.log('🔍 Looking for member with TeamMember ID:', memberId);
-        
-        // Skip if we already have this member
-        if (memberMap.has(memberId)) {
-          console.log(`⏭️ Member ${memberId} already exists, skipping duplicate`);
-          return;
-        }
-        
-        // ✅ First try to find in membersList (TeamMember)
-        let member = membersList.find(m => Number(m.id) === Number(memberId));
-        
-        // ✅ If not found, try to find in usersList
-        if (!member) {
-          const userObj = usersList.find(u => Number(u.id) === Number(memberId));
-          if (userObj) {
-            member = {
-              id: userObj.id,
-              name: userObj.u_name || userObj.name || 'Unknown',
-              email: userObj.email,
-              role: userObj.role,
-              is_deleted: 0,
-            };
-            console.log('✅ Found member from users list:', member);
+      if (pteamList && Array.isArray(pteamList) && pteamList.length > 0) {
+        const projectPteamEntries = pteamList.filter(entry => {
+          const entryProjectId = entry.p || entry.p_id || entry.project || entry.projectId || entry.project_id;
+          return Number(entryProjectId) === Number(projectId);
+        });
+
+        projectPteamEntries.forEach(entry => {
+          const tmId = entry.tm;
+          if (memberMap.has(tmId)) return;
+
+          // users table is the source of truth for display info
+          const resolved = resolveUserFromId(tmId, usersList, membersList);
+          if (resolved) {
+            memberMap.set(tmId, {
+              ...resolved,
+              pt_id: entry.pt_id || entry.id,
+              task_id: entry.t || entry.task_id || entry.task,
+            });
           }
-        }
-        
-        // ✅ Also check by name as fallback
-        if (!member && entry.member_name) {
-          const userObj = usersList.find(u => u.u_name === entry.member_name || u.name === entry.member_name);
-          if (userObj) {
-            member = {
-              id: userObj.id,
-              name: userObj.u_name || userObj.name || 'Unknown',
-              email: userObj.email,
-              role: userObj.role,
-              is_deleted: 0,
-            };
-            console.log('✅ Found member by name:', member);
-          }
-        }
-        
-        if (member) {
-          memberMap.set(memberId, {
-            ...member,
-            pt_id: entry.pt_id || entry.id,
-            task_id: entry.t || entry.task_id || entry.task,
+        });
+      }
+
+      // ─── Merge in supervisors from localStorage (for those without a TeamMember row) ───
+      const localSupervisorIds = getLocalSupervisors(projectId);
+      localSupervisorIds.forEach(sid => {
+        if (memberMap.has(sid)) return;
+        const resolved = resolveUserFromId(sid, usersList, membersList);
+        if (resolved) {
+          memberMap.set(Number(sid), {
+            ...resolved,
+            pt_id: null,
+            task_id: null,
           });
-        } else {
-          console.warn('⚠️ Member not found for TeamMember ID:', memberId);
         }
       });
-      
-      // Convert Map to array
-      memberEntries = Array.from(memberMap.values());
-    }
 
-    console.log('📋 Final member entries (deduplicated):', memberEntries);
+      const memberEntries = Array.from(memberMap.values());
 
-    // If no PTeam members found, try to get from tasks
-    if (memberEntries.length === 0) {
+      // If nothing yet, try to pull from tasks
+      if (memberEntries.length === 0) {
+        const projectTasks = allTasks.filter(t => {
+          const taskProjectId = t.p_id || t.p || t.project || t.project_id;
+          return Number(taskProjectId) === Number(projectId);
+        });
+
+        const memberIds = new Set();
+        projectTasks.forEach(t => {
+          if (t.assign_to) memberIds.add(Number(t.assign_to));
+        });
+
+        memberIds.forEach(mid => {
+          const resolved = resolveUserFromId(mid, usersList, membersList);
+          if (resolved) {
+            memberMap.set(mid, { ...resolved, pt_id: null, task_id: null });
+          }
+        });
+      }
+
+      const finalMembers = Array.from(memberMap.values());
+      setProjectMembers(finalMembers);
+
+      // ─── Determine supervisors from the users table (source of truth) ───
+      // Rules:
+      //   1. Any member whose USER role is supervisor/admin/manager → supervisor.
+      //   2. Any user ID in the localStorage fallback list → supervisor.
+      const supervisorMap = new Map();
+
+      finalMembers.forEach(m => {
+        const resolvedUser = usersList.find(u => Number(u.id) === Number(m.id));
+        const role = (resolvedUser?.role || m.role || '').toLowerCase();
+        if (SUPERVISOR_ROLES.includes(role)) {
+          supervisorMap.set(Number(m.id), { ...m, role });
+        }
+      });
+
+      localSupervisorIds.forEach(sid => {
+        if (supervisorMap.has(Number(sid))) return;
+        const resolved = resolveUserFromId(sid, usersList, membersList);
+        if (resolved) {
+          supervisorMap.set(Number(sid), resolved);
+        }
+      });
+
+      const supervisorEntries = Array.from(supervisorMap.values());
+      console.log('📋 Supervisors (from users table + local fallback):', supervisorEntries);
+      setProjectSupervisors(supervisorEntries);
+
+      // ─── Filter tasks for this project ───
       const projectTasks = allTasks.filter(t => {
         const taskProjectId = t.p_id || t.p || t.project || t.project_id;
         return Number(taskProjectId) === Number(projectId);
       });
-      
-      const memberIds = new Set();
-      projectTasks.forEach(t => {
-        if (t.assign_to) memberIds.add(Number(t.assign_to));
-      });
-      
-      memberEntries = membersList
-        .filter(m => memberIds.has(Number(m.id)))
-        .map(m => ({
-          ...m,
-          pt_id: null,
-          task_id: null,
-        }));
-    }
 
-    setProjectMembers(memberEntries);
+      const mappedTasks = projectTasks.map(t => ({
+        ...t,
+        progress: t.progress ?? (
+          t.status === "done" || t.status === "completed" ? 100 :
+          t.status === "in_progress" || t.status === "in-progress" ? 50 :
+          t.status === "review" ? 75 : 0
+        ),
+        milestones: t.milestones || [],
+        assigneeId: t.assign_to,
+      }));
 
-    // ✅ Get supervisors - FIXED with deduplication
-    const supervisorMap = new Map(); // ✅ Use Map to deduplicate
-    memberEntries.forEach(m => {
-      // Check if the member has a role that indicates supervisor
-      let isSupervisor = false;
-      if (m.role && (m.role === 'manager' || m.role === 'admin' || m.role === 'supervisor')) {
-        isSupervisor = true;
-      }
-      // Also check in usersList for role
-      if (!isSupervisor) {
-        const userObj = usersList.find(u => Number(u.id) === Number(m.id));
-        if (userObj && (userObj.role === 'manager' || userObj.role === 'admin' || userObj.role === 'supervisor')) {
-          isSupervisor = true;
-        }
-      }
-      
-      if (isSupervisor) {
-        // ✅ Only add if not already in map
-        if (!supervisorMap.has(m.id)) {
-          supervisorMap.set(m.id, m);
-        }
-      }
-    });
-    
-    const supervisorEntries = Array.from(supervisorMap.values());
-    
-    console.log('📋 Supervisors found (deduplicated):', supervisorEntries);
-    setProjectSupervisors(supervisorEntries);
+      setTasks(mappedTasks);
 
-    // Filter tasks for this project
-    const projectTasks = allTasks.filter(t => {
-      const taskProjectId = t.p_id || t.p || t.project || t.project_id;
-      return Number(taskProjectId) === Number(projectId);
-    });
-
-    const mappedTasks = projectTasks.map(t => ({
-      ...t,
-      progress: t.progress ?? (
-        t.status === "done" || t.status === "completed" ? 100 :
-        t.status === "in_progress" || t.status === "in-progress" ? 50 :
-        t.status === "review" ? 75 : 0
-      ),
-      milestones: t.milestones || [],
-      assigneeId: t.assign_to,
-    }));
-
-    setTasks(mappedTasks);
-
-    // Fetch comments for each task
-    if (mappedTasks.length > 0) {
-      const allComments = [];
-      for (const task of mappedTasks) {
-        try {
-          const commentsResponse = await commentService.getCommentsByTask(task.t_id || task.id);
-          const commentsList = commentsResponse?.data || commentsResponse || [];
-          commentsList.forEach(comment => {
-            allComments.push({
-              ...comment,
-              taskId: task.t_id || task.id
+      // ─── Fetch comments ───
+      if (mappedTasks.length > 0) {
+        const allComments = [];
+        for (const task of mappedTasks) {
+          try {
+            const commentsResponse = await commentService.getCommentsByTask(task.t_id || task.id);
+            const commentsList = commentsResponse?.data || commentsResponse || [];
+            commentsList.forEach(comment => {
+              allComments.push({
+                ...comment,
+                taskId: task.t_id || task.id
+              });
             });
-          });
-        } catch (error) {
-          console.log(`No comments for task ${task.t_id || task.id}`);
+          } catch (error) {
+            console.log(`No comments for task ${task.t_id || task.id}`);
+          }
         }
+        setComments(allComments);
       }
-      
-      setComments(allComments);
-      console.log(`📊 Loaded ${allComments.length} comments from backend`);
-    }
 
-  } catch (error) {
-    console.error('Error fetching project data:', error);
-    toast.error('Failed to load project details');
-    if (error.status === 404) {
-      navigate('/lead/projects');
+    } catch (error) {
+      console.error('Error fetching project data:', error);
+      toast.error('Failed to load project details');
+      if (error.status === 404) {
+        navigate('/lead/projects');
+      }
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
     }
-  } finally {
-    setLoading(false);
-    setRefreshing(false);
-  }
-};
+  };
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -391,7 +398,7 @@ export default function LeadProjectDetail() {
     setIsSubmitting(true);
     try {
       const assignTo = newTask.assignedTo ? Number(newTask.assignedTo) : null;
-      
+
       const response = await taskService.createTask({
         title: newTask.title,
         description: newTask.desc,
@@ -405,14 +412,14 @@ export default function LeadProjectDetail() {
       });
 
       const createdTask = response?.data || response;
-      
+
       await NotificationHelper.taskCreated(createdTask, user);
-      
+
       if (createdTask.assign_to) {
         const assignee = allTeamMembers.find(m => Number(m.id) === Number(createdTask.assign_to));
         await NotificationHelper.taskAssigned(createdTask, assignee, user);
       }
-      
+
       const taskWithProject = {
         ...createdTask,
         p_id: projectId,
@@ -421,9 +428,9 @@ export default function LeadProjectDetail() {
         milestones: createdTask.milestones || [],
         assign_to: createdTask.assign_to || assignTo,
       };
-      
+
       setTasks(prev => [taskWithProject, ...prev]);
-      
+
       setNewTask({
         title: "",
         desc: "",
@@ -435,7 +442,7 @@ export default function LeadProjectDetail() {
       });
       setShowAddTask(false);
       toast.success("Task added successfully");
-      
+
       await fetchProjectData();
     } catch (error) {
       console.error('Error adding task:', error);
@@ -448,7 +455,7 @@ export default function LeadProjectDetail() {
   const handleUpdateTask = async (updated) => {
     try {
       const assignTo = updated.assign_to || updated.assignTo ? Number(updated.assign_to || updated.assignTo) : null;
-      
+
       const response = await taskService.updateTask(updated.t_id || updated.id, {
         title: updated.title,
         description: updated.desc,
@@ -459,22 +466,22 @@ export default function LeadProjectDetail() {
       });
 
       const updatedTask = response?.data || response;
-      
+
       await NotificationHelper.taskUpdated(updatedTask, user);
-      
+
       if (updated.status === 'done' || updated.status === 'completed') {
         await NotificationHelper.taskCompleted(updatedTask, user);
       }
-      
-      setTasks(prev => prev.map(t => 
-        (t.t_id || t.id) === (updated.t_id || updated.id) 
-          ? { ...t, ...updatedTask, progress: updatedTask.progress || updated.progress || 0, assign_to: updatedTask.assign_to || assignTo } 
+
+      setTasks(prev => prev.map(t =>
+        (t.t_id || t.id) === (updated.t_id || updated.id)
+          ? { ...t, ...updatedTask, progress: updatedTask.progress || updated.progress || 0, assign_to: updatedTask.assign_to || assignTo }
           : t
       ));
       setEditTask(null);
       setSelectedTask(updated);
       toast.success("Task updated successfully");
-      
+
       await fetchProjectData();
     } catch (error) {
       console.error('Error updating task:', error);
@@ -489,7 +496,7 @@ export default function LeadProjectDetail() {
       setShowDeleteConfirm(null);
       setSelectedTask(null);
       toast.success("Task deleted successfully");
-      
+
       await fetchProjectData();
     } catch (error) {
       console.error('Error deleting task:', error);
@@ -497,13 +504,12 @@ export default function LeadProjectDetail() {
     }
   };
 
-  // Comments functions
+  // Comments
   const addComment = async () => {
     if (!text.trim()) {
       toast.error("Please enter a comment");
       return;
     }
-
     if (!selectedTask) {
       toast.error("Please select a task to comment on");
       return;
@@ -517,16 +523,15 @@ export default function LeadProjectDetail() {
         priority: "normal",
         pin: false,
       });
-      
+
       const newComment = response?.data || response;
-      
       await NotificationHelper.commentAdded(newComment, user);
-      
+
       setComments(prev => [...prev, {
         ...newComment,
         taskId: selectedTask.t_id || selectedTask.id
       }]);
-      
+
       setText("");
       setCommentUpdateTrigger(prev => prev + 1);
       toast.success("Comment added successfully");
@@ -543,7 +548,6 @@ export default function LeadProjectDetail() {
       toast.error("Please enter a comment");
       return;
     }
-
     if (!selectedTask) {
       toast.error("Please select a task to comment on");
       return;
@@ -557,14 +561,14 @@ export default function LeadProjectDetail() {
         priority: "normal",
         pin: false,
       });
-      
+
       const newComment = response?.data || response;
-      
+
       setComments(prev => [...prev, {
         ...newComment,
         taskId: selectedTask.t_id || selectedTask.id
       }]);
-      
+
       setModalCommentText("");
       setCommentUpdateTrigger(prev => prev + 1);
       toast.success("Comment added successfully");
@@ -582,11 +586,11 @@ export default function LeadProjectDetail() {
       if (comment) {
         const response = await commentService.togglePin(commentId);
         const updatedComment = response?.data || response;
-        
+
         if (updatedComment.pin) {
           await NotificationHelper.commentPinned(updatedComment, user);
         }
-        
+
         setComments(prev =>
           prev.map(c => (c.c_id || c.id) === commentId ? { ...c, pin: updatedComment.pin || !c.pin } : c)
         );
@@ -600,7 +604,7 @@ export default function LeadProjectDetail() {
 
   const deleteComment = async (commentId) => {
     if (!window.confirm("Are you sure you want to delete this comment?")) return;
-    
+
     try {
       await commentService.deleteComment(commentId);
       setComments(prev => prev.filter(c => (c.c_id || c.id) !== commentId));
@@ -611,18 +615,16 @@ export default function LeadProjectDetail() {
     }
   };
 
-  // Use stats from server
   const progress = stats.completionRate || 0;
   const done = stats.completedTasks || 0;
 
   const getMemberName = (memberId) => {
     if (!memberId) return "Unassigned";
+    // users table first
+    const u = users.find(x => Number(x.id) === Number(memberId));
+    if (u) return u.u_name || u.name || "Unassigned";
     const member = allTeamMembers.find(m => Number(m.id) === Number(memberId));
-    return member ? (member.name) : "Unassigned";
-  };
-
-  const getMemberById = (memberId) => {
-    return allTeamMembers.find(m => Number(m.id) === Number(memberId));
+    return member ? member.name : "Unassigned";
   };
 
   if (loading) {
@@ -662,8 +664,8 @@ export default function LeadProjectDetail() {
         title={
           <span className="project-title-text">
             <span className="project-title-main">{project.p_name || project.name}</span>
-            <span className="project-title-badge" style={{ 
-              background: progress >= 70 ? '#34d399' : progress >= 40 ? '#f59e0b' : '#f87171' 
+            <span className="project-title-badge" style={{
+              background: progress >= 70 ? '#34d399' : progress >= 40 ? '#f59e0b' : '#f87171'
             }}>
               {progress}% Complete
             </span>
@@ -672,8 +674,8 @@ export default function LeadProjectDetail() {
         onMenuClick={onMenuClick}
         actions={
           <div className="topbar-actions">
-            <button 
-              className="btn btn-secondary btn-sm refresh-btn" 
+            <button
+              className="btn btn-secondary btn-sm refresh-btn"
               onClick={handleRefresh}
               disabled={refreshing}
             >
@@ -690,14 +692,14 @@ export default function LeadProjectDetail() {
       {/* ─── TASK DETAIL MODAL ─── */}
       <AnimatePresence>
         {selectedTask && (
-          <motion.div 
-            className="modal-overlay" 
+          <motion.div
+            className="modal-overlay"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setSelectedTask(null)}
           >
-            <motion.div 
+            <motion.div
               className="modal-box"
               initial={{ scale: 0.95, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
@@ -771,8 +773,8 @@ export default function LeadProjectDetail() {
                         }
                       }}
                     />
-                    <button 
-                      className="modal-comment-send-btn" 
+                    <button
+                      className="modal-comment-send-btn"
                       onClick={addModalComment}
                       disabled={isModalCommenting || !modalCommentText.trim()}
                     >
@@ -792,8 +794,8 @@ export default function LeadProjectDetail() {
                         const commentKey = c.c_id || c.id || `comment-${Math.random().toString(36).substr(2, 9)}`;
                         const isPinned = c.pin || c.pinned;
                         return (
-                          <motion.div 
-                            key={commentKey} 
+                          <motion.div
+                            key={commentKey}
                             className={`modal-comment-item ${isPinned ? 'pinned' : ''}`}
                             initial={{ opacity: 0, y: 5 }}
                             animate={{ opacity: 1, y: 0 }}
@@ -807,7 +809,7 @@ export default function LeadProjectDetail() {
                             <p className="modal-comment-text">{c.desc || c.content}</p>
                             <div className="modal-comment-footer">
                               <span className="modal-comment-meta">
-                                {c.u_name || c.user_name || 'User'} • 
+                                {c.u_name || c.user_name || 'User'} •
                                 {c.created_at ? new Date(c.created_at).toLocaleString() : 'Just now'}
                               </span>
                               <div className="modal-comment-actions">
@@ -818,9 +820,9 @@ export default function LeadProjectDetail() {
                                 >
                                   {isPinned ? <PinOff size={11} /> : <Pin size={11} />}
                                 </button>
-                                <button 
-                                  className="modal-comment-action-btn danger" 
-                                  title="Delete" 
+                                <button
+                                  className="modal-comment-action-btn danger"
+                                  title="Delete"
                                   onClick={() => deleteComment(c.c_id || c.id)}
                                 >
                                   <Trash2 size={11} />
@@ -871,14 +873,14 @@ export default function LeadProjectDetail() {
       {/* ─── EDIT TASK MODAL ─── */}
       <AnimatePresence>
         {editTask && (
-          <motion.div 
-            className="modal-overlay" 
+          <motion.div
+            className="modal-overlay"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setEditTask(null)}
           >
-            <motion.div 
+            <motion.div
               className="modal-box"
               initial={{ scale: 0.95, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
@@ -948,7 +950,7 @@ export default function LeadProjectDetail() {
                     <option value="">Unassigned</option>
                     {projectMembers.map((m) => (
                       <option key={m.id} value={m.id}>
-                        {m.name} {projectSupervisors.some(s => s.id === m.id) ? '👑' : ''}
+                        {m.name} {projectSupervisors.some(s => Number(s.id) === Number(m.id)) ? '👑' : ''}
                       </option>
                     ))}
                   </select>
@@ -993,14 +995,14 @@ export default function LeadProjectDetail() {
       {/* ─── ADD TASK MODAL ─── */}
       <AnimatePresence>
         {showAddTask && (
-          <motion.div 
-            className="modal-overlay" 
+          <motion.div
+            className="modal-overlay"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setShowAddTask(false)}
           >
-            <motion.div 
+            <motion.div
               className="modal-box"
               initial={{ scale: 0.95, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
@@ -1074,7 +1076,7 @@ export default function LeadProjectDetail() {
                     <option value="">Select Member</option>
                     {projectMembers.map((mem) => (
                       <option key={mem.id} value={mem.id}>
-                        {mem.name} {projectSupervisors.some(s => s.id === mem.id) ? '👑' : ''}
+                        {mem.name} {projectSupervisors.some(s => Number(s.id) === Number(mem.id)) ? '👑' : ''}
                       </option>
                     ))}
                   </select>
@@ -1096,8 +1098,8 @@ export default function LeadProjectDetail() {
               </div>
 
               <div className="modal-footer">
-                <button 
-                  className="btn btn-primary btn-sm" 
+                <button
+                  className="btn btn-primary btn-sm"
                   onClick={handleAddTask}
                   disabled={isSubmitting}
                 >
@@ -1119,14 +1121,14 @@ export default function LeadProjectDetail() {
       {/* ─── DELETE CONFIRM ─── */}
       <AnimatePresence>
         {showDeleteConfirm !== null && (
-          <motion.div 
-            className="modal-overlay" 
+          <motion.div
+            className="modal-overlay"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setShowDeleteConfirm(null)}
           >
-            <motion.div 
+            <motion.div
               className="modal-box confirm-box"
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
@@ -1153,7 +1155,6 @@ export default function LeadProjectDetail() {
       <div className="project-body">
         {/* LEFT PANEL */}
         <div className="project-left">
-          {/* Project Overview */}
           <div className="project-overview-card">
             <div className="overview-header">
               <div className="overview-info">
@@ -1164,11 +1165,11 @@ export default function LeadProjectDetail() {
                 <div className="ring-container">
                   <svg className="ring-svg" viewBox="0 0 120 120">
                     <circle className="ring-bg" cx="60" cy="60" r="50" />
-                    <circle 
-                      className="ring-fill" 
-                      cx="60" 
-                      cy="60" 
-                      r="50" 
+                    <circle
+                      className="ring-fill"
+                      cx="60"
+                      cy="60"
+                      r="50"
                       strokeDasharray={Math.PI * 2 * 50}
                       strokeDashoffset={Math.PI * 2 * 50 * (1 - progress / 100)}
                       style={{ stroke: progress >= 70 ? '#34d399' : progress >= 40 ? '#f59e0b' : '#f87171' }}
@@ -1183,7 +1184,7 @@ export default function LeadProjectDetail() {
             </div>
           </div>
 
-          {/* Tasks Section */}
+          {/* Tasks */}
           <div className="tasks-card">
             <div className="tasks-header">
               <h3 className="tasks-title">
@@ -1209,7 +1210,7 @@ export default function LeadProjectDetail() {
                     const taskKey = t.t_id || t.id || `task-${Math.random().toString(36).substr(2, 9)}`;
                     const taskStatusColor = getStatusColor(t.status);
                     const taskCommentCount = getTaskComments(t.t_id || t.id).length;
-                    
+
                     return (
                       <motion.div
                         key={taskKey}
@@ -1234,10 +1235,10 @@ export default function LeadProjectDetail() {
                               </span>
                             )}
                             <span className="task-item-progress-badge" style={{
-                              background: t.progress >= 70 ? 'rgba(52, 211, 153, 0.15)' : 
-                                         t.progress >= 40 ? 'rgba(245, 158, 11, 0.15)' : 
+                              background: t.progress >= 70 ? 'rgba(52, 211, 153, 0.15)' :
+                                         t.progress >= 40 ? 'rgba(245, 158, 11, 0.15)' :
                                          'rgba(248, 113, 113, 0.15)',
-                              color: t.progress >= 70 ? '#34d399' : 
+                              color: t.progress >= 70 ? '#34d399' :
                                      t.progress >= 40 ? '#f59e0b' : '#f87171'
                             }}>
                               {t.progress || 0}%
@@ -1256,14 +1257,14 @@ export default function LeadProjectDetail() {
                             {getMemberName(t.assign_to)}
                           </div>
                           <div className="task-item-actions">
-                            <button 
+                            <button
                               className="task-action-btn"
                               title="Edit Task"
                               onClick={(e) => { e.stopPropagation(); setEditTask({ ...t }); }}
                             >
                               <Pencil size={12} />
                             </button>
-                            <button 
+                            <button
                               className="task-action-btn danger"
                               title="Delete Task"
                               onClick={(e) => { e.stopPropagation(); setShowDeleteConfirm(t.t_id || t.id); }}
@@ -1283,7 +1284,6 @@ export default function LeadProjectDetail() {
 
         {/* RIGHT PANEL */}
         <div className="project-right">
-          {/* Overview Stats - Using server stats */}
           <div className="info-card">
             <h4 className="info-card-title">
               <Sparkles size={14} />
@@ -1336,9 +1336,9 @@ export default function LeadProjectDetail() {
                 <>
                   {projectSupervisors.length > 0 && (
                     <>
-                      <div style={{ 
-                        fontSize: 11, 
-                        fontWeight: 700, 
+                      <div style={{
+                        fontSize: 11,
+                        fontWeight: 700,
                         color: 'var(--text-muted)',
                         textTransform: 'uppercase',
                         letterSpacing: '0.5px',
@@ -1364,12 +1364,12 @@ export default function LeadProjectDetail() {
                       ))}
                     </>
                   )}
-                  
-                  {projectMembers.filter(m => !projectSupervisors.some(s => s.id === m.id)).length > 0 && (
+
+                  {projectMembers.filter(m => !projectSupervisors.some(s => Number(s.id) === Number(m.id))).length > 0 && (
                     <>
-                      <div style={{ 
-                        fontSize: 11, 
-                        fontWeight: 700, 
+                      <div style={{
+                        fontSize: 11,
+                        fontWeight: 700,
                         color: 'var(--text-muted)',
                         textTransform: 'uppercase',
                         letterSpacing: '0.5px',
@@ -1377,10 +1377,10 @@ export default function LeadProjectDetail() {
                         marginBottom: 4
                       }}>
                         <Users size={12} style={{ display: 'inline', marginRight: 4 }} />
-                        Members ({projectMembers.filter(m => !projectSupervisors.some(s => s.id === m.id)).length})
+                        Members ({projectMembers.filter(m => !projectSupervisors.some(s => Number(s.id) === Number(m.id))).length})
                       </div>
                       {projectMembers
-                        .filter(m => !projectSupervisors.some(s => s.id === m.id))
+                        .filter(m => !projectSupervisors.some(s => Number(s.id) === Number(m.id)))
                         .map((m) => (
                           <div key={m.id} className="team-member-item">
                             <Avatar name={m.name} size="sm" />
@@ -1398,7 +1398,7 @@ export default function LeadProjectDetail() {
             </div>
           </div>
 
-          {/* ─── COMMENTS SECTION ─── */}
+          {/* Comments */}
           <div className="info-card comments-card">
             <h4 className="info-card-title">
               <MessageSquare size={14} />
@@ -1425,8 +1425,8 @@ export default function LeadProjectDetail() {
                 disabled={!selectedTask}
                 style={{ opacity: selectedTask ? 1 : 0.6 }}
               />
-              <button 
-                className="comment-send-btn" 
+              <button
+                className="comment-send-btn"
                 onClick={addComment}
                 disabled={isCommenting || !text.trim() || !selectedTask}
               >
@@ -1457,10 +1457,10 @@ export default function LeadProjectDetail() {
                     const commentKey = c.c_id || c.id || `comment-${Math.random().toString(36).substr(2, 9)}`;
                     const isPinned = c.pin || c.pinned;
                     const task = tasks.find(t => Number(t.t_id || t.id) === Number(c.taskId || c.t));
-                    
+
                     return (
-                      <motion.div 
-                        key={commentKey} 
+                      <motion.div
+                        key={commentKey}
                         className={`comment-item ${isPinned ? 'pinned' : ''}`}
                         initial={{ opacity: 0, y: 5 }}
                         animate={{ opacity: 1, y: 0 }}
@@ -1474,7 +1474,7 @@ export default function LeadProjectDetail() {
                         <p className="comment-text">{c.desc || c.content}</p>
                         <div className="comment-meta-row">
                           <span className="comment-meta">
-                            {c.u_name || c.user_name || 'User'} • 
+                            {c.u_name || c.user_name || 'User'} •
                             {c.created_at ? new Date(c.created_at).toLocaleString() : 'Just now'}
                           </span>
                           {task && (
@@ -1492,9 +1492,9 @@ export default function LeadProjectDetail() {
                             >
                               {isPinned ? <PinOff size={11} /> : <Pin size={11} />}
                             </button>
-                            <button 
-                              className="comment-action-btn danger" 
-                              title="Delete" 
+                            <button
+                              className="comment-action-btn danger"
+                              title="Delete"
                               onClick={() => deleteComment(c.c_id || c.id)}
                             >
                               <Trash2 size={11} />

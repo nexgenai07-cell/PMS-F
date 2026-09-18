@@ -1,31 +1,31 @@
 // src/components/auth/Login.jsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { Eye, EyeOff, Zap, ArrowRight, Shield, Users, BarChart3, UserPlus, AlertCircle, CheckCircle2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
-// Demo users data - use backend role names
-const DEMO_USERS = {
-  supervisor: {
-    id: 999,
-    u_id: 999,
-    u_name: 'Supervisor',
-    name: 'Supervisor',
-    email: 'supervisor@pms.com',
-    role: 'manager',
-    is_demo: true
-  },
-  lead: {
-    id: 888,
-    u_id: 888,
-    u_name: 'Team Lead',
-    name: 'Team Lead',
-    email: 'lead1@pms.com',
-    role: 'member',
-    is_demo: true
-  }
-};
+// // Demo users data - use backend role names
+// const DEMO_USERS = {
+//   supervisor: {
+//     id: 999,
+//     u_id: 999,
+//     u_name: 'Supervisor',
+//     name: 'Supervisor',
+//     email: 'supervisor@pms.com',
+//     role: 'manager',
+//     is_demo: true
+//   },
+//   lead: {
+//     id: 888,
+//     u_id: 888,
+//     u_name: 'Team Lead',
+//     name: 'Team Lead',
+//     email: 'lead1@pms.com',
+//     role: 'member',
+//     is_demo: true
+//   }
+// };
 
 const FEATURES = [
   { icon: BarChart3, color: 'var(--accent-primary)', title: 'Real-time insights', desc: 'Live dashboards for project health and milestones.' },
@@ -33,51 +33,100 @@ const FEATURES = [
   { icon: Shield, color: 'var(--accent-amber)', title: 'Role-based access', desc: 'Supervisors see everything; leads see their scope.' }
 ];
 
+// Password rules - single source of truth for both validation and UI checklist
+const PASSWORD_RULES = [
+  { key: 'length', label: 'At least 8 characters', test: (v) => v.length >= 8 },
+  { key: 'upper', label: 'One uppercase letter', test: (v) => /[A-Z]/.test(v) },
+  { key: 'lower', label: 'One lowercase letter', test: (v) => /[a-z]/.test(v) },
+  { key: 'number', label: 'One number', test: (v) => /[0-9]/.test(v) },
+  { key: 'special', label: 'One special character', test: (v) => /[^A-Za-z0-9]/.test(v) },
+];
+
+const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+
 // Validation functions
 const validators = {
   email: (value) => {
-    if (!value || value.trim() === '') {
+    const trimmed = (value ?? '').trim();
+    if (!trimmed) {
       return { valid: false, message: 'Email is required' };
     }
-    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-    if (!emailRegex.test(value.trim())) {
-      return { valid: false, message: 'Please enter a valid email address (e.g., user@domain.com)' };
-    }
-    if (value.length > 254) {
+    if (trimmed.length > 254) {
       return { valid: false, message: 'Email address is too long (maximum 254 characters)' };
+    }
+    if (!EMAIL_REGEX.test(trimmed)) {
+      return { valid: false, message: 'Please enter a valid email address (e.g., user@domain.com)' };
     }
     return { valid: true, message: '' };
   },
-  
+
   password: (value) => {
-    if (!value || value === '') {
+    const v = value ?? '';
+    if (!v) {
       return { valid: false, message: 'Password is required' };
     }
-    if (value.length < 8) {
-      return { valid: false, message: 'Password must be at least 8 characters long' };
-    }
-    if (value.length > 128) {
+    if (v.length > 128) {
       return { valid: false, message: 'Password is too long (maximum 128 characters)' };
     }
-    // Check for at least one uppercase letter
-    if (!/[A-Z]/.test(value)) {
-      return { valid: false, message: 'Password must contain at least one uppercase letter' };
-    }
-    // Check for at least one lowercase letter
-    if (!/[a-z]/.test(value)) {
-      return { valid: false, message: 'Password must contain at least one lowercase letter' };
-    }
-    // Check for at least one number
-    if (!/[0-9]/.test(value)) {
-      return { valid: false, message: 'Password must contain at least one number' };
-    }
-    // Check for at least one special character
-    if (!/[!@#$%^&*(),.?":{}|<>]/.test(value)) {
-      return { valid: false, message: 'Password must contain at least one special character (!@#$%^&*(),.?":{}|<>)' };
+    const failed = PASSWORD_RULES.find((rule) => !rule.test(v));
+    if (failed) {
+      return { valid: false, message: `Password must contain: ${failed.label.toLowerCase()}` };
     }
     return { valid: true, message: '' };
   }
 };
+
+/**
+ * Extract a human-readable STRING from any backend error shape.
+ * Handles:
+ *   - { success:false, error:{ non_field_errors:["..."] } }
+ *   - { email: ["..."] }
+ *   - { detail: "..." }
+ *   - { message: "..." }
+ *   - plain strings, arrays, nested objects
+ * ALWAYS returns a string. Never returns an object (which would crash React).
+ */
+function extractErrorMessage(err) {
+  const data = err?.response?.data;
+
+  const unwrap = (v) => {
+    if (v == null) return null;
+    if (Array.isArray(v)) return v.length ? unwrap(v[0]) : null;
+    if (typeof v === 'object') {
+      const k = Object.keys(v)[0];
+      return k ? unwrap(v[k]) : null;
+    }
+    return String(v);
+  };
+
+  if (data) {
+    // Unwrap { success:false, error:{...} } shape
+    const inner =
+      data.error && typeof data.error === 'object' && !Array.isArray(data.error)
+        ? data.error
+        : data;
+
+    const keys = ['non_field_errors', 'detail', 'message', 'email', 'password', 'error'];
+    for (const key of keys) {
+      if (inner[key] != null) {
+        const msg = unwrap(inner[key]);
+        if (msg) return msg;
+      }
+    }
+
+    // Fallback: first key with a message
+    for (const key of Object.keys(inner)) {
+      if (key === 'success') continue;
+      const msg = unwrap(inner[key]);
+      if (msg) return msg;
+    }
+
+    if (typeof data === 'string') return data;
+  }
+
+  if (err?.message && typeof err.message === 'string') return err.message;
+  return 'Login failed. Please try again.';
+}
 
 export default function Login() {
   const location = useLocation();
@@ -86,10 +135,20 @@ export default function Login() {
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
   const [touched, setTouched] = useState({ email: false, password: false });
-  const [validationErrors, setValidationErrors] = useState({ email: '', password: '' });
-  
+  const [serverError, setServerError] = useState('');
+
   const { login, setUser } = useAuth();
   const navigate = useNavigate();
+
+  // Derive validation errors from current values (single source of truth)
+  const validationErrors = useMemo(() => ({
+    email: validators.email(email).message,
+    password: validators.password(password).message
+  }), [email, password]);
+
+  const emailValid = !validationErrors.email;
+  const passwordValid = !validationErrors.password;
+  const isFormValid = emailValid && passwordValid;
 
   // Auto-fill email from registration state
   useEffect(() => {
@@ -101,149 +160,78 @@ export default function Login() {
     }
   }, [location.state]);
 
-  // Validate field on change
-  const validateField = (field, value) => {
-    if (field === 'email') {
-      const result = validators.email(value);
-      setValidationErrors(prev => ({ ...prev, email: result.valid ? '' : result.message }));
-      return result.valid;
-    } else if (field === 'password') {
-      const result = validators.password(value);
-      setValidationErrors(prev => ({ ...prev, password: result.valid ? '' : result.message }));
-      return result.valid;
-    }
-    return true;
-  };
-
-  // Handle field change with validation
+  // Handle field change
   const handleFieldChange = (field, value) => {
-    if (field === 'email') {
-      setEmail(value);
-      if (touched.email) {
-        validateField('email', value);
-      }
-    } else if (field === 'password') {
-      setPassword(value);
-      if (touched.password) {
-        validateField('password', value);
-      }
-    }
+    if (field === 'email') setEmail(value);
+    else if (field === 'password') setPassword(value);
+    // Clear any previous server error as soon as the user edits a field
+    if (serverError) setServerError('');
   };
 
   // Handle field blur
   const handleBlur = (field) => {
-    setTouched(prev => ({ ...prev, [field]: true }));
-    if (field === 'email') {
-      validateField('email', email);
-    } else if (field === 'password') {
-      validateField('password', password);
-    }
-  };
-
-  // Validate all fields before submit
-  const validateForm = () => {
-    const emailValid = validators.email(email).valid;
-    const passwordValid = validators.password(password).valid;
-    
-    setTouched({ email: true, password: true });
-    
-    if (!emailValid) {
-      validateField('email', email);
-    }
-    if (!passwordValid) {
-      validateField('password', password);
-    }
-    
-    return emailValid && passwordValid;
+    setTouched((prev) => ({ ...prev, [field]: true }));
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    // Validate all fields
-    if (!validateForm()) {
+    // Mark both touched so any remaining errors surface
+    setTouched({ email: true, password: true });
+    setServerError('');
+
+    if (!isFormValid) {
       toast.error('Please fix all validation errors before submitting');
       return;
     }
 
     setLoading(true);
     try {
-      const user = await login(email, password);
+      const user = await login(email.trim(), password);
+
+      // Clear any verification-flow flag left over from registration
+      localStorage.removeItem('verifying_email');
 
       const firstName = user?.u_name || user?.name || 'User';
       toast.success(`Welcome back, ${firstName}!`);
 
       const role = user?.role || 'member';
-      navigate(role === 'supervisor' || role === 'admin' || role === 'manager' ? '/supervisor' : '/lead', { replace: true });
+      const isSupervisor = role === 'supervisor' || role === 'admin' || role === 'manager';
+      navigate(isSupervisor ? '/supervisor' : '/lead', { replace: true });
     } catch (err) {
-      let errorMessage = 'Login failed. Please try again.';
+      const errorMessage = extractErrorMessage(err);
 
-      if (err?.response?.data) {
-        const errorData = err.response.data;
+      // Belt and braces: make sure what we hand to React is a string
+      const safeMessage = typeof errorMessage === 'string'
+        ? errorMessage
+        : 'Login failed. Please try again.';
 
-        if (typeof errorData === 'string') {
-          errorMessage = errorData;
-        } else if (errorData.message) {
-          errorMessage = errorData.message;
-        } else if (errorData.detail) {
-          errorMessage = errorData.detail;
-        } else if (errorData.error) {
-          errorMessage = typeof errorData.error === 'string' ? errorData.error : 'Login failed';
-        } else if (errorData.non_field_errors) {
-          errorMessage = Array.isArray(errorData.non_field_errors)
-            ? errorData.non_field_errors[0]
-            : String(errorData.non_field_errors);
-        } else if (errorData.email) {
-          errorMessage = Array.isArray(errorData.email) ? errorData.email[0] : errorData.email;
-        } else if (errorData.password) {
-          errorMessage = Array.isArray(errorData.password) ? errorData.password[0] : errorData.password;
-        } else {
-          const firstKey = Object.keys(errorData)[0];
-          if (firstKey) {
-            const value = errorData[firstKey];
-            errorMessage = Array.isArray(value) ? value[0] : String(value);
-          }
-        }
-      } else if (err?.message) {
-        errorMessage = err.message;
-      }
-
-      if (typeof errorMessage !== 'string') {
-        errorMessage = 'Login failed. Please try again.';
-      }
-
-      toast.error(errorMessage);
+      setServerError(safeMessage);
+      toast.error(safeMessage);
       setPassword('');
     } finally {
       setLoading(false);
     }
   };
 
-  // Demo login - bypasses API and uses a local demo user
-  const quickLogin = (role) => {
-    const demoUser = DEMO_USERS[role];
-    if (!demoUser) return;
+  // // Demo login - bypasses API and uses a local demo user
+  // const quickLogin = (role) => {
+  //   const demoUser = DEMO_USERS[role];
+  //   if (!demoUser) return;
 
-    localStorage.setItem('pms_user', JSON.stringify(demoUser));
-    localStorage.setItem('user', JSON.stringify(demoUser));
-    localStorage.setItem('user_role', demoUser.role);
+  //   localStorage.setItem('pms_user', JSON.stringify(demoUser));
+  //   localStorage.setItem('user', JSON.stringify(demoUser));
+  //   localStorage.setItem('user_role', demoUser.role);
 
-    setUser(demoUser);
-    toast.success(`Welcome ${demoUser.u_name}! (Demo mode)`);
-    navigate(role === 'supervisor' ? '/supervisor' : '/lead', { replace: true });
-  };
+  //   setUser(demoUser);
+  //   toast.success(`Welcome ${demoUser.u_name}! (Demo mode)`);
+  //   navigate(role === 'supervisor' ? '/supervisor' : '/lead', { replace: true });
+  // };
 
   // Get field status for styling
   const getFieldStatus = (field) => {
     if (!touched[field]) return 'idle';
-    const error = validationErrors[field];
-    if (error) return 'error';
-    return 'success';
-  };
-
-  // Check if form is valid
-  const isFormValid = () => {
-    return validators.email(email).valid && validators.password(password).valid;
+    return validationErrors[field] ? 'error' : 'success';
   };
 
   return (
@@ -296,11 +284,12 @@ export default function Login() {
                   type="email"
                   placeholder="your@email.com"
                   value={email}
-                  onChange={e => handleFieldChange('email', e.target.value)}
+                  onChange={(e) => handleFieldChange('email', e.target.value)}
                   onBlur={() => handleBlur('email')}
                   disabled={loading}
+                  autoComplete="email"
                   autoFocus={!email}
-                  aria-invalid={!!validationErrors.email}
+                  aria-invalid={touched.email && !!validationErrors.email}
                   aria-describedby="email-error"
                 />
                 {touched.email && validationErrors.email && (
@@ -320,9 +309,7 @@ export default function Login() {
                 </div>
               )}
               {touched.email && !validationErrors.email && email && (
-                <div className="hint-message">
-                  ✓ Email format is valid
-                </div>
+                <div className="hint-message">✓ Email format is valid</div>
               )}
             </div>
 
@@ -339,17 +326,19 @@ export default function Login() {
                     type={showPass ? 'text' : 'password'}
                     placeholder="••••••••"
                     value={password}
-                    onChange={e => handleFieldChange('password', e.target.value)}
+                    onChange={(e) => handleFieldChange('password', e.target.value)}
                     onBlur={() => handleBlur('password')}
                     disabled={loading}
-                    aria-invalid={!!validationErrors.password}
+                    autoComplete="current-password"
+                    aria-invalid={touched.password && !!validationErrors.password}
                     aria-describedby="password-error"
                   />
                   <button
                     type="button"
                     className="password-toggle"
-                    onClick={() => setShowPass(!showPass)}
+                    onClick={() => setShowPass((s) => !s)}
                     aria-label={showPass ? 'Hide password' : 'Show password'}
+                    tabIndex={-1}
                   >
                     {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
                   </button>
@@ -371,51 +360,35 @@ export default function Login() {
                 </div>
               )}
               {touched.password && !validationErrors.password && password && (
-                <div className="hint-message">
-                  ✓ Password meets all requirements
-                </div>
+                <div className="hint-message">✓ Password meets all requirements</div>
               )}
-              {/* Password requirements hint */}
-              {touched.password && validationErrors.password && (
+              {touched.password && password && validationErrors.password && (
                 <div className="password-requirements">
-                  <div className="requirement-item">
-                    <span className={`req-dot ${password.length >= 8 ? 'met' : ''}`} />
-                    <span className={`req-text ${password.length >= 8 ? 'met' : ''}`}>
-                      At least 8 characters
-                    </span>
-                  </div>
-                  <div className="requirement-item">
-                    <span className={`req-dot ${/[A-Z]/.test(password) ? 'met' : ''}`} />
-                    <span className={`req-text ${/[A-Z]/.test(password) ? 'met' : ''}`}>
-                      One uppercase letter
-                    </span>
-                  </div>
-                  <div className="requirement-item">
-                    <span className={`req-dot ${/[a-z]/.test(password) ? 'met' : ''}`} />
-                    <span className={`req-text ${/[a-z]/.test(password) ? 'met' : ''}`}>
-                      One lowercase letter
-                    </span>
-                  </div>
-                  <div className="requirement-item">
-                    <span className={`req-dot ${/[0-9]/.test(password) ? 'met' : ''}`} />
-                    <span className={`req-text ${/[0-9]/.test(password) ? 'met' : ''}`}>
-                      One number
-                    </span>
-                  </div>
-                  <div className="requirement-item">
-                    <span className={`req-dot ${/[!@#$%^&*(),.?":{}|<>]/.test(password) ? 'met' : ''}`} />
-                    <span className={`req-text ${/[!@#$%^&*(),.?":{}|<>]/.test(password) ? 'met' : ''}`}>
-                      One special character (!@#$%^&*(),.?":{}|&lt;&gt;)
-                    </span>
-                  </div>
+                  {PASSWORD_RULES.map((rule) => {
+                    const met = rule.test(password);
+                    return (
+                      <div key={rule.key} className="requirement-item">
+                        <span className={`req-dot ${met ? 'met' : ''}`} />
+                        <span className={`req-text ${met ? 'met' : ''}`}>{rule.label}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
 
-            <button 
-              type="submit" 
-              className="btn btn-primary submit-btn" 
-              disabled={loading || !isFormValid()}
+            {/* Server-side error message (from backend) */}
+            {serverError && (
+              <div className="server-error" role="alert">
+                <AlertCircle size={14} />
+                <span>{serverError}</span>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              className="btn btn-primary submit-btn"
+              disabled={loading || !isFormValid}
             >
               {loading ? (
                 <>
@@ -423,7 +396,9 @@ export default function Login() {
                   Signing in...
                 </>
               ) : (
-                <>Sign In <ArrowRight size={17} /></>
+                <>
+                  Sign In <ArrowRight size={17} />
+                </>
               )}
             </button>
           </form>
@@ -436,23 +411,23 @@ export default function Login() {
             </Link>
           </p>
 
-          <div className="demo-block">
+          {/* <div className="demo-block">
             <div className="demo-divider">
               <span>Quick access for demo</span>
             </div>
             <div className="demo-grid">
-              <button className="demo-btn" onClick={() => quickLogin('supervisor')}>
+              {/* <button type="button" className="demo-btn" onClick={() => quickLogin('supervisor')}>
                 <Shield size={16} style={{ color: 'var(--accent-secondary)' }} />
                 <span className="demo-role">Supervisor</span>
                 <span className="demo-email">supervisor@pms.com</span>
               </button>
-              <button className="demo-btn" onClick={() => quickLogin('lead')}>
+              <button type="button" className="demo-btn" onClick={() => quickLogin('lead')}>
                 <Users size={16} style={{ color: 'var(--accent-teal)' }} />
                 <span className="demo-role">Team Lead</span>
                 <span className="demo-email">lead1@pms.com</span>
               </button>
             </div>
-          </div>
+          </div> */}
         </div>
       </div>
 
@@ -732,6 +707,20 @@ export default function Login() {
           display: flex;
           align-items: center;
           gap: 4px;
+        }
+
+        .server-error {
+          color: #f87171;
+          font-size: 13px;
+          font-weight: 500;
+          background: rgba(248, 113, 113, 0.08);
+          padding: 10px 12px;
+          border-radius: 8px;
+          border-left: 3px solid #f87171;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-top: -2px;
         }
 
         .hint-message {

@@ -61,10 +61,9 @@ function ProtectedRoute({ children, role }) {
     console.log('🔵 ProtectedRoute: still loading...');
     return <PageLoader />;
   }
-  
+
   if (!user) {
     console.log('🔵 ProtectedRoute: ❌ no user, redirecting to login');
-    // Clear localStorage if no user
     localStorage.removeItem('access_token');
     localStorage.removeItem('token');
     localStorage.removeItem('refresh_token');
@@ -73,7 +72,6 @@ function ProtectedRoute({ children, role }) {
     return <Navigate to="/login" replace />;
   }
 
-  // ✅ Get user role - handle both id and u_id
   const userRole = user?.role?.toLowerCase() || 'member';
   const requiredRole = role?.toLowerCase() || 'member';
 
@@ -128,11 +126,20 @@ function PageLoader() {
 
 function AppRoutes() {
   const { user, loading } = useAuth();
+  const location = useLocation();
+
+  // Read "verifying" flag set by Register when it navigates to /verify-email
+  const isVerifying = !!localStorage.getItem('verifying_email');
 
   console.log('🔵 AppRoutes: user =', user);
   console.log('🔵 AppRoutes: loading =', loading);
+  console.log('🔵 AppRoutes: isVerifying =', isVerifying);
+  console.log('🔵 AppRoutes: pathname =', location.pathname);
 
-  if (loading) {
+  // Show loader only during the INITIAL auth check, not during
+  // post-register/post-login transitions. Otherwise the routes tree
+  // unmounts mid-flow and races against navigate().
+  if (loading && !user) {
     return <PageLoader />;
   }
 
@@ -145,17 +152,26 @@ function AppRoutes() {
     <Routes>
       <Route
         path="/login"
-        element={user ? <Navigate to={getRedirectPath()} replace /> : <Login />}
+        element={
+          user && !isVerifying
+            ? <Navigate to={getRedirectPath()} replace />
+            : <Login />
+        }
       />
 
       <Route
         path="/register"
-        element={user ? <Navigate to={getRedirectPath()} replace /> : <Register />}
+        element={
+          user && !isVerifying
+            ? <Navigate to={getRedirectPath()} replace />
+            : <Register />
+        }
       />
 
+      {/* Public — must be reachable without auth */}
       <Route path="/verify-email" element={<EmailVerification />} />
 
-      {/* SUPERVISOR - handles 'manager', 'supervisor', and 'admin' roles */}
+      {/* SUPERVISOR — handles 'manager', 'supervisor', and 'admin' roles */}
       <Route
         path="/supervisor"
         element={
@@ -175,7 +191,7 @@ function AppRoutes() {
         <Route path="profile" element={<ProfilePage />} />
       </Route>
 
-      {/* LEAD - handles 'member' and 'lead' roles */}
+      {/* LEAD — handles 'member' and 'lead' roles */}
       <Route
         path="/lead"
         element={

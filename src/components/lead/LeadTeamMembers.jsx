@@ -1,10 +1,9 @@
 // components/lead/LeadTeamMembers.jsx
-import { useState, useEffect } from 'react';
-import { 
-  Search, UserPlus, Trash2, Pencil, X, RefreshCw, 
-  Mail, Phone, Briefcase, Award, Users, Filter, Flag,
-  Star, Clock, CheckCircle2, TrendingUp, MoreHorizontal,
-  ArrowUpRight, ArrowDownRight, Sparkles, AlertCircle
+import { useState, useEffect, useMemo } from 'react';
+import {
+  Search, UserPlus, Trash2, Pencil, X, RefreshCw,
+  Mail, Briefcase, Award, Users, TrendingUp, Loader2,
+  CheckCircle2, Clock, AlertCircle
 } from 'lucide-react';
 import { useOutletContext } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -17,6 +16,88 @@ import taskService from '../../services/taskService';
 import projectTeamService from '../../services/projectTeamService';
 import userService from '../../services/userService';
 import { useAuth } from '../../context/AuthContext';
+
+/* ─────────── Validation constants ─────────── */
+const LIMITS = {
+  name:          { min: 2, max: 100 },
+  role:          { min: 2, max: 80 },
+  email:         { max: 254 },
+  qualification: { min: 2, max: 200 },
+  skills:        { min: 2, max: 500 },
+  description:   { max: 2000 },
+  experience:    { min: 0, max: 70 },
+};
+
+const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+const NAME_REGEX  = /^[\p{L}\p{N} &\-.'()]+$/u;
+const ROLE_REGEX  = /^[\p{L}\p{N} &\-.'()/]+$/u;
+
+const validators = {
+  name: (value) => {
+    const v = (value ?? '').trim();
+    if (!v) return 'Name is required';
+    if (v.length < LIMITS.name.min) return `Name must be at least ${LIMITS.name.min} characters`;
+    if (v.length > LIMITS.name.max) return `Name must be less than ${LIMITS.name.max} characters`;
+    if (!NAME_REGEX.test(v)) return 'Name can only contain letters, numbers, spaces and  & - . \' ( )';
+    return '';
+  },
+  role: (value) => {
+    const v = (value ?? '').trim();
+    if (!v) return 'Role is required';
+    if (v.length < LIMITS.role.min) return `Role must be at least ${LIMITS.role.min} characters`;
+    if (v.length > LIMITS.role.max) return `Role must be less than ${LIMITS.role.max} characters`;
+    if (!ROLE_REGEX.test(v)) return 'Role contains invalid characters';
+    return '';
+  },
+  email: (value) => {
+    const v = (value ?? '').trim();
+    if (!v) return 'Email is required';
+    if (v.length > LIMITS.email.max) return `Email must be less than ${LIMITS.email.max} characters`;
+    if (!EMAIL_REGEX.test(v)) return 'Please enter a valid email address';
+    return '';
+  },
+  qualification: (value) => {
+    const v = (value ?? '').trim();
+    if (!v) return 'Qualification is required';
+    if (v.length < LIMITS.qualification.min) return `Qualification must be at least ${LIMITS.qualification.min} characters`;
+    if (v.length > LIMITS.qualification.max) return `Qualification must be less than ${LIMITS.qualification.max} characters`;
+    return '';
+  },
+  experience: (value) => {
+    const v = String(value ?? '').trim();
+    if (v === '') return 'Experience is required';
+    const n = Number(v);
+    if (Number.isNaN(n)) return 'Experience must be a number';
+    if (!Number.isInteger(n)) return 'Experience must be a whole number';
+    if (n < LIMITS.experience.min) return `Experience must be at least ${LIMITS.experience.min}`;
+    if (n > LIMITS.experience.max) return `Experience must be less than ${LIMITS.experience.max} years`;
+    return '';
+  },
+  skills: (value) => {
+    const v = (value ?? '').trim();
+    if (!v) return 'Skills are required';
+    if (v.length < LIMITS.skills.min) return `Please add at least ${LIMITS.skills.min} characters of skills`;
+    if (v.length > LIMITS.skills.max) return `Skills must be less than ${LIMITS.skills.max} characters`;
+    return '';
+  },
+  description: (value) => {
+    const v = value ?? '';
+    if (v.length > LIMITS.description.max) return `Description must be less than ${LIMITS.description.max} characters`;
+    const BLOCKED = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u202A-\u202E]/;
+    if (BLOCKED.test(v)) return 'Description contains invalid characters';
+    return '';
+  },
+};
+
+function FieldError({ message }) {
+  if (!message) return null;
+  return (
+    <div className="lt-field-error" role="alert">
+      <AlertCircle size={12} />
+      <span>{message}</span>
+    </div>
+  );
+}
 
 const defaultForm = {
   name: '',
@@ -32,26 +113,30 @@ export default function LeadTeamMembers() {
   const { user } = useAuth();
   const { onMenuClick } = useOutletContext();
 
-  // State
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [search, setSearch] = useState('');
   const [members, setMembers] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [users, setUsers] = useState([]);
   const [memberStatsMap, setMemberStatsMap] = useState({});
-  const [showAdd, setShowAdd] = useState(false);
-  const [showEdit, setShowEdit] = useState(false);
-  const [selected, setSelected] = useState(null);
-  const [drawer, setDrawer] = useState(null);
-  const [form, setForm] = useState(defaultForm);
+
+  const [search, setSearch] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [filterRole, setFilterRole] = useState('all');
   const [filterExperience, setFilterExperience] = useState('all');
   const [sortBy, setSortBy] = useState('name');
   const itemsPerPage = 6;
 
-  // Delete/Reassign state
+  const [showAdd, setShowAdd] = useState(false);
+  const [showEdit, setShowEdit] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [drawer, setDrawer] = useState(null);
+
+  const [form, setForm] = useState(defaultForm);
+  const [formTouched, setFormTouched] = useState({});
+  const [formSubmitAttempted, setFormSubmitAttempted] = useState(false);
+  const [savingForm, setSavingForm] = useState(false);
+
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
   const [memberToDelete, setMemberToDelete] = useState(null);
   const [assignedTasks, setAssignedTasks] = useState([]);
@@ -59,21 +144,11 @@ export default function LeadTeamMembers() {
   const [deleteOption, setDeleteOption] = useState('reassign');
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const colors = [
-    '#818cf8', '#34d399', '#f87171', '#f59e0b',
-    '#2dd4bf', '#f97316', '#ec4899', '#a78bfa'
-  ];
+  const colors = ['#818cf8', '#34d399', '#f87171', '#f59e0b', '#2dd4bf', '#f97316', '#ec4899', '#a78bfa'];
 
-  // Fetch data
+  useEffect(() => { fetchData(); }, []);
   useEffect(() => {
-    fetchData();
-  }, []);
-
-  // Fetch stats when members change
-  useEffect(() => {
-    if (members.length > 0) {
-      fetchMemberStats();
-    }
+    if (members.length > 0) fetchMemberStats();
   }, [members]);
 
   const fetchData = async () => {
@@ -89,20 +164,16 @@ export default function LeadTeamMembers() {
       const tasksList = tasksData?.data || tasksData || [];
       const usersList = usersData?.data || usersData || [];
 
-      if (!Array.isArray(membersList)) {
-        membersList = [];
-      }
+      if (!Array.isArray(membersList)) membersList = [];
 
-      // Filter out deleted members (is_deleted === 1)
       const activeMembers = membersList.filter(m => m.is_deleted !== 1);
 
       setMembers(activeMembers);
       setTasks(tasksList);
       setUsers(usersList);
-      
-      console.log('📊 Tasks loaded:', tasksList.length);
-      console.log('📊 Active Members loaded:', activeMembers.length);
 
+      console.log('📊 [Lead] Tasks loaded:', tasksList.length);
+      console.log('📊 [Lead] Active Members loaded:', activeMembers.length);
     } catch (error) {
       console.error('Error fetching data:', error);
       toast.error('Failed to load team members');
@@ -115,7 +186,6 @@ export default function LeadTeamMembers() {
     }
   };
 
-  // Fetch stats for all members from backend
   const fetchMemberStats = async () => {
     try {
       const statsMap = {};
@@ -130,7 +200,6 @@ export default function LeadTeamMembers() {
         }
       }
       setMemberStatsMap(statsMap);
-      console.log('📊 Member stats loaded:', Object.keys(statsMap).length);
     } catch (error) {
       console.error('Error fetching member stats:', error);
     }
@@ -142,21 +211,18 @@ export default function LeadTeamMembers() {
     toast.success('Team members refreshed');
   };
 
-  // Remove member from all projects by deleting PTeam entries
   const removeMemberFromAllProjects = async (memberId) => {
     try {
       const pteamData = await projectTeamService.getProjectTeams();
       const pteamList = pteamData?.data || pteamData || [];
-      
+
       const memberEntries = pteamList.filter(entry => Number(entry.tm) === Number(memberId));
-      
+
       for (const entry of memberEntries) {
         if (entry.pt_id) {
           await projectTeamService.removeMemberFromProject(entry.pt_id);
-          console.log(`✅ Removed PTeam entry ${entry.pt_id} for member ${memberId}`);
         }
       }
-      
       return memberEntries.length;
     } catch (error) {
       console.error('Error removing member from projects:', error);
@@ -164,25 +230,21 @@ export default function LeadTeamMembers() {
     }
   };
 
-  // Get member stats from cached map or compute fallback
   const getMemberStats = (memberId) => {
     const cachedStats = memberStatsMap[memberId];
-    if (cachedStats && Object.keys(cachedStats).length > 0) {
-      return cachedStats;
-    }
-    
-    // Fallback: compute from tasks
+    if (cachedStats && Object.keys(cachedStats).length > 0) return cachedStats;
+
     const numericMemberId = Number(memberId);
     const memberTasks = tasks.filter(t => {
       const assignTo = t.assign_to || t.assignedTo;
       return Number(assignTo) === numericMemberId;
     });
-    
+
     const totalTasks = memberTasks.length;
     const completedTasks = memberTasks.filter(t => t.status === 'done' || t.status === 'completed').length;
     const inProgressTasks = memberTasks.filter(t => t.status === 'in_progress' || t.status === 'in-progress' || t.status === 'review').length;
     const todoTasks = memberTasks.filter(t => t.status === 'todo' || t.status === 'pending').length;
-    
+
     return {
       totalTasks,
       completedTasks,
@@ -195,13 +257,184 @@ export default function LeadTeamMembers() {
     };
   };
 
-  // Get tasks assigned to a member
   const getTasksForMember = (memberId) => {
     const stats = getMemberStats(memberId);
     return stats.tasks || [];
   };
 
-  // Handle delete with reassign
+  const getMemberName = (memberId) => {
+    const member = members.find(m => Number(m.id) === Number(memberId));
+    return member ? member.name : 'Unknown';
+  };
+
+  const getUserById = (id) => users.find(u => (u.id || u.u_id) === id);
+
+  const getInitials = (name) => {
+    if (!name) return '?';
+    return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+  };
+
+  /* ─────────── Form validation ─────────── */
+  const formErrors = useMemo(() => ({
+    name: validators.name(form.name),
+    role: validators.role(form.role),
+    email: validators.email(form.email),
+    qualification: validators.qualification(form.qualification),
+    experience: validators.experience(form.experience),
+    skills: validators.skills(form.skills),
+    description: validators.description(form.description),
+  }), [form]);
+
+  const isFormValid = Object.values(formErrors).every(e => e === '');
+
+  const markFormTouched = (field) => setFormTouched(prev => ({ ...prev, [field]: true }));
+  const showFormError = (field) => {
+    if (formSubmitAttempted) return formErrors[field];
+    return formTouched[field] ? formErrors[field] : '';
+  };
+
+  const resetFormState = () => {
+    setForm(defaultForm);
+    setFormTouched({});
+    setFormSubmitAttempted(false);
+  };
+
+  /* ─────────── Add member (simple: only TeamMember) ─────────── */
+  const handleAdd = async () => {
+    setFormSubmitAttempted(true);
+
+    if (!isFormValid) {
+      toast.error('Please fix the highlighted errors before saving');
+      return;
+    }
+
+    try {
+      setSavingForm(true);
+
+      const { name, role, email, qualification, experience, skills, description } = form;
+
+      const response = await teamService.addTeamMember({
+        name: name.trim(),
+        role: role.trim(),
+        email: email.trim().toLowerCase(),
+        qualification: qualification.trim(),
+        experience: parseInt(experience) || 0,
+        skills: skills.trim(),
+        description: description.trim(),
+        added_by: user?.id || user?.u_id || 1,
+      });
+
+      const newMember = response?.data || response;
+
+      if (newMember && newMember.id) {
+        setMembers(prev => [newMember, ...prev]);
+        setShowAdd(false);
+        resetFormState();
+        toast.success(`Team member "${name.trim()}" added successfully`);
+        await fetchMemberStats();
+      } else {
+        toast.error('Failed to add team member');
+      }
+    } catch (error) {
+      console.error('Error adding member:', error);
+      const rawMsg = error?.response?.data?.message ||
+                     error?.response?.data?.detail ||
+                     error?.message;
+      const errorMsg = typeof rawMsg === 'string' ? rawMsg : 'Failed to add team member';
+      toast.error(errorMsg);
+    } finally {
+      setSavingForm(false);
+    }
+  };
+
+  /* ─────────── Edit member ─────────── */
+  const openEdit = (member) => {
+    setSelected(member);
+    setForm({
+      name: member.name || '',
+      role: member.role || '',
+      email: member.email || '',
+      qualification: member.qualitifcation || member.qualification || '',
+      experience: member.experience ?? '',
+      skills: member.skills || '',
+      description: member.desc || member.description || ''
+    });
+    setFormTouched({});
+    setFormSubmitAttempted(false);
+    setShowEdit(true);
+  };
+
+  const handleUpdate = async () => {
+    setFormSubmitAttempted(true);
+
+    if (!isFormValid) {
+      toast.error('Please fix the highlighted errors before saving');
+      return;
+    }
+
+    try {
+      setSavingForm(true);
+
+      const { name, role, email, qualification, experience, skills, description } = form;
+
+      const response = await teamService.updateTeamMember(selected.id, {
+        name: name.trim(),
+        role: role.trim(),
+        email: email.trim(),
+        qualification: qualification.trim(),
+        experience: parseInt(experience) || 0,
+        skills: skills.trim(),
+        description: description.trim()
+      });
+
+      const updatedMember = response?.data || response;
+
+      setMembers(members.map(m => (m.id) === (selected.id) ? updatedMember : m));
+      setShowEdit(false);
+      setSelected(null);
+      resetFormState();
+      toast.success('Member updated successfully');
+      await fetchMemberStats();
+    } catch (error) {
+      console.error('Error updating member:', error);
+      const rawMsg = error?.response?.data?.message ||
+                     error?.response?.data?.detail ||
+                     error?.message;
+      const errorMsg = typeof rawMsg === 'string' ? rawMsg : 'Failed to update member';
+      toast.error(errorMsg);
+    } finally {
+      setSavingForm(false);
+    }
+  };
+
+  const handleFormChange = (e) => {
+    const { name, value } = e.target;
+    setForm(prev => ({ ...prev, [name]: value }));
+  };
+
+  const handleFormBlur = (field) => markFormTouched(field);
+
+  const closeAddModal = () => {
+    setShowAdd(false);
+    resetFormState();
+  };
+
+  const closeEditModal = () => {
+    setShowEdit(false);
+    setSelected(null);
+    resetFormState();
+  };
+
+  /* ─────────── Delete ─────────── */
+  const handleDeleteClick = (member) => {
+    const memberTasks = getTasksForMember(member.id);
+    setMemberToDelete(member);
+    setAssignedTasks(memberTasks);
+    setReassignTarget('');
+    setDeleteOption('reassign');
+    setShowDeleteConfirm(true);
+  };
+
   const handleDeleteWithReassign = async () => {
     if (!memberToDelete) return;
 
@@ -234,44 +467,85 @@ export default function LeadTeamMembers() {
         toast.success(`Unassigned ${assignedTasks.length} tasks (parked)`);
       }
 
-      // Remove member from all projects first
       await removeMemberFromAllProjects(memberToDelete.id);
-
-      // Then delete the member
       await teamService.deleteTeamMember(memberToDelete.id);
-      
-      // Remove from local state
+
       setMembers(prev => prev.filter(m => (m.id) !== memberToDelete.id));
-      
-      // Remove from stats map
       setMemberStatsMap(prev => {
         const newMap = { ...prev };
         delete newMap[memberToDelete.id];
         return newMap;
       });
-      
-      // Refresh data
+
       await fetchData();
-      
       setShowDeleteConfirm(null);
+      const deletedName = memberToDelete.name;
       setMemberToDelete(null);
       setAssignedTasks([]);
       setReassignTarget('');
-      toast.success(`Member "${memberToDelete.name}" removed successfully`);
+      toast.success(`Member "${deletedName}" removed successfully`);
     } catch (error) {
       console.error('Error during deletion/reassignment:', error);
-      toast.error(error?.message || 'Failed to process member deletion');
+      const rawMsg = error?.response?.data?.message ||
+                     error?.response?.data?.detail ||
+                     error?.message;
+      const errorMsg = typeof rawMsg === 'string' ? rawMsg : 'Failed to process member deletion';
+      toast.error(errorMsg);
     } finally {
       setIsDeleting(false);
     }
   };
 
-  const getMemberName = (memberId) => {
-    const member = members.find(m => Number(m.id) === Number(memberId));
-    return member ? member.name : 'Unknown';
+  const handleDelete = async () => {
+    if (assignedTasks.length === 0) {
+      try {
+        setIsDeleting(true);
+        await removeMemberFromAllProjects(memberToDelete.id);
+        await teamService.deleteTeamMember(memberToDelete.id);
+
+        setMembers(prev => prev.filter(m => (m.id) !== memberToDelete.id));
+        setMemberStatsMap(prev => {
+          const newMap = { ...prev };
+          delete newMap[memberToDelete.id];
+          return newMap;
+        });
+
+        await fetchData();
+        setShowDeleteConfirm(null);
+        const deletedName = memberToDelete.name;
+        setMemberToDelete(null);
+        toast.success(`Member "${deletedName}" removed successfully`);
+      } catch (error) {
+        console.error('Error deleting member:', error);
+        const rawMsg = error?.response?.data?.message ||
+                       error?.response?.data?.detail ||
+                       error?.message;
+        const errorMsg = typeof rawMsg === 'string' ? rawMsg : 'Failed to delete member';
+        toast.error(errorMsg);
+      } finally {
+        setIsDeleting(false);
+      }
+    } else {
+      handleDeleteWithReassign();
+    }
   };
 
-  // Filter members
+  /* ─────────── Escape to close ─────────── */
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      if (isDeleting) return;
+      if (showDeleteConfirm) { setShowDeleteConfirm(null); return; }
+      if (showEdit) { closeEditModal(); return; }
+      if (showAdd) { closeAddModal(); return; }
+      if (drawer) { setDrawer(null); return; }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showDeleteConfirm, showEdit, showAdd, drawer, isDeleting]);
+
+  /* ─────────── Filtering / sorting ─────────── */
   const filtered = members.filter(m => {
     const skills = m.skills || '';
     const name = m.name || '';
@@ -283,7 +557,7 @@ export default function LeadTeamMembers() {
       skills.toLowerCase().includes(search.toLowerCase());
 
     const roleMatch = filterRole === 'all' || role.toLowerCase() === filterRole.toLowerCase();
-    
+
     let expMatch = true;
     if (filterExperience === '0-1') expMatch = experience >= 0 && experience <= 1;
     else if (filterExperience === '2-4') expMatch = experience >= 2 && experience <= 4;
@@ -292,7 +566,6 @@ export default function LeadTeamMembers() {
     return searchMatch && roleMatch && expMatch;
   });
 
-  // Sort members
   const sortedMembers = [...filtered].sort((a, b) => {
     if (sortBy === 'name') return a.name?.localeCompare(b.name || '') || 0;
     if (sortBy === 'role') return a.role?.localeCompare(b.role || '') || 0;
@@ -311,222 +584,18 @@ export default function LeadTeamMembers() {
     currentPage * itemsPerPage
   );
 
-  // ─── CRUD Operations ───
-  
-  const handleAdd = async () => {
-  const { name, role, email, qualification, experience, skills, description } = form;
-  
-  // Validation
-  if (!name.trim()) return toast.error('Name is required');
-  if (!role.trim()) return toast.error('Role is required');
-  if (!email.trim()) return toast.error('Email is required');
-  if (!qualification.trim()) return toast.error('Qualification is required');
-  if (!experience.toString().trim()) return toast.error('Experience is required');
-  if (!skills.trim()) return toast.error('Skills are required');
-
-  try {
-    // Check if user already exists
-    const usersResponse = await userService.getUsers();
-    const existingUsers = usersResponse?.data || usersResponse || [];
-    const existingUser = existingUsers.find(u => 
-      u.email?.toLowerCase() === email.trim().toLowerCase()
-    );
-
-    if (existingUser) {
-      // User exists → Just add team member
-      const response = await teamService.addTeamMember({
-        name: name.trim(),
-        role: role.trim(),
-        email: email.trim(),
-        qualification: qualification.trim(),
-        experience: parseInt(experience) || 0,
-        skills: skills.trim(),
-        description: description.trim(),
-        added_by: user?.id || user?.u_id || 1
-      });
-
-      const newMember = response?.data || response;
-      if (newMember && newMember.id) {
-        setMembers(prev => [newMember, ...prev]);
-        setShowAdd(false);
-        setForm(defaultForm);
-        toast.success(`Team member "${name}" added to existing user!`);
-        await fetchMemberStats();
-      }
-    } else {
-      // User doesn't exist → Create both
-      
-      // Generate temporary password
-      const tempPassword = generateSecurePassword();
-      
-      // Create user + team member
-      const result = await teamService.createUserAndTeamMember(
-        {
-          u_name: name.trim(),
-          email: email.trim(),
-          password: tempPassword,
-          role: role.trim(),
-        },
-        {
-          name: name.trim(),
-          description: description.trim(),
-          skills: skills.trim(),
-          role: role.trim(),
-          qualification: qualification.trim(),
-          experience: parseInt(experience) || 0,
-        }
-      );
-
-      if (result.success) {
-        setMembers(prev => [result.teamMember, ...prev]);
-        setShowAdd(false);
-        setForm(defaultForm);
-        
-        toast.success(`✅ User "${name}" created with team member profile!`);
-        
-        // Show temporary password (in production, send via email)
-        toast.info(`📧 Temporary password: ${tempPassword} (please share with user)`);
-        
-        await fetchMemberStats();
-      }
-    }
-  } catch (error) {
-    console.error('Error adding member:', error);
-    toast.error(error?.message || 'Failed to add team member');
-  }
-};
-
-// Helper function
-const generateSecurePassword = () => {
-  const length = 14;
-  const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
-  let password = '';
-  for (let i = 0; i < length; i++) {
-    password += charset.charAt(Math.floor(Math.random() * charset.length));
-  }
-  return password;
-};
-
-  // Updated delete function - shows modal with task reassign options
-  const handleDeleteClick = (member) => {
-    const memberTasks = getTasksForMember(member.id);
-    setMemberToDelete(member);
-    setAssignedTasks(memberTasks);
-    setReassignTarget('');
-    setDeleteOption(memberTasks.length > 0 ? 'reassign' : 'reassign');
-    setShowDeleteConfirm(true);
-  };
-
-  // ✅ FIXED: handleDelete without NotificationHelper
-  const handleDelete = async () => {
-    if (assignedTasks.length === 0) {
-      try {
-        // Remove member from all projects first
-        await removeMemberFromAllProjects(memberToDelete.id);
-        
-        // Then delete the member
-        await teamService.deleteTeamMember(memberToDelete.id);
-        setMembers(prev => prev.filter(m => (m.id) !== memberToDelete.id));
-        
-        // Remove from stats map
-        setMemberStatsMap(prev => {
-          const newMap = { ...prev };
-          delete newMap[memberToDelete.id];
-          return newMap;
-        });
-        
-        // Refresh data
-        await fetchData();
-        
-        setShowDeleteConfirm(null);
-        setMemberToDelete(null);
-        toast.success(`Member "${memberToDelete.name}" removed successfully`);
-      } catch (error) {
-        console.error('Error deleting member:', error);
-        toast.error(error?.message || 'Failed to delete member');
-      }
-    } else {
-      handleDeleteWithReassign();
-    }
-  };
-
-  const openEdit = (member) => {
-    setSelected(member);
-    setForm({
-      name: member.name || '',
-      role: member.role || '',
-      email: member.email || '',
-      qualification: member.qualitifcation || member.qualification || '',
-      experience: member.experience || '',
-      skills: member.skills || '',
-      description: member.desc || member.description || ''
-    });
-    setShowEdit(true);
-  };
-
-  const handleUpdate = async () => {
-    const { name, role, email, qualification, experience, skills, description } = form;
-    if (!name.trim()) return toast.error('Name is required');
-    if (!role.trim()) return toast.error('Role is required');
-
-    try {
-      const response = await teamService.updateTeamMember(selected.id, {
-        name: name.trim(),
-        role: role.trim(),
-        email: email.trim(),
-        qualification: qualification.trim(),
-        experience: parseInt(experience) || 0,
-        skills: skills.trim(),
-        description: description.trim()
-      });
-
-      const updatedMember = response?.data || response;
-
-      setMembers(members.map(m => 
-        (m.id) === (selected.id) ? updatedMember : m
-      ));
-      setShowEdit(false);
-      setSelected(null);
-      setForm(defaultForm);
-      toast.success('Member updated successfully');
-      
-      // Refresh stats for updated member
-      await fetchMemberStats();
-    } catch (error) {
-      console.error('Error updating member:', error);
-      toast.error(error?.message || 'Failed to update member');
-    }
-  };
-
-  const handleFormChange = (e) => {
-    const { name, value } = e.target;
-    setForm(prev => ({ ...prev, [name]: value }));
-  };
-
-  const closeAddModal = () => { setShowAdd(false); setForm(defaultForm); };
-  const closeEditModal = () => { setShowEdit(false); setSelected(null); setForm(defaultForm); };
-
-  const getUserById = (id) => {
-    return users.find(u => (u.id || u.u_id) === id);
-  };
-
-  const getInitials = (name) => {
-    if (!name) return '?';
-    return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
-  };
-
   if (loading) {
     return (
       <div>
         <Topbar title="Team Members" onMenuClick={onMenuClick} />
         <div className="page-container">
           <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '400px' }}>
-            <div style={{ 
-              width: 40, height: 40, 
-              border: '3px solid var(--border-subtle)', 
-              borderTopColor: 'var(--accent-primary)', 
-              borderRadius: '50%', 
-              animation: 'spin 0.8s linear infinite' 
+            <div style={{
+              width: 40, height: 40,
+              border: '3px solid var(--border-subtle)',
+              borderTopColor: 'var(--accent-primary)',
+              borderRadius: '50%',
+              animation: 'spin 0.8s linear infinite'
             }} />
           </div>
         </div>
@@ -540,8 +609,8 @@ const generateSecurePassword = () => {
         title="Team Members"
         onMenuClick={onMenuClick}
         actions={
-          <button 
-            className="btn btn-secondary btn-sm refresh-btn" 
+          <button
+            className="btn btn-secondary btn-sm refresh-btn"
             onClick={handleRefresh}
             disabled={refreshing}
           >
@@ -552,19 +621,14 @@ const generateSecurePassword = () => {
       />
 
       <div className="page-container">
-        {/* Header Actions */}
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
-          <button
-            className="btn btn-primary btn-sm"
-            onClick={() => setShowAdd(true)}
-          >
+          <button className="btn btn-primary btn-sm" onClick={() => setShowAdd(true)}>
             <UserPlus size={14} /> Add Member
           </button>
         </div>
 
-        {/* ─── IMPROVED FILTERS ─── */}
+        {/* Filters */}
         <div className="lt-filters-container">
-          {/* Search Bar */}
           <div className="lt-search-wrapper">
             <Search size={16} className="lt-search-icon" />
             <input
@@ -580,18 +644,10 @@ const generateSecurePassword = () => {
             )}
           </div>
 
-          {/* Filter Controls */}
           <div className="lt-filter-controls">
             <div className="lt-filter-group">
-              <div className="lt-filter-label">
-                <Briefcase size={12} />
-                <span>Role</span>
-              </div>
-              <select 
-                className="lt-filter-select" 
-                value={filterRole} 
-                onChange={e => setFilterRole(e.target.value)}
-              >
+              <div className="lt-filter-label"><Briefcase size={12} /><span>Role</span></div>
+              <select className="lt-filter-select" value={filterRole} onChange={e => setFilterRole(e.target.value)}>
                 <option value="all">All Roles</option>
                 <option value="frontend">🎨 Frontend</option>
                 <option value="backend">⚙️ Backend</option>
@@ -604,15 +660,8 @@ const generateSecurePassword = () => {
             </div>
 
             <div className="lt-filter-group">
-              <div className="lt-filter-label">
-                <Award size={12} />
-                <span>Experience</span>
-              </div>
-              <select 
-                className="lt-filter-select" 
-                value={filterExperience} 
-                onChange={e => setFilterExperience(e.target.value)}
-              >
+              <div className="lt-filter-label"><Award size={12} /><span>Experience</span></div>
+              <select className="lt-filter-select" value={filterExperience} onChange={e => setFilterExperience(e.target.value)}>
                 <option value="all">All Experience</option>
                 <option value="0-1">🌱 0-1 yrs</option>
                 <option value="2-4">🌿 2-4 yrs</option>
@@ -621,15 +670,8 @@ const generateSecurePassword = () => {
             </div>
 
             <div className="lt-filter-group">
-              <div className="lt-filter-label">
-                <TrendingUp size={12} />
-                <span>Sort</span>
-              </div>
-              <select 
-                className="lt-filter-select" 
-                value={sortBy} 
-                onChange={e => setSortBy(e.target.value)}
-              >
+              <div className="lt-filter-label"><TrendingUp size={12} /><span>Sort</span></div>
+              <select className="lt-filter-select" value={sortBy} onChange={e => setSortBy(e.target.value)}>
                 <option value="name">By Name</option>
                 <option value="role">By Role</option>
                 <option value="experience">By Experience</option>
@@ -637,36 +679,30 @@ const generateSecurePassword = () => {
               </select>
             </div>
 
-            {/* Active Filters Display */}
             {(filterRole !== 'all' || filterExperience !== 'all') && (
               <div className="lt-active-filters">
                 {filterRole !== 'all' && (
                   <span className="lt-filter-chip">
                     {filterRole}
-                    <button onClick={() => setFilterRole('all')}>
-                      <X size={12} />
-                    </button>
+                    <button onClick={() => setFilterRole('all')}><X size={12} /></button>
                   </span>
                 )}
                 {filterExperience !== 'all' && (
                   <span className="lt-filter-chip">
                     {filterExperience} yrs
-                    <button onClick={() => setFilterExperience('all')}>
-                      <X size={12} />
-                    </button>
+                    <button onClick={() => setFilterExperience('all')}><X size={12} /></button>
                   </span>
                 )}
               </div>
             )}
           </div>
 
-          {/* Results Count */}
           <div className="lt-results-count">
             <span>{sortedMembers.length} member{sortedMembers.length !== 1 ? 's' : ''}</span>
             <span className="lt-results-dot">•</span>
             <span className="lt-results-total">{members.length} total</span>
             {sortedMembers.length !== members.length && (
-              <button 
+              <button
                 className="lt-clear-filters-btn"
                 onClick={() => {
                   setSearch('');
@@ -681,7 +717,7 @@ const generateSecurePassword = () => {
           </div>
         </div>
 
-        {/* ─── MEMBERS GRID ─── */}
+        {/* Members Grid */}
         <div className="members-grid">
           {paginatedMembers.length === 0 ? (
             <div className="members-empty">
@@ -694,7 +730,6 @@ const generateSecurePassword = () => {
               const memberId = member.id;
               const stats = getMemberStats(memberId);
               const color = member.avatar_color || colors[i % colors.length];
-              const addedBy = getUserById(member.added_by);
               const skills = member.skills || '';
               const onTimeRate = stats?.onTimeRate || 0;
               const initials = getInitials(member.name);
@@ -714,14 +749,14 @@ const generateSecurePassword = () => {
                   onClick={() => setDrawer(member)}
                 >
                   <div className="member-card-actions">
-                    <button 
+                    <button
                       className="member-action-btn"
                       onClick={(e) => { e.stopPropagation(); openEdit(member); }}
                       title="Edit"
                     >
                       <Pencil size={13} />
                     </button>
-                    <button 
+                    <button
                       className="member-action-btn danger"
                       onClick={(e) => { e.stopPropagation(); handleDeleteClick(member); }}
                       title="Delete"
@@ -731,7 +766,7 @@ const generateSecurePassword = () => {
                   </div>
 
                   <div className="member-avatar-wrapper">
-                    <div 
+                    <div
                       className="member-avatar"
                       style={{ background: `${color}22`, borderColor: `${color}40`, color }}
                     >
@@ -741,7 +776,7 @@ const generateSecurePassword = () => {
                   </div>
 
                   <div className="member-info">
-                    <h3 className="member-name">{member.name}</h3>
+                    <h3 className="member-name" title={member.name}>{member.name}</h3>
                     <span className="member-role">{member.role}</span>
                   </div>
 
@@ -780,7 +815,7 @@ const generateSecurePassword = () => {
                         <p className="member-on-time-label">On-time</p>
                       </div>
                     </div>
-                    <span className="member-completion" style={{ 
+                    <span className="member-completion" style={{
                       color: completionRate >= 70 ? '#34d399' : completionRate >= 40 ? '#f59e0b' : '#f87171'
                     }}>
                       {completionRate}% completion
@@ -792,7 +827,7 @@ const generateSecurePassword = () => {
           )}
         </div>
 
-        {/* ─── PAGINATION ─── */}
+        {/* Pagination */}
         {totalPages > 1 && (
           <div className="pagination">
             <button
@@ -822,7 +857,7 @@ const generateSecurePassword = () => {
         )}
       </div>
 
-      {/* ─── MEMBER DETAIL DRAWER ─── */}
+      {/* ─── MEMBER DETAIL MODAL ─── */}
       <AnimatePresence>
         {drawer && (() => {
           const memberId = drawer.id;
@@ -882,7 +917,6 @@ const generateSecurePassword = () => {
                 transition={{ type: "spring", damping: 25, stiffness: 300 }}
                 onClick={(e) => e.stopPropagation()}
               >
-                {/* HEADER */}
                 <div className="mm-header">
                   <div className="mm-header-left">
                     <div className="mm-avatar" style={{ background: `${color}22`, border: `2px solid ${color}55`, color }}>
@@ -902,24 +936,15 @@ const generateSecurePassword = () => {
                   </button>
                 </div>
 
-                {/* BODY */}
                 <div className="mm-body">
-                  {/* Description */}
                   {(drawer.desc || drawer.description) ? (
-                    <div className="mm-description">
-                      {drawer.desc || drawer.description}
-                    </div>
+                    <div className="mm-description">{drawer.desc || drawer.description}</div>
                   ) : (
                     <div className="mm-description muted">
-                      {drawer.role === 'Frontend Developer' ? "Frontend specialist focused on building responsive and interactive UI components with React and modern design systems." :
-                       drawer.role === 'Backend Developer' ? "Backend engineer responsible for API development, database optimization, and server-side logic implementation." :
-                       drawer.role === 'UI Engineer' ? "UI-focused developer ensuring clean, user-friendly, and visually consistent interfaces across the application." :
-                       drawer.role === 'Full Stack Developer' ? "Full-stack developer experienced in both frontend and backend development, building scalable web applications." :
-                       "A skilled software developer contributing to system design, development, and maintenance across multiple modules."}
+                      A skilled team member contributing to the project.
                     </div>
                   )}
 
-                  {/* Email */}
                   {drawer.email && (
                     <div className="mm-email">
                       <Mail size={14} />
@@ -927,7 +952,6 @@ const generateSecurePassword = () => {
                     </div>
                   )}
 
-                  {/* STATS ROW */}
                   <div className="mm-stats-row">
                     <div className="mm-stat-item">
                       <span className="mm-stat-value">{totalTasks}</span>
@@ -947,16 +971,11 @@ const generateSecurePassword = () => {
                     </div>
                   </div>
 
-                  {/* SKILLS */}
                   <div className="mm-section">
-                    <h4 className="mm-section-title">
-                      <Award size={14} /> Skills
-                    </h4>
+                    <h4 className="mm-section-title"><Award size={14} /> Skills</h4>
                     <div className="mm-skills">
                       {(drawer.skills || '').split(',').filter(s => s.trim()).map((s, i) => (
-                        <span key={`skill-${i}`} className="mm-skill-tag">
-                          {s.trim()}
-                        </span>
+                        <span key={`skill-${i}`} className="mm-skill-tag">{s.trim()}</span>
                       ))}
                       {(!drawer.skills || drawer.skills.split(',').filter(s => s.trim()).length === 0) && (
                         <span className="mm-no-data">No skills listed</span>
@@ -964,11 +983,8 @@ const generateSecurePassword = () => {
                     </div>
                   </div>
 
-                  {/* CURRENT PROJECTS */}
                   <div className="mm-section">
-                    <h4 className="mm-section-title">
-                      <Briefcase size={14} /> Current Projects
-                    </h4>
+                    <h4 className="mm-section-title"><Briefcase size={14} /> Current Projects</h4>
                     <div className="mm-project-list">
                       {currentProjects.length === 0 ? (
                         <div className="mm-no-data">No active projects</div>
@@ -989,11 +1005,8 @@ const generateSecurePassword = () => {
                     </div>
                   </div>
 
-                  {/* COMPLETED PROJECTS */}
                   <div className="mm-section">
-                    <h4 className="mm-section-title">
-                      <CheckCircle2 size={14} /> Completed Projects
-                    </h4>
+                    <h4 className="mm-section-title"><CheckCircle2 size={14} /> Completed Projects</h4>
                     <div className="mm-project-list">
                       {completedProjects.length === 0 ? (
                         <div className="mm-no-data">No completed projects</div>
@@ -1011,11 +1024,8 @@ const generateSecurePassword = () => {
                     </div>
                   </div>
 
-                  {/* WORK TIMELINE */}
                   <div className="mm-section">
-                    <h4 className="mm-section-title">
-                      <Clock size={14} /> Work Timeline
-                    </h4>
+                    <h4 className="mm-section-title"><Clock size={14} /> Work Timeline</h4>
                     <div className="mm-timeline">
                       {workHistory.map((item, i) => (
                         <div key={`tl-${i}`} className="mm-timeline-item">
@@ -1033,18 +1043,9 @@ const generateSecurePassword = () => {
                   </div>
                 </div>
 
-                {/* FOOTER */}
                 <div className="mm-footer">
-                  <button 
-                    className="mm-footer-btn secondary"
-                    onClick={() => setDrawer(null)}
-                  >
-                    Close
-                  </button>
-                  <button 
-                    className="mm-footer-btn primary"
-                    onClick={() => { openEdit(drawer); setDrawer(null); }}
-                  >
+                  <button className="mm-footer-btn secondary" onClick={() => setDrawer(null)}>Close</button>
+                  <button className="mm-footer-btn primary" onClick={() => { openEdit(drawer); setDrawer(null); }}>
                     <Pencil size={14} /> Edit Member
                   </button>
                 </div>
@@ -1054,7 +1055,7 @@ const generateSecurePassword = () => {
         })()}
       </AnimatePresence>
 
-      {/* ─── DELETE CONFIRM WITH REASSIGN MODAL ─── */}
+      {/* ─── DELETE CONFIRM ─── */}
       <AnimatePresence>
         {showDeleteConfirm && memberToDelete && (
           <motion.div
@@ -1084,8 +1085,8 @@ const generateSecurePassword = () => {
                     </p>
                   </div>
                 </div>
-                <button 
-                  className="mm-close-btn" 
+                <button
+                  className="mm-close-btn"
                   onClick={() => !isDeleting && setShowDeleteConfirm(null)}
                   disabled={isDeleting}
                 >
@@ -1094,7 +1095,6 @@ const generateSecurePassword = () => {
               </div>
 
               <div className="mm-body">
-                {/* Assigned Tasks Warning */}
                 {assignedTasks.length > 0 ? (
                   <>
                     <div className="delete-warning">
@@ -1105,7 +1105,6 @@ const generateSecurePassword = () => {
                       </span>
                     </div>
 
-                    {/* Task List */}
                     <div className="assigned-tasks-list">
                       <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8 }}>
                         Assigned Tasks:
@@ -1115,8 +1114,8 @@ const generateSecurePassword = () => {
                           <span className="task-dot" />
                           <span className="task-title">{task.title}</span>
                           <span className="task-status-badge" style={{
-                            background: task.status === 'done' || task.status === 'completed' 
-                              ? 'rgba(52, 211, 153, 0.15)' 
+                            background: task.status === 'done' || task.status === 'completed'
+                              ? 'rgba(52, 211, 153, 0.15)'
                               : 'rgba(245, 158, 11, 0.15)',
                             color: task.status === 'done' || task.status === 'completed' ? '#34d399' : '#f59e0b'
                           }}>
@@ -1131,7 +1130,6 @@ const generateSecurePassword = () => {
                       )}
                     </div>
 
-                    {/* Options */}
                     <div className="delete-options">
                       <div className="delete-option">
                         <label className="radio-label">
@@ -1218,188 +1216,262 @@ const generateSecurePassword = () => {
         )}
       </AnimatePresence>
 
-      {/* ─── ADD MODAL ─── */}
+      {/* ADD MODAL */}
       <Modal isOpen={showAdd} onClose={closeAddModal} title="Add New Team Member">
         <form onSubmit={(e) => { e.preventDefault(); handleAdd(); }}>
-          <input 
-            name="name" 
-            placeholder="Full Name *" 
-            value={form.name} 
-            onChange={handleFormChange} 
-            className="input" 
-            style={{ marginBottom: 12 }} 
-            required
-          />
-          <textarea
-            name="description"
-            placeholder="Short Description"
-            value={form.description}
-            onChange={handleFormChange}
-            className="input"
-            style={{ marginBottom: 12, minHeight: 80 }}
-          />
-          <input 
-            name="role" 
-            placeholder="Role *" 
-            value={form.role} 
-            onChange={handleFormChange} 
-            className="input" 
-            style={{ marginBottom: 12 }} 
-            required
-          />
-          <input 
-            name="email" 
-            type="email" 
-            placeholder="Email Address *" 
-            value={form.email} 
-            onChange={handleFormChange} 
-            className="input" 
-            style={{ marginBottom: 12 }} 
-            required
-          />
-          <input 
-            name="qualification" 
-            placeholder="Qualification *" 
-            value={form.qualification} 
-            onChange={handleFormChange} 
-            className="input" 
-            style={{ marginBottom: 12 }} 
-            required
-          />
-          <input 
-            name="experience" 
-            type="number" 
-            placeholder="Years of Experience *" 
-            value={form.experience} 
-            onChange={handleFormChange} 
-            className="input" 
-            style={{ marginBottom: 12 }} 
-            required
-          />
-          <input 
-            name="skills" 
-            placeholder="Skills (comma separated) *" 
-            value={form.skills} 
-            onChange={handleFormChange} 
-            className="input" 
-            style={{ marginBottom: 20 }} 
-            required
-          />
-          <div style={{ display: 'flex', gap: 10 }}>        
-            <button type="button" className="btn btn-secondary flex-1" onClick={closeAddModal}>Cancel</button>
-            <button type="submit" className="btn btn-primary flex-1">Add Member</button>
+          <div style={{ marginBottom: 12 }}>
+            <label className="lt-form-label">Full Name <span className="lt-required">*</span></label>
+            <input
+              name="name"
+              className={`input ${showFormError('name') ? 'lt-input-error' : ''}`}
+              placeholder="John Doe"
+              value={form.name}
+              onChange={handleFormChange}
+              onBlur={() => handleFormBlur('name')}
+              maxLength={LIMITS.name.max}
+            />
+            <FieldError message={showFormError('name')} />
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <label className="lt-form-label">Role <span className="lt-required">*</span></label>
+            <input
+              name="role"
+              className={`input ${showFormError('role') ? 'lt-input-error' : ''}`}
+              placeholder="Frontend Developer"
+              value={form.role}
+              onChange={handleFormChange}
+              onBlur={() => handleFormBlur('role')}
+              maxLength={LIMITS.role.max}
+            />
+            <FieldError message={showFormError('role')} />
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <label className="lt-form-label">Email Address <span className="lt-required">*</span></label>
+            <input
+              name="email"
+              type="email"
+              className={`input ${showFormError('email') ? 'lt-input-error' : ''}`}
+              placeholder="john@example.com"
+              value={form.email}
+              onChange={handleFormChange}
+              onBlur={() => handleFormBlur('email')}
+              maxLength={LIMITS.email.max}
+            />
+            <FieldError message={showFormError('email')} />
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <label className="lt-form-label">Qualification <span className="lt-required">*</span></label>
+            <input
+              name="qualification"
+              className={`input ${showFormError('qualification') ? 'lt-input-error' : ''}`}
+              placeholder="BS Computer Science"
+              value={form.qualification}
+              onChange={handleFormChange}
+              onBlur={() => handleFormBlur('qualification')}
+              maxLength={LIMITS.qualification.max}
+            />
+            <FieldError message={showFormError('qualification')} />
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <label className="lt-form-label">Years of Experience <span className="lt-required">*</span></label>
+            <input
+              name="experience"
+              type="number"
+              min={LIMITS.experience.min}
+              max={LIMITS.experience.max}
+              className={`input ${showFormError('experience') ? 'lt-input-error' : ''}`}
+              placeholder="3"
+              value={form.experience}
+              onChange={handleFormChange}
+              onBlur={() => handleFormBlur('experience')}
+            />
+            <FieldError message={showFormError('experience')} />
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <label className="lt-form-label">Skills <span className="lt-required">*</span></label>
+            <input
+              name="skills"
+              className={`input ${showFormError('skills') ? 'lt-input-error' : ''}`}
+              placeholder="React, Node.js, MongoDB"
+              value={form.skills}
+              onChange={handleFormChange}
+              onBlur={() => handleFormBlur('skills')}
+              maxLength={LIMITS.skills.max}
+            />
+            <FieldError message={showFormError('skills')} />
+          </div>
+
+          <div style={{ marginBottom: 20 }}>
+            <label className="lt-form-label">Short Description</label>
+            <textarea
+              name="description"
+              className={`input ${showFormError('description') ? 'lt-input-error' : ''}`}
+              placeholder="Brief description of the member's background"
+              value={form.description}
+              onChange={handleFormChange}
+              onBlur={() => handleFormBlur('description')}
+              maxLength={LIMITS.description.max}
+              style={{ minHeight: 80, resize: 'vertical' }}
+            />
+            <FieldError message={showFormError('description')} />
+          </div>
+
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button type="button" className="btn btn-secondary flex-1" onClick={closeAddModal} disabled={savingForm}>
+              Cancel
+            </button>
+            <button type="submit" className="btn btn-primary flex-1" disabled={savingForm}>
+              {savingForm ? <><Loader2 size={14} className="spin" /> Adding...</> : 'Add Member'}
+            </button>
           </div>
         </form>
       </Modal>
 
-      {/* ─── EDIT MODAL ─── */}
+      {/* EDIT MODAL */}
       <Modal isOpen={showEdit} onClose={closeEditModal} title="Edit Team Member">
         <form onSubmit={(e) => { e.preventDefault(); handleUpdate(); }}>
-          <div style={{ marginBottom: 4 }}>
-            <label className="form-label">Full Name <span className="required-star">*</span></label>
-            <input 
-              name="name" 
-              placeholder="Full Name" 
-              value={form.name} 
-              onChange={handleFormChange} 
-              className="input" 
-              style={{ marginBottom: 8 }} 
-              required
+          <div style={{ marginBottom: 12 }}>
+            <label className="lt-form-label">Full Name <span className="lt-required">*</span></label>
+            <input
+              name="name"
+              className={`input ${showFormError('name') ? 'lt-input-error' : ''}`}
+              value={form.name}
+              onChange={handleFormChange}
+              onBlur={() => handleFormBlur('name')}
+              maxLength={LIMITS.name.max}
             />
+            <FieldError message={showFormError('name')} />
           </div>
-          <div style={{ marginBottom: 4 }}>
-            <label className="form-label">Short Description</label>
+
+          <div style={{ marginBottom: 12 }}>
+            <label className="lt-form-label">Role <span className="lt-required">*</span></label>
+            <input
+              name="role"
+              className={`input ${showFormError('role') ? 'lt-input-error' : ''}`}
+              value={form.role}
+              onChange={handleFormChange}
+              onBlur={() => handleFormBlur('role')}
+              maxLength={LIMITS.role.max}
+            />
+            <FieldError message={showFormError('role')} />
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <label className="lt-form-label">Email Address <span className="lt-required">*</span></label>
+            <input
+              name="email"
+              type="email"
+              className={`input ${showFormError('email') ? 'lt-input-error' : ''}`}
+              value={form.email}
+              onChange={handleFormChange}
+              onBlur={() => handleFormBlur('email')}
+              maxLength={LIMITS.email.max}
+            />
+            <FieldError message={showFormError('email')} />
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <label className="lt-form-label">Qualification <span className="lt-required">*</span></label>
+            <input
+              name="qualification"
+              className={`input ${showFormError('qualification') ? 'lt-input-error' : ''}`}
+              value={form.qualification}
+              onChange={handleFormChange}
+              onBlur={() => handleFormBlur('qualification')}
+              maxLength={LIMITS.qualification.max}
+            />
+            <FieldError message={showFormError('qualification')} />
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <label className="lt-form-label">Years of Experience <span className="lt-required">*</span></label>
+            <input
+              name="experience"
+              type="number"
+              min={LIMITS.experience.min}
+              max={LIMITS.experience.max}
+              className={`input ${showFormError('experience') ? 'lt-input-error' : ''}`}
+              value={form.experience}
+              onChange={handleFormChange}
+              onBlur={() => handleFormBlur('experience')}
+            />
+            <FieldError message={showFormError('experience')} />
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <label className="lt-form-label">Skills <span className="lt-required">*</span></label>
+            <input
+              name="skills"
+              className={`input ${showFormError('skills') ? 'lt-input-error' : ''}`}
+              value={form.skills}
+              onChange={handleFormChange}
+              onBlur={() => handleFormBlur('skills')}
+              maxLength={LIMITS.skills.max}
+            />
+            <FieldError message={showFormError('skills')} />
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <label className="lt-form-label">Short Description</label>
             <textarea
               name="description"
-              placeholder="Short Description"
+              className={`input ${showFormError('description') ? 'lt-input-error' : ''}`}
               value={form.description}
               onChange={handleFormChange}
-              className="input"
-              style={{ marginBottom: 8, minHeight: 60 }}
+              onBlur={() => handleFormBlur('description')}
+              maxLength={LIMITS.description.max}
+              style={{ minHeight: 60, resize: 'vertical' }}
             />
+            <FieldError message={showFormError('description')} />
           </div>
-          <div style={{ marginBottom: 4 }}>
-            <label className="form-label">Role <span className="required-star">*</span></label>
-            <input 
-              name="role" 
-              placeholder="Role" 
-              value={form.role} 
-              onChange={handleFormChange} 
-              className="input" 
-              style={{ marginBottom: 8 }} 
-              required
-            />
-          </div>
-          <div style={{ marginBottom: 4 }}>
-            <label className="form-label">Email Address</label>
-            <input 
-              name="email" 
-              type="email" 
-              placeholder="Email Address" 
-              value={form.email} 
-              onChange={handleFormChange} 
-              className="input" 
-              style={{ marginBottom: 8 }} 
-            />
-          </div>
-          <div style={{ marginBottom: 4 }}>
-            <label className="form-label">Qualification</label>
-            <input 
-              name="qualification" 
-              placeholder="Qualification" 
-              value={form.qualification} 
-              onChange={handleFormChange} 
-              className="input" 
-              style={{ marginBottom: 8 }} 
-            />
-          </div>
-          <div style={{ marginBottom: 4 }}>
-            <label className="form-label">Years of Experience</label>
-            <input 
-              name="experience" 
-              type="number" 
-              placeholder="Years of Experience" 
-              value={form.experience} 
-              onChange={handleFormChange} 
-              className="input" 
-              style={{ marginBottom: 8 }} 
-            />
-          </div>
-          <div style={{ marginBottom: 4 }}>
-            <label className="form-label">Skills (comma separated)</label>
-            <input 
-              name="skills" 
-              placeholder="Skills (comma separated)" 
-              value={form.skills} 
-              onChange={handleFormChange} 
-              className="input" 
-              style={{ marginBottom: 16 }} 
-            />
-          </div>
+
           <div style={{ display: 'flex', gap: 10 }}>
-            <button type="button" className="btn btn-secondary flex-1" onClick={closeEditModal}>Cancel</button>
-            <button type="submit" className="btn btn-primary flex-1">Update Member</button>
+            <button type="button" className="btn btn-secondary flex-1" onClick={closeEditModal} disabled={savingForm}>
+              Cancel
+            </button>
+            <button type="submit" className="btn btn-primary flex-1" disabled={savingForm}>
+              {savingForm ? <><Loader2 size={14} className="spin" /> Saving...</> : 'Update Member'}
+            </button>
           </div>
         </form>
       </Modal>
 
       <style>{`
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
         .spin { animation: spin 1s linear infinite; }
 
-        .required-star {
-          color: #f87171;
-          margin-left: 2px;
-        }
-
-        .form-label {
+        .lt-form-label {
           font-size: 12px;
           font-weight: 600;
           color: var(--text-secondary);
           display: block;
           margin-bottom: 4px;
+        }
+
+        .lt-required { color: #f87171; margin-left: 2px; }
+
+        .lt-input-error {
+          border-color: #f87171 !important;
+          background: rgba(248, 113, 113, 0.04) !important;
+        }
+
+        .lt-input-error:focus {
+          box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.12) !important;
+        }
+
+        .lt-field-error {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          font-size: 11.5px;
+          font-weight: 500;
+          color: #f87171;
+          margin-top: 4px;
         }
 
         .refresh-btn {
@@ -1408,86 +1480,46 @@ const generateSecurePassword = () => {
           gap: 6px;
         }
 
-        /* ─── DELETE MODAL STYLES ─── */
-        .delete-modal {
-          max-width: 520px !important;
-        }
-
+        /* ─── DELETE MODAL ─── */
+        .delete-modal { max-width: 520px !important; }
         .delete-icon-wrapper {
-          width: 40px;
-          height: 40px;
-          border-radius: 50%;
+          width: 40px; height: 40px; border-radius: 50%;
           background: rgba(248, 113, 113, 0.1);
-          display: flex;
-          align-items: center;
-          justify-content: center;
+          display: flex; align-items: center; justify-content: center;
           flex-shrink: 0;
         }
-
         .delete-warning {
-          display: flex;
-          align-items: flex-start;
-          gap: 10px;
+          display: flex; align-items: flex-start; gap: 10px;
           padding: 12px 14px;
           background: rgba(248, 113, 113, 0.06);
           border: 1px solid rgba(248, 113, 113, 0.2);
           border-radius: 10px;
-          font-size: 13px;
-          color: var(--text-secondary);
+          font-size: 13px; color: var(--text-secondary);
           line-height: 1.5;
         }
-
-        .delete-warning svg {
-          flex-shrink: 0;
-          margin-top: 1px;
-        }
-
+        .delete-warning svg { flex-shrink: 0; margin-top: 1px; }
         .assigned-tasks-list {
           background: var(--bg-secondary);
           border-radius: 10px;
           padding: 12px 14px;
           border: 1px solid var(--border-subtle);
         }
-
         .assigned-task-item {
-          display: flex;
-          align-items: center;
-          gap: 8px;
+          display: flex; align-items: center; gap: 8px;
           padding: 4px 0;
           border-bottom: 1px solid var(--border-subtle);
         }
-
-        .assigned-task-item:last-child {
-          border-bottom: none;
-        }
-
+        .assigned-task-item:last-child { border-bottom: none; }
         .task-dot {
-          width: 6px;
-          height: 6px;
-          border-radius: 50%;
-          background: var(--accent-primary);
-          flex-shrink: 0;
+          width: 6px; height: 6px; border-radius: 50%;
+          background: var(--accent-primary); flex-shrink: 0;
         }
-
-        .task-title {
-          font-size: 13px;
-          color: var(--text-primary);
-          flex: 1;
-        }
-
+        .task-title { font-size: 13px; color: var(--text-primary); flex: 1; }
         .task-status-badge {
-          font-size: 10px;
-          font-weight: 600;
-          padding: 1px 8px;
-          border-radius: 12px;
+          font-size: 10px; font-weight: 600;
+          padding: 1px 8px; border-radius: 12px;
         }
-
-        .delete-options {
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-        }
-
+        .delete-options { display: flex; flex-direction: column; gap: 10px; }
         .delete-option {
           padding: 12px 14px;
           background: var(--bg-secondary);
@@ -1495,79 +1527,40 @@ const generateSecurePassword = () => {
           border-radius: 10px;
           transition: border-color 0.15s;
         }
-
         .delete-option:has(input:checked) {
           border-color: var(--accent-primary);
           background: color-mix(in srgb, var(--accent-primary) 4%, var(--bg-secondary));
         }
-
         .radio-label {
-          display: flex;
-          align-items: flex-start;
-          gap: 10px;
+          display: flex; align-items: flex-start; gap: 10px;
           cursor: pointer;
         }
-
         .radio-label input[type="radio"] {
           margin-top: 2px;
           accent-color: var(--accent-primary);
           cursor: pointer;
         }
-
-        .radio-label div {
-          display: flex;
-          flex-direction: column;
-          gap: 2px;
-        }
-
-        .radio-label strong {
-          font-size: 13px;
-          color: var(--text-primary);
-        }
-
-        .radio-label span {
-          font-size: 12px;
-          color: var(--text-muted);
-        }
-
+        .radio-label div { display: flex; flex-direction: column; gap: 2px; }
+        .radio-label strong { font-size: 13px; color: var(--text-primary); }
+        .radio-label span { font-size: 12px; color: var(--text-muted); }
         .reassign-select {
-          margin-top: 10px;
-          width: 100%;
-          padding: 8px 12px;
-          border-radius: 8px;
+          margin-top: 10px; width: 100%;
+          padding: 8px 12px; border-radius: 8px;
           border: 1px solid var(--border-default);
-          background: var(--bg-card);
-          color: var(--text-primary);
-          font-size: 13px;
-          outline: none;
+          background: var(--bg-card); color: var(--text-primary);
+          font-size: 13px; outline: none;
         }
-
-        .reassign-select:focus {
-          border-color: var(--accent-primary);
-        }
-
-        .delete-footer {
-          justify-content: space-between !important;
-        }
-
+        .reassign-select:focus { border-color: var(--accent-primary); }
+        .delete-footer { justify-content: space-between !important; }
         .mm-footer-btn.danger {
           background: rgba(248, 113, 113, 0.1);
           color: #f87171;
           border: 1px solid rgba(248, 113, 113, 0.3);
         }
-
-        .mm-footer-btn.danger:hover:not(:disabled) {
-          background: rgba(248, 113, 113, 0.2);
-        }
-
-        .mm-footer-btn.danger:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
-        }
-
+        .mm-footer-btn.danger:hover:not(:disabled) { background: rgba(248, 113, 113, 0.2); }
+        .mm-footer-btn.danger:disabled { opacity: 0.5; cursor: not-allowed; }
         .spinner-small {
-          width: 16px;
-          height: 16px;
+          width: 16px; height: 16px;
           border: 2px solid rgba(255,255,255,0.3);
           border-top-color: #fff;
           border-radius: 50%;
@@ -1577,97 +1570,53 @@ const generateSecurePassword = () => {
 
         /* ─── MEMBER MODAL ─── */
         .member-modal-overlay {
-          position: fixed;
-          inset: 0;
+          position: fixed; inset: 0;
           background: rgba(0, 0, 0, 0.65);
           backdrop-filter: blur(8px);
           z-index: 99999;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          padding: 20px;
-          overflow-y: auto;
+          display: flex; align-items: center; justify-content: center;
+          padding: 20px; overflow-y: auto;
         }
-
         .member-modal {
-          width: 100%;
-          max-width: 620px;
-          max-height: 90vh;
+          width: 100%; max-width: 620px; max-height: 90vh;
           overflow-y: auto;
           background: var(--bg-card);
           border: 1px solid var(--border-default);
           border-radius: 20px;
           box-shadow: 0 24px 80px rgba(0, 0, 0, 0.4);
-          display: flex;
-          flex-direction: column;
+          display: flex; flex-direction: column;
         }
-
-        .member-modal::-webkit-scrollbar {
-          width: 5px;
-        }
-        .member-modal::-webkit-scrollbar-track {
-          background: transparent;
-        }
+        .member-modal::-webkit-scrollbar { width: 5px; }
+        .member-modal::-webkit-scrollbar-track { background: transparent; }
         .member-modal::-webkit-scrollbar-thumb {
           background: var(--border-default);
           border-radius: 10px;
         }
-
         .mm-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
+          display: flex; align-items: center; justify-content: space-between;
           padding: 20px 24px 16px;
           border-bottom: 1px solid var(--border-subtle);
-          position: sticky;
-          top: 0;
+          position: sticky; top: 0;
           background: var(--bg-card);
           border-radius: 20px 20px 0 0;
           z-index: 2;
         }
-
-        .mm-header-left {
-          display: flex;
-          align-items: center;
-          gap: 14px;
-        }
-
+        .mm-header-left { display: flex; align-items: center; gap: 14px; }
         .mm-avatar {
-          width: 56px;
-          height: 56px;
-          border-radius: 50%;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-weight: 800;
-          font-size: 20px;
-          flex-shrink: 0;
+          width: 56px; height: 56px; border-radius: 50%;
+          display: flex; align-items: center; justify-content: center;
+          font-weight: 800; font-size: 20px; flex-shrink: 0;
         }
-
-        .mm-header-info {
-          flex: 1;
-          min-width: 0;
-        }
-
+        .mm-header-info { flex: 1; min-width: 0; }
         .mm-name {
-          font-size: 18px;
-          font-weight: 700;
+          font-size: 18px; font-weight: 700;
           color: var(--text-primary);
           margin: 0 0 4px;
         }
-
-        .mm-badges {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 4px;
-        }
-
+        .mm-badges { display: flex; flex-wrap: wrap; gap: 4px; }
         .mm-close-btn {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          width: 36px;
-          height: 36px;
+          display: flex; align-items: center; justify-content: center;
+          width: 36px; height: 36px;
           border-radius: 10px;
           border: 1px solid var(--border-subtle);
           background: var(--bg-secondary);
@@ -1676,283 +1625,145 @@ const generateSecurePassword = () => {
           transition: all 0.15s;
           flex-shrink: 0;
         }
-
         .mm-close-btn:hover {
           border-color: var(--accent-primary);
           color: var(--accent-primary);
           background: var(--bg-primary);
         }
-
         .mm-body {
           padding: 20px 24px;
-          display: flex;
-          flex-direction: column;
-          gap: 16px;
+          display: flex; flex-direction: column; gap: 16px;
         }
-
         .mm-description {
-          font-size: 13px;
-          color: var(--text-secondary);
+          font-size: 13px; color: var(--text-secondary);
           line-height: 1.6;
           padding: 12px 16px;
           background: var(--bg-secondary);
           border-radius: 10px;
           border: 1px solid var(--border-subtle);
         }
-
-        .mm-description.muted {
-          color: var(--text-muted);
-        }
-
+        .mm-description.muted { color: var(--text-muted); }
         .mm-email {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          font-size: 13px;
-          color: var(--text-secondary);
+          display: flex; align-items: center; gap: 8px;
+          font-size: 13px; color: var(--text-secondary);
           padding: 6px 0;
         }
-
-        .mm-email svg {
-          color: var(--text-muted);
-        }
-
+        .mm-email svg { color: var(--text-muted); }
         .mm-stats-row {
-          display: grid;
-          grid-template-columns: repeat(4, 1fr);
-          gap: 8px;
+          display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
         }
-
         .mm-stat-item {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
+          display: flex; flex-direction: column; align-items: center;
           padding: 12px 8px;
           background: var(--bg-secondary);
           border-radius: 10px;
           border: 1px solid var(--border-subtle);
         }
-
         .mm-stat-value {
-          font-size: 20px;
-          font-weight: 800;
-          color: var(--text-primary);
-          line-height: 1.2;
+          font-size: 20px; font-weight: 800;
+          color: var(--text-primary); line-height: 1.2;
         }
-
         .mm-stat-label {
-          font-size: 10px;
-          color: var(--text-muted);
-          font-weight: 600;
-          text-transform: uppercase;
+          font-size: 10px; color: var(--text-muted);
+          font-weight: 600; text-transform: uppercase;
           letter-spacing: 0.4px;
         }
-
         .mm-section {
           background: var(--bg-secondary);
           border: 1px solid var(--border-subtle);
           border-radius: 12px;
           padding: 14px 16px;
         }
-
         .mm-section-title {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          font-size: 12px;
-          font-weight: 700;
+          display: flex; align-items: center; gap: 6px;
+          font-size: 12px; font-weight: 700;
           color: var(--text-secondary);
           text-transform: uppercase;
           letter-spacing: 0.5px;
           margin: 0 0 10px;
         }
-
-        .mm-section-title svg {
-          color: var(--accent-primary);
-        }
-
-        .mm-skills {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 6px;
-        }
-
+        .mm-section-title svg { color: var(--accent-primary); }
+        .mm-skills { display: flex; flex-wrap: wrap; gap: 6px; }
         .mm-skill-tag {
-          font-size: 11px;
-          font-weight: 500;
-          padding: 4px 12px;
-          border-radius: 20px;
+          font-size: 11px; font-weight: 500;
+          padding: 4px 12px; border-radius: 20px;
           background: var(--bg-card);
           border: 1px solid var(--border-subtle);
           color: var(--text-secondary);
         }
-
-        .mm-no-data {
-          font-size: 12px;
-          color: var(--text-muted);
-          padding: 4px 0;
-        }
-
-        .mm-project-list {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-
+        .mm-no-data { font-size: 12px; color: var(--text-muted); padding: 4px 0; }
+        .mm-project-list { display: flex; flex-direction: column; gap: 8px; }
         .mm-project-item {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
+          display: flex; justify-content: space-between; align-items: center;
           padding: 10px 12px;
           background: var(--bg-card);
           border-radius: 8px;
           border: 1px solid var(--border-subtle);
           gap: 10px;
         }
-
         .mm-project-item.completed {
           border-color: rgba(52, 211, 153, 0.2);
           background: rgba(52, 211, 153, 0.05);
         }
-
-        .mm-project-info {
-          flex: 1;
-          min-width: 0;
-        }
-
+        .mm-project-info { flex: 1; min-width: 0; }
         .mm-project-name {
           display: block;
-          font-size: 13px;
-          font-weight: 600;
+          font-size: 13px; font-weight: 600;
           color: var(--text-primary);
         }
-
-        .mm-project-role {
-          display: block;
-          font-size: 11px;
-          color: var(--text-muted);
-        }
-
-        .mm-project-status {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          flex-shrink: 0;
-        }
-
-        .mm-project-progress {
-          font-size: 12px;
-          font-weight: 700;
-          color: var(--text-secondary);
-        }
-
-        .mm-timeline {
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
-
-        .mm-timeline-item {
-          display: flex;
-          gap: 10px;
-          align-items: baseline;
-        }
-
+        .mm-project-role { display: block; font-size: 11px; color: var(--text-muted); }
+        .mm-project-status { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+        .mm-project-progress { font-size: 12px; font-weight: 700; color: var(--text-secondary); }
+        .mm-timeline { display: flex; flex-direction: column; gap: 6px; }
+        .mm-timeline-item { display: flex; gap: 10px; align-items: baseline; }
         .mm-tl-year {
-          font-size: 11px;
-          font-weight: 700;
+          font-size: 11px; font-weight: 700;
           color: var(--accent-primary);
-          flex-shrink: 0;
-          min-width: 50px;
+          flex-shrink: 0; min-width: 50px;
         }
-
-        .mm-tl-text {
-          font-size: 13px;
-          color: var(--text-secondary);
-          line-height: 1.4;
-        }
-
+        .mm-tl-text { font-size: 13px; color: var(--text-secondary); line-height: 1.4; }
         .mm-footer {
-          display: flex;
-          gap: 10px;
+          display: flex; gap: 10px;
           padding: 14px 24px 20px;
           border-top: 1px solid var(--border-subtle);
           justify-content: flex-end;
           background: var(--bg-card);
           border-radius: 0 0 20px 20px;
         }
-
         .mm-footer-btn {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          padding: 8px 16px;
-          border-radius: 8px;
-          font-size: 13px;
-          font-weight: 600;
-          cursor: pointer;
-          transition: all 0.15s;
-          border: none;
+          display: inline-flex; align-items: center; gap: 6px;
+          padding: 8px 16px; border-radius: 8px;
+          font-size: 13px; font-weight: 600;
+          cursor: pointer; transition: all 0.15s; border: none;
         }
-
         .mm-footer-btn.primary {
-          background: var(--accent-primary);
-          color: #fff;
+          background: var(--accent-primary); color: #fff;
         }
-
-        .mm-footer-btn.primary:hover {
-          opacity: 0.85;
-          transform: translateY(-1px);
-        }
-
+        .mm-footer-btn.primary:hover { opacity: 0.85; transform: translateY(-1px); }
         .mm-footer-btn.secondary {
           background: var(--bg-secondary);
           color: var(--text-secondary);
           border: 1px solid var(--border-default);
         }
-
         .mm-footer-btn.secondary:hover {
           border-color: var(--accent-primary);
           color: var(--accent-primary);
         }
 
-        /* Badge styles */
+        /* Badges */
         .badge {
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-          padding: 2px 10px;
-          border-radius: 20px;
-          font-size: 11px;
-          font-weight: 600;
+          display: inline-flex; align-items: center; gap: 4px;
+          padding: 2px 10px; border-radius: 20px;
+          font-size: 11px; font-weight: 600;
         }
+        .badge-purple { background: rgba(129, 140, 248, 0.15); color: #818cf8; }
+        .badge-green  { background: rgba(52, 211, 153, 0.15); color: #34d399; }
+        .badge-blue   { background: rgba(99, 102, 241, 0.15); color: #6366f1; }
+        .badge-gray   { background: var(--bg-secondary); color: var(--text-muted); border: 1px solid var(--border-subtle); }
 
-        .badge-purple {
-          background: rgba(129, 140, 248, 0.15);
-          color: #818cf8;
-        }
-
-        .badge-green {
-          background: rgba(52, 211, 153, 0.15);
-          color: #34d399;
-        }
-
-        .badge-blue {
-          background: rgba(99, 102, 241, 0.15);
-          color: #6366f1;
-        }
-
-        .badge-gray {
-          background: var(--bg-secondary);
-          color: var(--text-muted);
-          border: 1px solid var(--border-subtle);
-        }
-
-        /* ─── IMPROVED FILTERS ─── */
+        /* Filters */
         .lt-filters-container {
-          display: flex;
-          flex-direction: column;
-          gap: 14px;
+          display: flex; flex-direction: column; gap: 14px;
           margin-bottom: 24px;
           background: var(--bg-card);
           padding: 18px 20px;
@@ -1960,220 +1771,127 @@ const generateSecurePassword = () => {
           border: 1px solid var(--border-subtle);
           transition: all 0.2s ease;
         }
-
         .lt-filters-container:focus-within {
           border-color: var(--accent-primary);
           box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
         }
-
         .lt-search-wrapper {
-          position: relative;
-          display: flex;
-          align-items: center;
-          width: 100%;
+          position: relative; display: flex; align-items: center; width: 100%;
         }
-
         .lt-search-icon {
-          position: absolute;
-          left: 14px;
+          position: absolute; left: 14px;
           color: var(--text-muted);
-          pointer-events: none;
-          transition: color 0.2s;
+          pointer-events: none; transition: color 0.2s;
         }
-
-        .lt-search-wrapper:focus-within .lt-search-icon {
-          color: var(--accent-primary);
-        }
-
+        .lt-search-wrapper:focus-within .lt-search-icon { color: var(--accent-primary); }
         .lt-search-input {
-          width: 100%;
-          padding: 11px 40px 11px 42px;
+          width: 100%; padding: 11px 40px 11px 42px;
           border-radius: 10px;
           border: 1px solid var(--border-default);
           background: var(--bg-secondary);
           color: var(--text-primary);
           font-size: 13px;
-          transition: all 0.2s ease;
-          outline: none;
+          transition: all 0.2s ease; outline: none;
         }
-
         .lt-search-input:focus {
           border-color: var(--accent-primary);
           background: var(--bg-card);
           box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
         }
-
-        .lt-search-input::placeholder {
-          color: var(--text-muted);
-        }
-
+        .lt-search-input::placeholder { color: var(--text-muted); }
         .lt-search-clear {
-          position: absolute;
-          right: 10px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          width: 28px;
-          height: 28px;
-          border: none;
-          border-radius: 50%;
+          position: absolute; right: 10px;
+          display: flex; align-items: center; justify-content: center;
+          width: 28px; height: 28px;
+          border: none; border-radius: 50%;
           background: var(--bg-hover);
           color: var(--text-muted);
-          cursor: pointer;
-          transition: all 0.15s;
+          cursor: pointer; transition: all 0.15s;
         }
-
-        .lt-search-clear:hover {
-          background: var(--border-default);
-          color: var(--text-primary);
-        }
-
+        .lt-search-clear:hover { background: var(--border-default); color: var(--text-primary); }
         .lt-filter-controls {
-          display: flex;
-          align-items: center;
-          gap: 16px;
-          flex-wrap: wrap;
+          display: flex; align-items: center;
+          gap: 16px; flex-wrap: wrap;
         }
-
         .lt-filter-group {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          flex: 1;
-          min-width: 140px;
+          display: flex; align-items: center; gap: 8px;
+          flex: 1; min-width: 140px;
         }
-
         .lt-filter-label {
-          display: flex;
-          align-items: center;
-          gap: 4px;
-          font-size: 11px;
-          font-weight: 600;
+          display: flex; align-items: center; gap: 4px;
+          font-size: 11px; font-weight: 600;
           color: var(--text-muted);
           text-transform: uppercase;
           letter-spacing: 0.04em;
           white-space: nowrap;
         }
-
         .lt-filter-select {
-          flex: 1;
-          padding: 8px 12px;
-          border-radius: 8px;
+          flex: 1; padding: 8px 12px; border-radius: 8px;
           border: 1px solid var(--border-default);
           background: var(--bg-secondary);
           color: var(--text-primary);
-          font-size: 12px;
-          font-weight: 500;
-          cursor: pointer;
-          outline: none;
+          font-size: 12px; font-weight: 500;
+          cursor: pointer; outline: none;
           transition: all 0.2s ease;
-          min-width: 120px;
-          appearance: none;
+          min-width: 120px; appearance: none;
           background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
           background-repeat: no-repeat;
           background-position: right 10px center;
           padding-right: 32px;
         }
-
-        .lt-filter-select:hover {
-          border-color: var(--border-strong);
-          background-color: var(--bg-hover);
-        }
-
+        .lt-filter-select:hover { border-color: var(--border-strong); background-color: var(--bg-hover); }
         .lt-filter-select:focus {
           border-color: var(--accent-primary);
           background-color: var(--bg-card);
           box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
         }
-
         .lt-active-filters {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          flex-wrap: wrap;
-          margin-left: auto;
+          display: flex; align-items: center;
+          gap: 6px; flex-wrap: wrap; margin-left: auto;
         }
-
         .lt-filter-chip {
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-          padding: 4px 10px 4px 12px;
-          border-radius: 20px;
-          font-size: 11px;
-          font-weight: 600;
+          display: inline-flex; align-items: center; gap: 4px;
+          padding: 4px 10px 4px 12px; border-radius: 20px;
+          font-size: 11px; font-weight: 600;
           background: var(--accent-muted);
           color: var(--accent-primary);
           border: 1px solid rgba(99, 102, 241, 0.2);
           white-space: nowrap;
         }
-
         .lt-filter-chip button {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          padding: 2px;
-          border: none;
-          border-radius: 50%;
+          display: flex; align-items: center; justify-content: center;
+          padding: 2px; border: none; border-radius: 50%;
           background: transparent;
           color: var(--accent-primary);
-          cursor: pointer;
-          transition: all 0.15s;
+          cursor: pointer; transition: all 0.15s;
         }
-
-        .lt-filter-chip button:hover {
-          background: rgba(239, 68, 68, 0.1);
-          color: #ef4444;
-        }
-
+        .lt-filter-chip button:hover { background: rgba(239, 68, 68, 0.1); color: #ef4444; }
         .lt-results-count {
-          display: flex;
-          align-items: center;
-          gap: 8px;
+          display: flex; align-items: center; gap: 8px;
           padding-top: 12px;
           border-top: 1px solid var(--border-subtle);
-          font-size: 12px;
-          color: var(--text-muted);
+          font-size: 12px; color: var(--text-muted);
           flex-wrap: wrap;
         }
-
-        .lt-results-count span {
-          font-weight: 500;
-        }
-
-        .lt-results-count .lt-results-total {
-          color: var(--text-secondary);
-        }
-
-        .lt-results-dot {
-          color: var(--border-default);
-        }
-
+        .lt-results-count span { font-weight: 500; }
+        .lt-results-count .lt-results-total { color: var(--text-secondary); }
+        .lt-results-dot { color: var(--border-default); }
         .lt-clear-filters-btn {
-          margin-left: auto;
-          padding: 4px 12px;
-          border: none;
-          border-radius: 6px;
+          margin-left: auto; padding: 4px 12px;
+          border: none; border-radius: 6px;
           background: var(--bg-secondary);
           color: var(--text-secondary);
-          font-size: 11px;
-          font-weight: 500;
-          cursor: pointer;
-          transition: all 0.15s;
+          font-size: 11px; font-weight: 500;
+          cursor: pointer; transition: all 0.15s;
         }
+        .lt-clear-filters-btn:hover { background: var(--bg-hover); color: var(--accent-primary); }
 
-        .lt-clear-filters-btn:hover {
-          background: var(--bg-hover);
-          color: var(--accent-primary);
-        }
-
-        /* ─── MEMBERS GRID ─── */
+        /* Members grid */
         .members-grid {
           display: grid;
           grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
           gap: 16px;
         }
-
         .member-card {
           position: relative;
           padding: 20px;
@@ -2183,116 +1901,73 @@ const generateSecurePassword = () => {
           transition: all 0.2s ease;
           cursor: pointer;
         }
-
         .member-card:hover {
           border-color: var(--accent-primary);
           box-shadow: var(--shadow-md);
         }
-
         .member-card-actions {
-          position: absolute;
-          top: 12px;
-          right: 12px;
-          display: flex;
-          gap: 4px;
+          position: absolute; top: 12px; right: 12px;
+          display: flex; gap: 4px;
         }
-
         .member-action-btn {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          padding: 4px;
-          border-radius: 6px;
+          display: inline-flex; align-items: center; justify-content: center;
+          padding: 4px; border-radius: 6px;
           border: 1px solid var(--border-subtle);
           background: var(--bg-card);
           color: var(--text-secondary);
-          cursor: pointer;
-          transition: all 0.14s;
+          cursor: pointer; transition: all 0.14s;
         }
-
         .member-action-btn:hover {
           background: var(--bg-primary);
           color: var(--accent-primary);
           border-color: var(--accent-primary);
         }
-
         .member-action-btn.danger:hover {
           color: #f87171;
           border-color: #f87171;
           background: rgba(248, 113, 113, 0.06);
         }
-
         .member-avatar-wrapper {
-          position: relative;
-          display: inline-block;
-          margin-bottom: 12px;
+          position: relative; display: inline-block; margin-bottom: 12px;
         }
-
         .member-avatar {
-          width: 56px;
-          height: 56px;
-          border-radius: 50%;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 20px;
-          font-weight: 800;
+          width: 56px; height: 56px; border-radius: 50%;
+          display: flex; align-items: center; justify-content: center;
+          font-size: 20px; font-weight: 800;
           border: 2px solid;
         }
-
         .member-status-dot {
-          position: absolute;
-          bottom: 2px;
-          right: 2px;
-          width: 12px;
-          height: 12px;
-          border-radius: 50%;
+          position: absolute; bottom: 2px; right: 2px;
+          width: 12px; height: 12px; border-radius: 50%;
           border: 2px solid var(--bg-card);
         }
-
-        .member-info {
-          margin-bottom: 6px;
-        }
-
+        .member-info { margin-bottom: 6px; }
         .member-name {
-          font-size: 15px;
-          font-weight: 700;
-          color: var(--text-primary);
-          margin: 0;
+          font-size: 15px; font-weight: 700;
+          color: var(--text-primary); margin: 0;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
-
         .member-role {
-          font-size: 12px;
-          font-weight: 500;
+          font-size: 12px; font-weight: 500;
           color: var(--accent-primary);
           background: var(--accent-muted);
-          padding: 2px 10px;
-          border-radius: 12px;
+          padding: 2px 10px; border-radius: 12px;
           display: inline-block;
         }
-
         .member-qualification {
-          font-size: 12px;
-          color: var(--text-secondary);
+          font-size: 12px; color: var(--text-secondary);
           margin: 6px 0 8px;
         }
-
         .member-skills {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 4px;
-          margin-bottom: 12px;
+          display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px;
         }
-
         .member-skill {
-          font-size: 10.5px;
-          padding: 2px 8px;
+          font-size: 10.5px; padding: 2px 8px;
           border-radius: 6px;
           background: var(--bg-secondary);
           border: 1px solid var(--border-subtle);
           color: var(--text-secondary);
         }
-
         .member-stats {
           display: flex;
           background: var(--bg-secondary);
@@ -2300,252 +1975,99 @@ const generateSecurePassword = () => {
           border: 1px solid var(--border-subtle);
           margin-bottom: 12px;
         }
-
         .member-stat {
-          flex: 1;
-          text-align: center;
-          padding: 8px;
+          flex: 1; text-align: center; padding: 8px;
         }
-
-        .member-stat:not(:last-child) {
-          border-right: 1px solid var(--border-subtle);
-        }
-
+        .member-stat:not(:last-child) { border-right: 1px solid var(--border-subtle); }
         .member-stat-value {
-          display: block;
-          font-weight: 700;
-          font-size: 16px;
-          color: var(--text-primary);
+          display: block; font-weight: 700;
+          font-size: 16px; color: var(--text-primary);
         }
-
         .member-stat-label {
-          font-size: 9px;
-          color: var(--text-muted);
-          text-transform: uppercase;
-          letter-spacing: 0.3px;
+          font-size: 9px; color: var(--text-muted);
+          text-transform: uppercase; letter-spacing: 0.3px;
         }
-
         .member-footer {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
+          display: flex; justify-content: space-between; align-items: center;
           padding-top: 10px;
           border-top: 1px solid var(--border-subtle);
         }
-
-        .member-on-time {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-
+        .member-on-time { display: flex; align-items: center; gap: 8px; }
         .member-on-time-value {
-          font-size: 13px;
-          font-weight: 700;
-          color: var(--text-primary);
-          margin: 0;
+          font-size: 13px; font-weight: 700;
+          color: var(--text-primary); margin: 0;
         }
-
         .member-on-time-label {
-          font-size: 10px;
-          color: var(--text-muted);
-          margin: 0;
+          font-size: 10px; color: var(--text-muted); margin: 0;
         }
-
-        .member-completion {
-          font-size: 12px;
-          font-weight: 600;
-        }
-
+        .member-completion { font-size: 12px; font-weight: 600; }
         .members-empty {
-          grid-column: 1 / -1;
-          text-align: center;
-          padding: 60px 20px;
-          color: var(--text-muted);
+          grid-column: 1 / -1; text-align: center;
+          padding: 60px 20px; color: var(--text-muted);
         }
-
         .members-empty h3 {
-          font-size: 18px;
-          font-weight: 700;
-          color: var(--text-primary);
-          margin: 8px 0 4px;
+          font-size: 18px; font-weight: 700;
+          color: var(--text-primary); margin: 8px 0 4px;
         }
 
-        /* ─── PAGINATION ─── */
+        /* Pagination */
         .pagination {
-          display: flex;
-          justify-content: center;
-          gap: 8px;
-          margin-top: 24px;
-          flex-wrap: wrap;
+          display: flex; justify-content: center; gap: 8px;
+          margin-top: 24px; flex-wrap: wrap;
         }
-
         .pagination-btn {
-          padding: 6px 14px;
-          border-radius: 8px;
+          padding: 6px 14px; border-radius: 8px;
           border: 1px solid var(--border-default);
           background: var(--bg-secondary);
           color: var(--text-secondary);
-          font-size: 13px;
-          font-weight: 500;
-          cursor: pointer;
-          transition: all 0.15s;
+          font-size: 13px; font-weight: 500;
+          cursor: pointer; transition: all 0.15s;
         }
-
         .pagination-btn:hover:not(:disabled):not(.active) {
           border-color: var(--accent-primary);
           color: var(--accent-primary);
         }
-
         .pagination-btn.active {
           background: var(--accent-primary);
           color: #fff;
           border-color: var(--accent-primary);
         }
+        .pagination-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-        .pagination-btn:disabled {
-          opacity: 0.4;
-          cursor: not-allowed;
-        }
-
-        /* ─── RESPONSIVE ─── */
+        /* Responsive */
         @media (max-width: 768px) {
-          .lt-filters-container {
-            padding: 14px 16px;
-            gap: 12px;
-          }
-
-          .lt-filter-controls {
-            flex-direction: column;
-            align-items: stretch;
-            gap: 10px;
-          }
-
-          .lt-filter-group {
-            min-width: 0;
-          }
-
-          .lt-filter-select {
-            min-width: 0;
-          }
-
-          .lt-active-filters {
-            margin-left: 0;
-            justify-content: flex-start;
-          }
-
-          .lt-results-count {
-            padding-top: 10px;
-            flex-wrap: wrap;
-          }
-
-          .lt-clear-filters-btn {
-            margin-left: 0;
-          }
-
-          .members-grid {
-            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-          }
-
-          .member-modal {
-            max-width: 100%;
-            border-radius: 16px;
-            max-height: 95vh;
-          }
-
-          .mm-stats-row {
-            grid-template-columns: repeat(2, 1fr);
-          }
-
-          .mm-header {
-            padding: 16px 18px;
-          }
-
-          .mm-body {
-            padding: 16px 18px;
-          }
-
-          .mm-footer {
-            padding: 12px 18px 16px;
-          }
-
-          .mm-avatar {
-            width: 44px;
-            height: 44px;
-            font-size: 16px;
-          }
-
-          .mm-name {
-            font-size: 16px;
-          }
-
-          .delete-modal {
-            max-width: 100% !important;
-          }
+          .lt-filters-container { padding: 14px 16px; gap: 12px; }
+          .lt-filter-controls { flex-direction: column; align-items: stretch; gap: 10px; }
+          .lt-filter-group { min-width: 0; }
+          .lt-filter-select { min-width: 0; }
+          .lt-active-filters { margin-left: 0; justify-content: flex-start; }
+          .lt-results-count { padding-top: 10px; flex-wrap: wrap; }
+          .lt-clear-filters-btn { margin-left: 0; }
+          .members-grid { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+          .member-modal { max-width: 100%; border-radius: 16px; max-height: 95vh; }
+          .mm-stats-row { grid-template-columns: repeat(2, 1fr); }
+          .mm-header { padding: 16px 18px; }
+          .mm-body { padding: 16px 18px; }
+          .mm-footer { padding: 12px 18px 16px; }
+          .mm-avatar { width: 44px; height: 44px; font-size: 16px; }
+          .mm-name { font-size: 16px; }
+          .delete-modal { max-width: 100% !important; }
         }
-
         @media (max-width: 480px) {
-          .lt-filters-container {
-            padding: 12px;
-            gap: 10px;
-          }
-
-          .lt-search-input {
-            padding: 10px 36px 10px 38px;
-            font-size: 12px;
-          }
-
-          .lt-filter-group {
-            flex-direction: column;
-            align-items: stretch;
-            gap: 4px;
-          }
-
-          .lt-filter-label {
-            font-size: 10px;
-          }
-
-          .lt-filter-select {
-            padding: 7px 10px;
-            font-size: 11px;
-          }
-
-          .members-grid {
-            grid-template-columns: 1fr;
-          }
-
-          .member-card {
-            padding: 16px;
-          }
-
-          .member-modal {
-            border-radius: 12px;
-          }
-
-          .mm-header-left {
-            gap: 10px;
-          }
-
-          .mm-stat-value {
-            font-size: 17px;
-          }
-
-          .mm-project-item {
-            flex-wrap: wrap;
-          }
-
-          .mm-project-status {
-            width: 100%;
-            justify-content: flex-start;
-          }
-
-          .delete-option {
-            padding: 10px 12px;
-          }
-
-          .radio-label {
-            font-size: 12px;
-          }
+          .lt-filters-container { padding: 12px; gap: 10px; }
+          .lt-search-input { padding: 10px 36px 10px 38px; font-size: 12px; }
+          .lt-filter-group { flex-direction: column; align-items: stretch; gap: 4px; }
+          .lt-filter-label { font-size: 10px; }
+          .lt-filter-select { padding: 7px 10px; font-size: 11px; }
+          .members-grid { grid-template-columns: 1fr; }
+          .member-card { padding: 16px; }
+          .member-modal { border-radius: 12px; }
+          .mm-header-left { gap: 10px; }
+          .mm-stat-value { font-size: 17px; }
+          .mm-project-item { flex-wrap: wrap; }
+          .mm-project-status { width: 100%; justify-content: flex-start; }
+          .delete-option { padding: 10px 12px; }
+          .radio-label { font-size: 12px; }
         }
       `}</style>
     </div>
