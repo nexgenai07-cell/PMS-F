@@ -2038,6 +2038,7 @@ export default function SupervisorProjects() {
           .lp-icon-btn { padding: 4px 5px; }
           .lp-card-badges > * { max-width: 76px !important; font-size: 10px !important; }
         }
+          
       `}</style>
     </div>
   );
