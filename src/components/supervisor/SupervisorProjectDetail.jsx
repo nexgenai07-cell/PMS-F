@@ -24,7 +24,8 @@ import {
   Send,
   FileText,
   Clock,
-  Crown
+  Crown,
+  UserMinus
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import toast from "react-hot-toast";
@@ -62,6 +63,14 @@ function getLocalSupervisors(projectId) {
   return Array.isArray(ids) ? ids.map(Number) : [];
 }
 
+function setLocalSupervisors(projectId, ids) {
+  if (!projectId) return;
+  const map = readLocalSupervisors();
+  map[String(projectId)] = [...new Set((ids || []).map(Number))];
+  try { localStorage.setItem(SUPERVISOR_STORAGE_KEY, JSON.stringify(map)); }
+  catch (e) { console.warn('Could not persist supervisors locally:', e); }
+}
+
 function readLocalMembers() {
   try {
     const raw = localStorage.getItem(MEMBER_STORAGE_KEY);
@@ -76,12 +85,19 @@ function getLocalMembers(projectId) {
   return Array.isArray(ids) ? ids.map(Number) : [];
 }
 
+function setLocalMembers(projectId, ids) {
+  if (!projectId) return;
+  const map = readLocalMembers();
+  map[String(projectId)] = [...new Set((ids || []).map(Number))];
+  try { localStorage.setItem(MEMBER_STORAGE_KEY, JSON.stringify(map)); }
+  catch (e) { console.warn('Could not persist members locally:', e); }
+}
+
 /* ─────────── Resolve TeamMember id → object ─────────── */
 function resolveTeamMemberId(tmId, usersList, membersList) {
   if (tmId == null) return null;
   const numId = Number(tmId);
 
-  // Look up TeamMember first — tmId is a TeamMember.id
   const tm = membersList.find(m => Number(m.id) === numId);
   if (tm) {
     const userObj = usersList.find(u => {
@@ -98,7 +114,6 @@ function resolveTeamMemberId(tmId, usersList, membersList) {
     };
   }
 
-  // Fall back to user
   const userObj = usersList.find(u => Number(u.id) === numId);
   if (userObj) {
     return {
@@ -158,6 +173,35 @@ function computeTaskProgress(task) {
   if (status === 'review') return 75;
   if (status === 'in_progress' || status === 'in-progress') return 50;
   return 0;
+}
+
+/* ─────────── Find real TeamMember id ─────────── */
+function findRealTeamMemberId(userIdOrObj, teamMembersList, usersList) {
+  if (!userIdOrObj) return null;
+  const id = typeof userIdOrObj === 'object'
+    ? (userIdOrObj.userId ?? userIdOrObj.id)
+    : userIdOrObj;
+  const numId = Number(id);
+
+  const direct = teamMembersList.find(m => !m._placeholder && Number(m.id) === numId);
+  if (direct) return Number(direct.id);
+
+  const userObj = usersList.find(u => Number(u.id) === numId);
+  if (userObj) {
+    const name = (userObj.u_name || userObj.name || '').toLowerCase().trim();
+    const email = (userObj.email || '').toLowerCase().trim();
+    const byName = teamMembersList.find(m =>
+      !m._placeholder && (m.name || '').toLowerCase().trim() === name
+    );
+    if (byName) return Number(byName.id);
+    if (email) {
+      const byEmail = teamMembersList.find(m =>
+        !m._placeholder && (m.email || '').toLowerCase().trim() === email
+      );
+      if (byEmail) return Number(byEmail.id);
+    }
+  }
+  return null;
 }
 
 const LIMITS = {
@@ -256,6 +300,7 @@ export default function SupervisorProjectDetail() {
   const [projectSupervisors, setProjectSupervisors] = useState([]);
   const [users, setUsers] = useState([]);
   const [comments, setComments] = useState([]);
+  const [pteamEntries, setPteamEntries] = useState([]);
   const [selectedTask, setSelectedTask] = useState(null);
   const [editTask, setEditTask] = useState(null);
   const [showAddTask, setShowAddTask] = useState(false);
@@ -269,6 +314,11 @@ export default function SupervisorProjectDetail() {
   const [addTaskSubmitAttempted, setAddTaskSubmitAttempted] = useState(false);
   const [editTaskSubmitAttempted, setEditTaskSubmitAttempted] = useState(false);
   const [modalCommentTouched, setModalCommentTouched] = useState(false);
+
+  // Remove member state
+  const [removeMemberInfo, setRemoveMemberInfo] = useState(null);
+  const [reassignTo, setReassignTo] = useState('');
+  const [removeMemberSaving, setRemoveMemberSaving] = useState(false);
 
   const addTaskTitleRef = useRef(null);
   const editTaskTitleRef = useRef(null);
@@ -312,7 +362,6 @@ export default function SupervisorProjectDetail() {
     [projectMembers, projectSupervisors]
   );
 
-  /* Overall project % = average of all task progress values */
   const projectProgress = useMemo(() => {
     if (!tasks || tasks.length === 0) return 0;
     const total = tasks.reduce((sum, t) => sum + (Number(t.progress) || 0), 0);
@@ -322,6 +371,7 @@ export default function SupervisorProjectDetail() {
   useEffect(() => {
     const onKey = (e) => {
       if (e.key !== 'Escape') return;
+      if (removeMemberInfo) { setRemoveMemberInfo(null); setReassignTo(''); return; }
       if (showDeleteConfirm !== null) { setShowDeleteConfirm(null); return; }
       if (editTask) { setEditTask(null); setEditTaskTouched({}); setEditTaskSubmitAttempted(false); return; }
       if (showAddTask) { setShowAddTask(false); setAddTaskTouched({}); setAddTaskSubmitAttempted(false); return; }
@@ -329,7 +379,7 @@ export default function SupervisorProjectDetail() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [showDeleteConfirm, editTask, showAddTask, selectedTask]);
+  }, [removeMemberInfo, showDeleteConfirm, editTask, showAddTask, selectedTask]);
 
   useEffect(() => {
     if (!showAddTask) return;
@@ -394,6 +444,7 @@ export default function SupervisorProjectDetail() {
       setProject(projectItem);
       setAllTeamMembers(membersList);
       setUsers(usersList);
+      setPteamEntries(pteamList);
 
       setStats({
         totalTasks: statsResponse.totalTasks || 0,
@@ -406,16 +457,14 @@ export default function SupervisorProjectDetail() {
         avgProgress: statsResponse.avgProgress || 0
       });
 
-      // Tasks for this project
       const projectTasks = allTasks.filter(t => {
         const taskProjectId = t.p_id || t.p || t.project || t.project_id;
         return Number(taskProjectId) === Number(projectId);
       });
 
-      // Members
+      // Members: PTeam + local supervisors + local members only
       const memberMap = new Map();
 
-      // 1. PTeam entries
       if (pteamList && Array.isArray(pteamList) && pteamList.length > 0) {
         const projectPteamEntries = pteamList.filter(
           entry => getPteamProjectId(entry) === Number(projectId)
@@ -435,7 +484,6 @@ export default function SupervisorProjectDetail() {
         });
       }
 
-      // 2. Local supervisors (user ids)
       const localSupervisorIds = getLocalSupervisors(projectId);
       localSupervisorIds.forEach(sid => {
         if (memberMap.has(sid)) return;
@@ -443,7 +491,6 @@ export default function SupervisorProjectDetail() {
         if (resolved) memberMap.set(Number(sid), { ...resolved, pt_id: null, task_id: null });
       });
 
-      // 3. Local members (user ids)
       const localMemberIds = getLocalMembers(projectId);
       localMemberIds.forEach(mid => {
         if (memberMap.has(mid)) return;
@@ -451,29 +498,11 @@ export default function SupervisorProjectDetail() {
         if (resolved) memberMap.set(Number(mid), { ...resolved, pt_id: null, task_id: null });
       });
 
-      // 4. Task assignees
-      projectTasks.forEach(t => {
-        const ids = [];
-        if (t.assign_to) ids.push(Number(t.assign_to));
-        if (Array.isArray(t.assignedTo)) t.assignedTo.forEach(a => a && ids.push(Number(a)));
-        ids.forEach(mid => {
-          if (memberMap.has(mid)) return;
-          const resolved = resolveUserId(mid, usersList, membersList);
-          if (resolved) {
-            memberMap.set(mid, { ...resolved, pt_id: null, task_id: null });
-          }
-        });
-      });
-
-      // NOTE: We intentionally do NOT add the creator. A supervisor who
-      // creates a project but doesn't select themselves should still see
-      // the project (handled by created_by in userProjects list) but should
-      // NOT appear in the Supervisors / Members section of the detail page.
+      // NOTE: Task assignees and creator are NOT auto-added as project members.
 
       const memberEntries = Array.from(memberMap.values());
       setProjectMembers(memberEntries);
 
-      // Supervisors
       const supervisorMap = new Map();
 
       memberEntries.forEach(m => {
@@ -495,7 +524,6 @@ export default function SupervisorProjectDetail() {
       const supervisorEntries = Array.from(supervisorMap.values());
       setProjectSupervisors(supervisorEntries);
 
-      // Tasks with progress
       const mappedTasks = projectTasks.map(t => ({
         ...t,
         progress: computeTaskProgress(t),
@@ -505,7 +533,6 @@ export default function SupervisorProjectDetail() {
 
       setTasks(mappedTasks);
 
-      // Comments
       if (mappedTasks.length > 0) {
         const allComments = [];
         for (const task of mappedTasks) {
@@ -756,6 +783,92 @@ export default function SupervisorProjectDetail() {
     }
   };
 
+  /* ═══════════════ REMOVE-MEMBER FLOW ═══════════════ */
+
+  const promptRemoveMember = (member) => {
+    const memberUserId = Number(member.userId ?? member.id);
+
+    const assignedTasks = tasks.filter(t => {
+      const belongsToProject = Number(t.p_id || t.p) === Number(projectId);
+      if (!belongsToProject) return false;
+      const ids = [];
+      if (t.assign_to) ids.push(Number(t.assign_to));
+      if (Array.isArray(t.assignedTo)) t.assignedTo.forEach(a => a && ids.push(Number(a)));
+      return ids.includes(memberUserId);
+    });
+
+    setRemoveMemberInfo({
+      projectId,
+      member,
+      assignedTasks,
+    });
+    setReassignTo('');
+  };
+
+  const confirmRemoveMember = async () => {
+    if (!removeMemberInfo) return;
+    const { projectId: pId, member, assignedTasks } = removeMemberInfo;
+    const memberUserId = Number(member.userId ?? member.id);
+
+    setRemoveMemberSaving(true);
+    try {
+      // 1) Reassign / unassign tasks in this project
+      if (assignedTasks.length > 0) {
+        for (const t of assignedTasks) {
+          const tid = t.t_id || t.id;
+          if (!tid) continue;
+
+          const payload = {
+            title: t.title,
+            description: t.desc || '',
+            status: t.status,
+            priority: t.priority,
+            progress: t.progress ?? 0,
+            assignTo: reassignTo ? Number(reassignTo) : null,
+          };
+
+          try {
+            await taskService.updateTask(tid, payload);
+          } catch (e) {
+            console.warn(`Could not ${reassignTo ? 'reassign' : 'unassign'} task ${tid}:`, e);
+          }
+        }
+      }
+
+      // 2) Remove from PTeam if they had a row
+      const currentPteam = pteamEntries.filter(entry => getPteamProjectId(entry) === Number(pId));
+      const realTmId = findRealTeamMemberId(member, allTeamMembers, users);
+      if (realTmId) {
+        const entry = currentPteam.find(e => getPteamTmId(e) === realTmId);
+        if (entry) {
+          try { await projectTeamService.removeMemberFromProject(entry.pt_id); }
+          catch (e) { console.warn('Could not remove PTeam entry:', e); }
+        }
+      }
+
+      // 3) Remove from localStorage fallbacks
+      const localSups = getLocalSupervisors(pId).filter(id => Number(id) !== memberUserId);
+      const localMems = getLocalMembers(pId).filter(id => Number(id) !== memberUserId);
+      setLocalSupervisors(pId, localSups);
+      setLocalMembers(pId, localMems);
+
+      toast.success(
+        reassignTo
+          ? `${member.name} removed. Their tasks reassigned.`
+          : `${member.name} removed. Their tasks are now unassigned.`
+      );
+
+      setRemoveMemberInfo(null);
+      setReassignTo('');
+      await fetchProjectData();
+    } catch (error) {
+      console.error('Error removing member:', error);
+      toast.error('Failed to remove member');
+    } finally {
+      setRemoveMemberSaving(false);
+    }
+  };
+
   const progress = projectProgress;
 
   const getMemberName = (memberId) => {
@@ -822,7 +935,7 @@ export default function SupervisorProjectDetail() {
         }
       />
 
-      {/* ─── TASK DETAIL MODAL ─── */}
+      {/* TASK DETAIL MODAL */}
       <AnimatePresence>
         {selectedTask && (
           <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setSelectedTask(null)}>
@@ -942,7 +1055,7 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* ─── EDIT TASK MODAL ─── */}
+      {/* EDIT TASK MODAL */}
       <AnimatePresence>
         {editTask && (
           <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setEditTask(null); resetEditTaskTouched(); }}>
@@ -1004,7 +1117,7 @@ export default function SupervisorProjectDetail() {
                   <select className="form-input" value={editTask.assign_to || editTask.assignTo || ''} onChange={(e) => setEditTask({ ...editTask, assign_to: e.target.value ? parseInt(e.target.value) : null })}>
                     <option value="">Unassigned</option>
                     {projectMembers.map((m) => (
-                      <option key={m.id} value={m.id}>
+                      <option key={m.id} value={m.userId ?? m.id}>
                         {m.name} {projectSupervisors.some(s => Number(s.id) === Number(m.id)) ? '👑' : ''}
                       </option>
                     ))}
@@ -1028,7 +1141,7 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* ─── ADD TASK MODAL ─── */}
+      {/* ADD TASK MODAL */}
       <AnimatePresence>
         {showAddTask && (
           <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setShowAddTask(false); resetAddTaskTouched(); }}>
@@ -1092,7 +1205,7 @@ export default function SupervisorProjectDetail() {
                   <select className="form-input" value={newTask.assignedTo || ""} onChange={(e) => setNewTask({ ...newTask, assignedTo: e.target.value ? parseInt(e.target.value) : null })}>
                     <option value="">Select Member</option>
                     {projectMembers.map((mem) => (
-                      <option key={mem.id} value={mem.id}>
+                      <option key={mem.id} value={mem.userId ?? mem.id}>
                         {mem.name} {projectSupervisors.some(s => Number(s.id) === Number(mem.id)) ? '👑' : ''}
                       </option>
                     ))}
@@ -1116,7 +1229,133 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* ─── DELETE CONFIRM ─── */}
+      {/* REMOVE MEMBER MODAL */}
+      <AnimatePresence>
+        {removeMemberInfo && (
+          <motion.div
+            className="modal-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => { if (!removeMemberSaving) { setRemoveMemberInfo(null); setReassignTo(''); } }}
+          >
+            <motion.div
+              className="modal-box"
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={e => e.stopPropagation()}
+              style={{ maxWidth: 480 }}
+            >
+              <div className="modal-header">
+                <h2 className="modal-title">
+                  <UserMinus size={16} /> Remove member
+                </h2>
+                <button
+                  className="modal-close-btn"
+                  onClick={() => { setRemoveMemberInfo(null); setReassignTo(''); }}
+                  disabled={removeMemberSaving}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="modal-body edit-form">
+                <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
+                  Remove <strong>{removeMemberInfo.member.name}</strong> from this project?
+                </p>
+
+                {removeMemberInfo.assignedTasks.length > 0 ? (
+                  <>
+                    <div style={{
+                      padding: '10px 12px',
+                      background: 'rgba(245, 158, 11, 0.08)',
+                      border: '1px solid rgba(245, 158, 11, 0.25)',
+                      borderRadius: 8,
+                      fontSize: 12.5,
+                      color: 'var(--text-secondary)',
+                    }}>
+                      <AlertCircle size={12} style={{ display: 'inline', marginRight: 4, color: '#f59e0b' }} />
+                      This member has <strong>{removeMemberInfo.assignedTasks.length}</strong> assigned
+                      task{removeMemberInfo.assignedTasks.length !== 1 ? 's' : ''} in this project.
+                    </div>
+
+                    <div style={{ maxHeight: 120, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {removeMemberInfo.assignedTasks.map(t => (
+                        <div key={t.t_id || t.id} style={{
+                          fontSize: 12.5,
+                          padding: '6px 10px',
+                          background: 'var(--bg-secondary)',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: 6,
+                          color: 'var(--text-primary)',
+                        }}>
+                          📋 {t.title}
+                        </div>
+                      ))}
+                    </div>
+
+                    <label className="form-label" style={{ marginTop: 6 }}>
+                      Reassign those tasks to
+                    </label>
+                    <select
+                      className="form-input"
+                      value={reassignTo}
+                      onChange={e => setReassignTo(e.target.value)}
+                      disabled={removeMemberSaving}
+                    >
+                      <option value="">— Leave unassigned —</option>
+                      {projectMembers
+                        .filter(m => Number(m.userId ?? m.id) !== Number(removeMemberInfo.member.userId ?? removeMemberInfo.member.id))
+                        .map(m => (
+                          <option key={m.id} value={m.userId ?? m.id}>{m.name}</option>
+                        ))
+                      }
+                    </select>
+                    <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: 0 }}>
+                      If you don't pick anyone, the tasks will be left unassigned.
+                    </p>
+                  </>
+                ) : (
+                  <div style={{
+                    padding: '10px 12px',
+                    background: 'rgba(52, 211, 153, 0.08)',
+                    border: '1px solid rgba(52, 211, 153, 0.25)',
+                    borderRadius: 8,
+                    fontSize: 12.5,
+                    color: 'var(--text-secondary)',
+                  }}>
+                    <CheckCircle2 size={12} style={{ display: 'inline', marginRight: 4, color: '#34d399' }} />
+                    No tasks assigned to this member in this project.
+                  </div>
+                )}
+              </div>
+
+              <div className="modal-footer">
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => { setRemoveMemberInfo(null); setReassignTo(''); }}
+                  disabled={removeMemberSaving}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-danger btn-sm"
+                  onClick={confirmRemoveMember}
+                  disabled={removeMemberSaving}
+                >
+                  {removeMemberSaving
+                    ? <><Loader2 size={13} className="spin" /> Removing...</>
+                    : <><Trash2 size={13} /> Remove member</>
+                  }
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* DELETE CONFIRM */}
       <AnimatePresence>
         {showDeleteConfirm !== null && (
           <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowDeleteConfirm(null)}>
@@ -1135,7 +1374,7 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* ─── PROJECT BODY ─── */}
+      {/* PROJECT BODY */}
       <div className="project-body">
         <div className="project-left">
           <div className="project-overview-card">
@@ -1279,6 +1518,13 @@ export default function SupervisorProjectDetail() {
                           </span>
                           <span className="team-member-role">Supervisor</span>
                         </div>
+                        <button
+                          className="task-action-btn danger"
+                          title={`Remove ${m.name}`}
+                          onClick={() => promptRemoveMember(m)}
+                        >
+                          <UserMinus size={11} />
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -1305,6 +1551,13 @@ export default function SupervisorProjectDetail() {
                           <span className="team-member-name">{m.name}</span>
                           <span className="team-member-role">{m.role || 'Member'}</span>
                         </div>
+                        <button
+                          className="task-action-btn danger"
+                          title={`Remove ${m.name}`}
+                          onClick={() => promptRemoveMember(m)}
+                        >
+                          <UserMinus size={11} />
+                        </button>
                       </div>
                     ))}
                   </div>
