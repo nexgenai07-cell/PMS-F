@@ -1,11 +1,11 @@
 // components/supervisor/SupervisorNotifications.jsx
 import { useState, useEffect } from 'react';
 import { useNavigate, useOutletContext } from 'react-router-dom';
-import { 
-  Bell, CheckCheck, RefreshCw, Trash2, 
-  UserPlus, FolderKanban, CheckCircle2, 
-  MessageSquare, Users, Clock, AlertCircle,
-  UserCheck, PlusCircle, X
+import {
+  Bell, CheckCheck, RefreshCw, Trash2,
+  UserPlus, FolderKanban, CheckCircle2,
+  MessageSquare, Users, AlertCircle,
+  UserCheck, PlusCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import toast from 'react-hot-toast';
@@ -18,7 +18,6 @@ import taskService from '../../services/taskService';
 import teamService from '../../services/teamService';
 import userService from '../../services/userService';
 
-// Notification types and their icons
 const NOTIFICATION_ICONS = {
   project_created: { icon: FolderKanban, color: '#818cf8' },
   project_updated: { icon: FolderKanban, color: '#818cf8' },
@@ -51,40 +50,41 @@ export default function SupervisorNotifications() {
   const [filterType, setFilterType] = useState('all');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
 
-  // Fetch all data
   const fetchData = async () => {
     try {
       setLoading(true);
-      
-      // Get current user ID and role
       const userId = user?.id || user?.u_id;
       const userRole = user?.role || 'member';
-      
-      // Get all data
+
       const [projectsData, tasksData, membersData, usersData, notificationsData] = await Promise.all([
         projectService.getProjects(),
         taskService.getTasks(),
         teamService.getTeamMembers(),
         userService.getUsers(),
-        notificationService.getNotifications(userId, userRole), // ✅ Pass user info for filtering
+        notificationService.getNotifications(userId, userRole),
       ]);
 
       const projectsList = projectsData?.data || projectsData || [];
       const tasksList = tasksData?.data || tasksData || [];
       const membersList = membersData?.data || membersData || [];
       const usersList = usersData?.data || usersData || [];
-      
-      // Get notifications filtered for this user
       let notificationsList = notificationsData?.data || [];
 
-      console.log('📊 All activities for user:', notificationsList.length);
+      const readItems = JSON.parse(localStorage.getItem('read_notifications') || '[]');
+      const deletedItems = JSON.parse(localStorage.getItem('deleted_notifications') || '[]');
+
+      notificationsList = notificationsList
+        .filter(n => !deletedItems.includes(n.n_id || n.id))
+        .map(n => ({
+          ...n,
+          is_read: n.is_read || readItems.includes(n.n_id || n.id),
+        }));
 
       setProjects(projectsList);
       setTasks(tasksList);
       setTeamMembers(membersList);
       setUsers(usersList);
       setNotifications(notificationsList);
-
     } catch (error) {
       console.error('Error fetching data:', error);
       toast.error('Failed to load notifications');
@@ -107,6 +107,10 @@ export default function SupervisorNotifications() {
   const markAllRead = async () => {
     try {
       await notificationService.markAllRead();
+      const ids = notifications.map(n => n.n_id || n.id);
+      const readItems = JSON.parse(localStorage.getItem('read_notifications') || '[]');
+      const merged = [...new Set([...readItems, ...ids])];
+      localStorage.setItem('read_notifications', JSON.stringify(merged));
       setNotifications(notifications.map(n => ({ ...n, is_read: true })));
       toast.success('All notifications marked as read');
     } catch (error) {
@@ -117,7 +121,7 @@ export default function SupervisorNotifications() {
   const markAsRead = async (id) => {
     try {
       await notificationService.markAsRead(id);
-      setNotifications(notifications.map(n => 
+      setNotifications(notifications.map(n =>
         (n.n_id || n.id) === id ? { ...n, is_read: true } : n
       ));
     } catch (error) {
@@ -136,10 +140,7 @@ export default function SupervisorNotifications() {
     }
   };
 
-  const getNotificationIcon = (type) => {
-    const config = NOTIFICATION_ICONS[type] || NOTIFICATION_ICONS.default;
-    return config;
-  };
+  const getNotificationIcon = (type) => NOTIFICATION_ICONS[type] || NOTIFICATION_ICONS.default;
 
   const getEntityName = (entityId, entityType) => {
     if (entityType === 'project') {
@@ -166,7 +167,7 @@ export default function SupervisorNotifications() {
     const now = new Date();
     const past = new Date(date);
     const diff = Math.floor((now - past) / 1000);
-    
+
     if (diff < 60) return 'Just now';
     if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
     if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
@@ -174,16 +175,45 @@ export default function SupervisorNotifications() {
     return past.toLocaleDateString();
   };
 
-  // Filter notifications by type
+  const getNotificationRoute = (notification) => {
+    const { entity_type, entity_id } = notification;
+
+    if (!entity_type || !entity_id) return null;
+
+    if (entity_type === 'project') {
+      return `/supervisor/projects/${entity_id}`;
+    }
+
+    if (entity_type === 'task') {
+      const task = tasks.find(t => Number(t.t_id || t.id) === Number(entity_id));
+      const projectId = task ? (task.p_id || task.p || task.project || task.project_id) : null;
+      if (!projectId) return null;
+      return `/supervisor/projects/${projectId}/tasks/${entity_id}`;
+    }
+
+    if (entity_type === 'team_member') {
+      return null;
+    }
+
+    return null;
+  };
+
+  const handleNotificationClick = async (notification) => {
+    const id = notification.n_id || notification.id;
+    if (!notification.is_read) {
+      markAsRead(id);
+    }
+    const route = getNotificationRoute(notification);
+    if (route) navigate(route);
+  };
+
   const filteredNotifications = notifications.filter(n => {
     if (filterType === 'all') return true;
     return n.type === filterType;
   });
 
-  // Get unique notification types for filter
   const notificationTypes = ['all', ...new Set(notifications.map(n => n.type))];
 
-  // Get notification type label
   const getTypeLabel = (type) => {
     const labels = {
       project_created: 'Project Created',
@@ -223,8 +253,8 @@ export default function SupervisorNotifications() {
         onMenuClick={onMenuClick}
         actions={
           <div className="topbar-actions">
-            <button 
-              className="btn btn-secondary btn-sm refresh-btn" 
+            <button
+              className="btn btn-secondary btn-sm refresh-btn"
               onClick={handleRefresh}
               disabled={refreshing}
               aria-label={refreshing ? 'Refreshing notifications' : 'Refresh notifications'}
@@ -249,7 +279,6 @@ export default function SupervisorNotifications() {
       />
 
       <div className="page-container">
-        {/* Filter Bar */}
         {notifications.length > 0 && (
           <div className="filter-bar">
             <div className="filter-scroll">
@@ -293,6 +322,11 @@ export default function SupervisorNotifications() {
                 const timeAgo = getTimeAgo(notification.created_at);
                 const message = notification.message || '';
                 const typeLabel = getTypeLabel(notification.type);
+                const route = getNotificationRoute(notification);
+                const isClickable = !!route;
+                const entityName = notification.entity_type && notification.entity_id
+                  ? getEntityName(notification.entity_id, notification.entity_type)
+                  : '';
 
                 return (
                   <motion.div
@@ -301,8 +335,18 @@ export default function SupervisorNotifications() {
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, height: 0 }}
                     transition={{ duration: 0.2 }}
-                    className={`notification-item card ${isRead ? 'read' : 'unread'}`}
-                    onClick={() => !isRead && markAsRead(id)}
+                    className={`notification-item card ${isRead ? 'read' : 'unread'} ${isClickable ? 'clickable' : ''}`}
+                    onClick={() => handleNotificationClick(notification)}
+                    role={isClickable ? 'button' : undefined}
+                    tabIndex={isClickable ? 0 : undefined}
+                    onKeyDown={(e) => {
+                      if (!isClickable) return;
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        handleNotificationClick(notification);
+                      }
+                    }}
+                    title={isClickable ? `Open ${entityName}` : undefined}
                   >
                     <div className="notification-icon" style={{ background: `${color}20`, color }}>
                       <Icon size={18} />
@@ -314,21 +358,22 @@ export default function SupervisorNotifications() {
                         </span>
                         <span className="notification-time">{timeAgo}</span>
                       </div>
-                      <p className="notification-message">{message}</p>
+                      <p className="notification-message" title={message}>{message}</p>
                       {notification.entity_type && notification.entity_id && (
-                        <span className="notification-entity-tag">
+                        <span
+                          className="notification-entity-tag"
+                          title={entityName}
+                        >
                           {notification.entity_type === 'project' && <FolderKanban size={12} />}
                           {notification.entity_type === 'task' && <CheckCircle2 size={12} />}
                           {notification.entity_type === 'user' && <Users size={12} />}
                           {notification.entity_type === 'team_member' && <UserPlus size={12} />}
-                          {getEntityName(notification.entity_id, notification.entity_type)}
+                          <span className="notification-entity-name">{entityName}</span>
                         </span>
                       )}
                     </div>
                     <div className="notification-actions">
-                      {!isRead && (
-                        <span className="unread-dot" />
-                      )}
+                      {!isRead && <span className="unread-dot" />}
                       <button
                         className="delete-btn"
                         onClick={(e) => {
@@ -351,14 +396,14 @@ export default function SupervisorNotifications() {
       {/* Delete Confirm Modal */}
       <AnimatePresence>
         {showDeleteConfirm !== null && (
-          <motion.div 
-            className="modal-overlay" 
+          <motion.div
+            className="modal-overlay"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setShowDeleteConfirm(null)}
           >
-            <motion.div 
+            <motion.div
               className="modal-box confirm-box"
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
@@ -382,23 +427,12 @@ export default function SupervisorNotifications() {
       </AnimatePresence>
 
       <style>{`
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-        .spin {
-          animation: spin 1s linear infinite;
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spin { animation: spin 1s linear infinite; }
 
-        .loading-spinner-wrapper {
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          height: 400px;
-        }
-
+        .loading-spinner-wrapper { display: flex; justify-content: center; align-items: center; height: 400px; }
         .loading-spinner {
-          width: 40px;
-          height: 40px;
+          width: 40px; height: 40px;
           border: 3px solid var(--border-subtle);
           border-top-color: var(--accent-primary);
           border-radius: 50%;
@@ -406,183 +440,100 @@ export default function SupervisorNotifications() {
         }
 
         .topbar-actions {
-          display: flex;
-          align-items: center;
-          flex-wrap: nowrap;
-          gap: 8px;
-          min-width: 0;
+          display: flex; align-items: center; flex-wrap: nowrap;
+          gap: 8px; min-width: 0;
         }
+        .refresh-btn { display: flex; align-items: center; gap: 6px; }
 
-        .refresh-btn {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-        }
+        .page-container { padding: 20px 24px; max-width: 900px; margin: 0 auto; }
 
-        .page-container {
-          padding: 20px 24px;
-          max-width: 900px;
-          margin: 0 auto;
-        }
-
-        .filter-bar {
-          margin-bottom: 20px;
-          overflow-x: auto;
-          scrollbar-width: none;
-        }
-
-        .filter-bar::-webkit-scrollbar {
-          display: none;
-        }
-
-        .filter-scroll {
-          display: flex;
-          gap: 8px;
-          padding-bottom: 4px;
-        }
-
+        .filter-bar { margin-bottom: 20px; overflow-x: auto; scrollbar-width: none; }
+        .filter-bar::-webkit-scrollbar { display: none; }
+        .filter-scroll { display: flex; gap: 8px; padding-bottom: 4px; }
         .filter-btn {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          padding: 6px 14px;
-          border-radius: 20px;
+          display: flex; align-items: center; gap: 6px;
+          padding: 6px 14px; border-radius: 20px;
           border: 1px solid var(--border-subtle);
-          background: var(--bg-secondary);
-          color: var(--text-secondary);
-          font-size: 12px;
-          font-weight: 500;
-          cursor: pointer;
-          white-space: nowrap;
-          transition: all 0.15s;
+          background: var(--bg-secondary); color: var(--text-secondary);
+          font-size: 12px; font-weight: 500;
+          cursor: pointer; white-space: nowrap; transition: all 0.15s;
         }
-
-        .filter-btn:hover {
-          border-color: var(--border-default);
-          color: var(--text-primary);
-        }
-
-        .filter-btn.active {
-          background: var(--accent-primary);
-          color: #fff;
-          border-color: var(--accent-primary);
-        }
-
+        .filter-btn:hover { border-color: var(--border-default); color: var(--text-primary); }
+        .filter-btn.active { background: var(--accent-primary); color: #fff; border-color: var(--accent-primary); }
         .filter-btn .filter-count {
-          font-size: 10px;
-          background: var(--bg-card);
-          color: var(--text-muted);
-          padding: 0 6px;
-          border-radius: 10px;
-          min-width: 18px;
-          text-align: center;
+          font-size: 10px; background: var(--bg-card); color: var(--text-muted);
+          padding: 0 6px; border-radius: 10px; min-width: 18px; text-align: center;
         }
+        .filter-btn.active .filter-count { background: rgba(255,255,255,0.2); color: #fff; }
 
-        .filter-btn.active .filter-count {
-          background: rgba(255,255,255,0.2);
-          color: #fff;
-        }
+        .empty-state { text-align: center; padding: 60px 20px; }
+        .empty-icon { color: var(--text-muted); margin-bottom: 16px; opacity: 0.3; }
+        .empty-state h3 { font-size: 18px; font-weight: 700; color: var(--text-primary); margin-bottom: 8px; }
+        .empty-state p { color: var(--text-muted); font-size: 14px; }
 
-        .empty-state {
-          text-align: center;
-          padding: 60px 20px;
-        }
-
-        .empty-icon {
-          color: var(--text-muted);
-          margin-bottom: 16px;
-          opacity: 0.3;
-        }
-
-        .empty-state h3 {
-          font-size: 18px;
-          font-weight: 700;
-          color: var(--text-primary);
-          margin-bottom: 8px;
-        }
-
-        .empty-state p {
-          color: var(--text-muted);
-          font-size: 14px;
-        }
-
-        .notifications-list {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
+        .notifications-list { display: flex; flex-direction: column; gap: 8px; }
 
         .notification-item {
-          display: flex;
-          align-items: flex-start;
-          gap: 14px;
-          padding: 14px 18px;
-          cursor: pointer;
-          transition: all 0.15s;
-          position: relative;
+          display: flex; align-items: flex-start; gap: 14px;
+          padding: 14px 18px; transition: all 0.15s; position: relative;
+          min-width: 0;
+          max-width: 100%;
+          box-sizing: border-box;
         }
 
-        .notification-item:hover {
-          border-color: var(--border-default);
+        /* ─── Clickable cursor + hover ─── */
+        .notification-item.clickable { cursor: pointer; }
+        .notification-item.clickable:hover {
+          border-color: var(--accent-primary);
+          transform: translateY(-1px);
+          box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        }
+        .notification-item.clickable:focus-visible {
+          outline: none;
+          border-color: var(--accent-primary);
+          box-shadow: 0 0 0 3px rgba(99,102,241,0.15);
         }
 
         .notification-item.unread {
           border-left: 3px solid var(--accent-primary);
           background: color-mix(in srgb, var(--accent-primary) 4%, var(--bg-card));
         }
-
-        .notification-item.read {
-          border-left: 3px solid transparent;
-          opacity: 0.7;
-        }
-
-        .notification-item.read:hover {
-          opacity: 0.9;
-        }
+        .notification-item.read { border-left: 3px solid transparent; opacity: 0.7; }
+        .notification-item.read:hover { opacity: 0.9; }
 
         .notification-icon {
-          width: 36px;
-          height: 36px;
-          border-radius: 50%;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          flex-shrink: 0;
+          width: 36px; height: 36px; border-radius: 50%;
+          display: flex; align-items: center; justify-content: center; flex-shrink: 0;
         }
 
+        /* ─── Content column: constrain width, allow wrapping ─── */
         .notification-content {
           flex: 1;
           min-width: 0;
+          max-width: 100%;
+          overflow: hidden;
         }
 
         .notification-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 8px;
-          margin-bottom: 4px;
-          flex-wrap: wrap;
+          display: flex; align-items: center; justify-content: space-between;
+          gap: 8px; margin-bottom: 4px; flex-wrap: wrap;
         }
+        .notification-type { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; }
+        .notification-time { font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
 
-        .notification-type {
-          font-size: 11px;
-          font-weight: 700;
-          text-transform: uppercase;
-          letter-spacing: 0.3px;
-        }
-
-        .notification-time {
-          font-size: 11px;
-          color: var(--text-muted);
-        }
-
+        /* ─── Break long words/URLs in messages ─── */
         .notification-message {
           font-size: 13px;
           color: var(--text-secondary);
           line-height: 1.5;
           margin: 0;
+          overflow-wrap: anywhere;
+          word-break: break-word;
+          white-space: normal;
+          max-width: 100%;
         }
 
+        /* ─── Constrain entity tag, ellipsize name ─── */
         .notification-entity-tag {
           display: inline-flex;
           align-items: center;
@@ -594,215 +545,93 @@ export default function SupervisorNotifications() {
           color: var(--text-muted);
           background: var(--bg-secondary);
           border: 1px solid var(--border-subtle);
+          max-width: 100%;
+          min-width: 0;
+          overflow: hidden;
+          box-sizing: border-box;
+        }
+        .notification-entity-name {
+          display: inline-block;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          min-width: 0;
+          max-width: 100%;
+          vertical-align: middle;
+        }
+        .notification-item.clickable .notification-entity-tag {
+          color: var(--accent-primary);
+          border-color: color-mix(in srgb, var(--accent-primary) 30%, transparent);
         }
 
-        .notification-actions {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          flex-shrink: 0;
-        }
-
-        .unread-dot {
-          width: 8px;
-          height: 8px;
-          border-radius: 50%;
-          background: var(--accent-primary);
-        }
+        .notification-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+        .unread-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-primary); }
 
         .delete-btn {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          padding: 4px;
-          border: none;
-          border-radius: 6px;
-          background: transparent;
-          color: var(--text-muted);
-          cursor: pointer;
-          transition: all 0.14s;
-          opacity: 0.5;
+          display: flex; align-items: center; justify-content: center;
+          padding: 4px; border: none; border-radius: 6px;
+          background: transparent; color: var(--text-muted);
+          cursor: pointer; transition: all 0.14s; opacity: 0.5;
         }
-
-        .notification-item:hover .delete-btn {
-          opacity: 1;
-        }
-
-        .delete-btn:hover {
-          color: #f87171;
-          background: rgba(248, 113, 113, 0.1);
-        }
+        .notification-item:hover .delete-btn { opacity: 1; }
+        .delete-btn:hover { color: #f87171; background: rgba(248, 113, 113, 0.1); }
 
         .modal-overlay {
-          position: fixed;
-          inset: 0;
-          background: rgba(0,0,0,0.6);
-          backdrop-filter: blur(4px);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          z-index: 1000;
-          padding: 16px;
+          position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+          backdrop-filter: blur(4px); display: flex; align-items: center;
+          justify-content: center; z-index: 1000; padding: 16px;
         }
-
         .modal-box {
-          background: var(--bg-card);
-          border: 1px solid var(--border-default);
-          border-radius: 20px;
-          width: 100%;
-          max-width: 400px;
-          max-height: 90vh;
-          overflow-y: auto;
-          box-shadow: 0 24px 60px rgba(0,0,0,0.3);
+          background: var(--bg-card); border: 1px solid var(--border-default);
+          border-radius: 20px; width: 100%; max-width: 400px; max-height: 90vh;
+          overflow-y: auto; box-shadow: 0 24px 60px rgba(0,0,0,0.3);
         }
-
-        .confirm-box {
-          text-align: center;
-          padding: 32px 28px 24px;
-        }
-
-        .confirm-title {
-          font-size: 18px;
-          font-weight: 800;
-          color: var(--text-primary);
-          margin: 0 0 6px;
-        }
-
-        .confirm-desc {
-          font-size: 13px;
-          color: var(--text-muted);
-          margin: 0 0 16px;
-          line-height: 1.6;
-        }
-
-        .modal-footer {
-          display: flex;
-          gap: 10px;
-          justify-content: center;
-        }
+        .confirm-box { text-align: center; padding: 32px 28px 24px; }
+        .confirm-title { font-size: 18px; font-weight: 800; color: var(--text-primary); margin: 0 0 6px; }
+        .confirm-desc { font-size: 13px; color: var(--text-muted); margin: 0 0 16px; line-height: 1.6; }
+        .modal-footer { display: flex; gap: 10px; justify-content: center; }
 
         .btn {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          gap: 6px;
-          padding: 8px 16px;
-          border-radius: 8px;
-          font-size: 12px;
-          font-weight: 600;
-          cursor: pointer;
-          border: 1px solid transparent;
-          transition: all 0.15s;
-          white-space: nowrap;
-          flex-shrink: 0;
-          -webkit-tap-highlight-color: transparent;
-          touch-action: manipulation;
+          display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+          padding: 8px 16px; border-radius: 8px;
+          font-size: 12px; font-weight: 600; cursor: pointer;
+          border: 1px solid transparent; transition: all 0.15s;
+          white-space: nowrap; flex-shrink: 0;
+          -webkit-tap-highlight-color: transparent; touch-action: manipulation;
         }
-
-        .btn-primary {
-          background: var(--accent-primary);
-          color: #fff;
-        }
-
-        .btn-primary:hover {
-          opacity: 0.85;
-        }
-
-        .btn-secondary {
-          background: var(--bg-secondary);
-          color: var(--text-primary);
-          border: 1px solid var(--border-default);
-        }
-
-        .btn-secondary:hover {
-          border-color: var(--accent-primary);
-        }
-
-        .btn-danger {
-          background: rgba(239, 68, 68, 0.1);
-          color: #ef4444;
-          border: 1px solid rgba(239, 68, 68, 0.3);
-        }
-
-        .btn-danger:hover {
-          background: rgba(239, 68, 68, 0.2);
-        }
-
-        .btn-sm {
-          padding: 6px 12px;
-          font-size: 11px;
-        }
+        .btn-primary { background: var(--accent-primary); color: #fff; }
+        .btn-primary:hover { opacity: 0.85; }
+        .btn-secondary { background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-default); }
+        .btn-secondary:hover { border-color: var(--accent-primary); }
+        .btn-danger { background: rgba(239, 68, 68, 0.1); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
+        .btn-danger:hover { background: rgba(239, 68, 68, 0.2); }
+        .btn-sm { padding: 6px 12px; font-size: 11px; }
 
         @media (max-width: 768px) {
-          .page-container {
-            padding: 14px 16px;
-          }
-
-          .notification-item {
-            padding: 12px 14px;
-          }
-
-          .filter-scroll {
-            gap: 6px;
-          }
-
-          .filter-btn {
-            padding: 4px 10px;
-            font-size: 11px;
-          }
-
-          .notification-icon {
-            width: 30px;
-            height: 30px;
-          }
-
-          .notification-icon svg {
-            width: 14px;
-            height: 14px;
-          }
+          .page-container { padding: 14px 16px; }
+          .notification-item { padding: 12px 14px; }
+          .filter-scroll { gap: 6px; }
+          .filter-btn { padding: 4px 10px; font-size: 11px; }
+          .notification-icon { width: 30px; height: 30px; }
+          .notification-icon svg { width: 14px; height: 14px; }
+          .notification-entity-name { max-width: 180px; }
         }
-
         @media (max-width: 560px) {
-          .topbar-actions .btn {
-            width: 32px;
-            height: 32px;
-            padding: 0;
-            border-radius: 8px;
-          }
-
-          .topbar-actions .btn-label {
-            display: none;
-          }
+          .topbar-actions .btn { width: 32px; height: 32px; padding: 0; border-radius: 8px; }
+          .topbar-actions .btn-label { display: none; }
+          .notification-entity-name { max-width: 140px; }
         }
-
         @media (max-width: 400px) {
-          .topbar-actions .btn {
-            width: 28px;
-            height: 28px;
-            border-radius: 7px;
-          }
+          .topbar-actions .btn { width: 28px; height: 28px; border-radius: 7px; }
+          .notification-entity-name { max-width: 100px; }
         }
-
         @media (max-width: 480px) {
-          .page-container {
-            padding: 10px 12px;
-          }
-
-          .notification-item {
-            padding: 10px 12px;
-            gap: 10px;
-          }
-
-          .notification-message {
-            font-size: 12px;
-          }
+          .page-container { padding: 10px 12px; }
+          .notification-item { padding: 10px 12px; gap: 10px; }
+          .notification-message { font-size: 12px; }
         }
-
         @media (hover: none) and (pointer: coarse) {
-          .topbar-actions .btn {
-            width: 40px !important;
-            height: 40px !important;
-          }
+          .topbar-actions .btn { width: 40px !important; height: 40px !important; }
         }
       `}</style>
     </div>
