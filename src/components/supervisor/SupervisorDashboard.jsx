@@ -52,8 +52,28 @@ import taskService from "../../services/taskService";
 import teamService from "../../services/teamService";
 import userService from "../../services/userService";
 
-// Colors resolve through the app's theme variables so charts stay
-// correct in both light and dark mode instead of hardcoded hex.
+/* ─────────── Shared helpers (kept in sync with Project pages) ─────────── */
+function computeTaskProgress(task) {
+  const raw = Number(task.progress);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  const status = (task.status || '').toLowerCase();
+  if (status === 'done' || status === 'completed') return 100;
+  if (status === 'review') return 75;
+  if (status === 'in_progress' || status === 'in-progress') return 50;
+  return 0;
+}
+
+// Average of all task progress values for a given project
+function computeProjectProgress(projectId, allTasks) {
+  const projectTasks = allTasks.filter(t => {
+    const taskProjectId = t.p_id || t.p || t.project || t.project_id;
+    return Number(taskProjectId) === Number(projectId);
+  });
+  if (projectTasks.length === 0) return 0;
+  const total = projectTasks.reduce((sum, t) => sum + computeTaskProgress(t), 0);
+  return Math.round(total / projectTasks.length);
+}
+
 const getStatusColor = (status) => {
   const colors = {
     active: "var(--accent-primary)",
@@ -92,7 +112,6 @@ const daysAgo = (n, from = new Date()) => {
   return d;
 };
 
-// Percent change between two period counts
 const computeTrend = (current, previous) => {
   if (previous === 0 && current === 0) return { dir: "flat", percent: 0 };
   if (previous === 0) return { dir: "up", percent: 100 };
@@ -103,7 +122,6 @@ const computeTrend = (current, previous) => {
 
 const dateOf = (item) => new Date(item.created_at || item.start_date || item.updated_at || Date.now());
 
-// Build task-activity series at daily / weekly / monthly granularity.
 const buildTrendData = (allTasks, range) => {
   const now = new Date();
 
@@ -137,7 +155,6 @@ const buildTrendData = (allTasks, range) => {
     return out;
   }
 
-  // "month" — last 4 weekly buckets
   const out = [];
   for (let i = 3; i >= 0; i--) {
     const end = daysAgo(i * 7, now);
@@ -155,7 +172,6 @@ const buildTrendData = (allTasks, range) => {
   return out;
 };
 
-// ─── Custom Chart Tooltip ───
 const CustomTooltip = ({ active, payload, label }) =>
   active && payload?.length ? (
     <div className="chart-tooltip">
@@ -186,13 +202,11 @@ const TrendPill = ({ trend }) => {
   );
 };
 
-// ─── Main Component ───
 export default function SupervisorDashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { onMenuClick } = useOutletContext();
 
-  // State
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [projects, setProjects] = useState([]);
@@ -203,7 +217,6 @@ export default function SupervisorDashboard() {
   const [timeRange, setTimeRange] = useState("month");
   const [projectStatsMap, setProjectStatsMap] = useState({});
 
-  // Stats
   const [stats, setStats] = useState({
     totalProjects: 0,
     activeProjects: 0,
@@ -224,7 +237,6 @@ export default function SupervisorDashboard() {
     completionPercent: { dir: "flat", percent: 0 }
   });
 
-  // Chart data
   const [statusData, setStatusData] = useState([]);
   const [priorityData, setPriorityData] = useState([]);
   const [teamProductivity, setTeamProductivity] = useState([]);
@@ -235,7 +247,6 @@ export default function SupervisorDashboard() {
     fetchDashboardData();
   }, []);
 
-  // Recompute the trend chart whenever the range toggle changes
   const taskTrendData = useMemo(() => buildTrendData(tasks, timeRange), [tasks, timeRange]);
 
   const fetchDashboardData = async () => {
@@ -254,25 +265,23 @@ export default function SupervisorDashboard() {
       const allMembers = membersData?.data || membersData || [];
       const allUsers = usersData?.data || usersData || [];
 
-      // ✅ Get current user
       const currentUserId = Number(user?.id || user?.u_id);
       const userName = (user?.u_name || '').toLowerCase().trim();
-      
-      // ✅ Find TeamMember for this user
-      const userTeamMember = allMembers.find(m => 
+
+      const userTeamMember = allMembers.find(m =>
         (m.name || '').toLowerCase().trim() === userName
       );
       const teamMemberId = userTeamMember ? Number(userTeamMember.id) : null;
-      
+
       console.log('👤 Current user:', userName, 'TeamMember ID:', teamMemberId);
-      
-      // ✅ Find projects created by this user
-      const createdProjects = allProjects.filter(p => 
+
+      // Projects created by this user
+      const createdProjects = allProjects.filter(p =>
         Number(p.created_by) === currentUserId
       );
       const createdProjectIds = createdProjects.map(p => Number(p.p_id || p.id));
-      
-      // ✅ Find projects where this user is assigned to tasks
+
+      // Projects where this user is assigned to tasks
       const assignedProjectIds = new Set();
       allTasks.forEach(t => {
         const assignTo = Number(t.assign_to || t.assignedTo);
@@ -280,41 +289,35 @@ export default function SupervisorDashboard() {
           assignedProjectIds.add(Number(t.p_id || t.p));
         }
       });
-      
-      // ✅ Also check by name (fallback)
       allTasks.forEach(t => {
         const assigneeName = (t.assign_to_name || '').toLowerCase().trim();
         if (assigneeName === userName) {
           assignedProjectIds.add(Number(t.p_id || t.p));
         }
       });
-      
-      // ✅ Combine all project IDs
+
       const allProjectIds = [...new Set([...createdProjectIds, ...assignedProjectIds])];
-      
-      // ✅ Filter projects for this user
-      const userProjects = allProjects.filter(p => 
+
+      const userProjects = allProjects.filter(p =>
         allProjectIds.includes(Number(p.p_id || p.id))
       );
-      
-      // ✅ Filter tasks for this user's projects
-      const userTasks = allTasks.filter(t => 
+      const userTasks = allTasks.filter(t =>
         allProjectIds.includes(Number(t.p_id || t.p))
       );
-      
+
       console.log('📊 Projects found:', userProjects.length);
       console.log('📊 Tasks found:', userTasks.length);
-      
+
       setProjects(userProjects);
       setTasks(userTasks);
       setTeamMembers(allMembers);
       setUsers(allUsers);
 
-      // ─── Calculate Stats using stats endpoint ───
+      // ─── Stats ───
+      // Backend stats (used for completed / in-progress / onTime counts)
       let totalTasks = 0;
       let doneTasks = 0;
       let inProgressTasks = 0;
-      let totalCompletion = 0;
       let totalOnTime = 0;
       let totalCompletedTasks = 0;
       const statsMap = {};
@@ -323,34 +326,41 @@ export default function SupervisorDashboard() {
         const projectId = project.p_id || project.id;
         try {
           const statsResponse = await projectService.getProjectStats(projectId);
-          const stats = statsResponse?.data || {};
-          statsMap[projectId] = stats;
-          totalTasks += stats.totalTasks || 0;
-          doneTasks += stats.completedTasks || 0;
-          inProgressTasks += stats.inProgressTasks || 0;
-          totalCompletion += stats.completionRate || 0;
-          totalOnTime += stats.onTimeRate || 0;
-          totalCompletedTasks += stats.completedTasks || 0;
+          const s = statsResponse?.data || {};
+          statsMap[projectId] = s;
+          totalTasks += s.totalTasks || 0;
+          doneTasks += s.completedTasks || 0;
+          inProgressTasks += s.inProgressTasks || 0;
+          totalOnTime += s.onTimeRate || 0;
+          totalCompletedTasks += s.completedTasks || 0;
         } catch (error) {
           console.error(`Error fetching stats for project ${projectId}:`, error);
         }
       }
-
       setProjectStatsMap(statsMap);
 
       const totalProjects = userProjects.length;
       const activeProjects = userProjects.filter(p =>
         p.status === "active" || p.status === "in-progress" || p.status === "in_progress"
       ).length;
-      
-      const completionPercent = totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 100) : 0;
-      const onTimeRate = totalCompletedTasks > 0 ? Math.round((totalOnTime / totalCompletedTasks) * 100) : 0;
+
+      // ⭐ Completion rate = average of all task progress values
+      // This must match the project pages which also average task progress.
+      const completionPercent = (() => {
+        if (userTasks.length === 0) return 0;
+        const total = userTasks.reduce((sum, t) => sum + computeTaskProgress(t), 0);
+        return Math.round(total / userTasks.length);
+      })();
+
+      // On-time rate from backend stats (across completed tasks)
+      const onTimeRate = totalCompletedTasks > 0
+        ? Math.round((totalOnTime / totalCompletedTasks) * 100)
+        : 0;
 
       const leads = allUsers.filter(u =>
         u.role?.toLowerCase() === 'member' || u.role?.toLowerCase() === 'lead'
       ).length;
 
-      // Average completion time
       const completedTasksList = userTasks.filter(isDone);
       const timedCompletions = completedTasksList.filter(t => t.created_at && t.updated_at);
       const avgCompletionDays = timedCompletions.length === 0 ? 0 : (
@@ -452,18 +462,20 @@ export default function SupervisorDashboard() {
       });
       setTeamProductivity(productivityData);
 
-      // ─── Project Health ───
+      // ⭐ Project Health — use computed average of task progress, same as project pages.
       const healthData = userProjects.slice(0, 8).map(project => {
         const projectId = project.p_id || project.id;
-        const stats = statsMap[projectId] || {};
-        const progress = stats.completionRate || 0;
-        const lead = allUsers.find(u => (u.id || u.u_id) === (project.created_by || project.lead_id));
+        const projectStats = statsMap[projectId] || {};
+        const computedProgress = computeProjectProgress(projectId, allTasks);
+        const lead = allUsers.find(u =>
+          Number(u.id || u.u_id) === Number(project.created_by || project.lead_id)
+        );
 
         return {
           ...project,
-          progress,
-          done: stats.completedTasks || 0,
-          total: stats.totalTasks || 0,
+          progress: computedProgress,
+          done: projectStats.completedTasks || 0,
+          total: projectStats.totalTasks || 0,
           lead: lead?.u_name || lead?.name || "Unassigned"
         };
       });
@@ -497,7 +509,6 @@ export default function SupervisorDashboard() {
     toast.success("Dashboard refreshed");
   };
 
-  // ─── Loading State ───
   if (loading) {
     return (
       <div>
@@ -523,8 +534,8 @@ export default function SupervisorDashboard() {
         }
         onMenuClick={onMenuClick}
         actions={
-          <button 
-            className="btn btn-secondary btn-sm refresh-btn" 
+          <button
+            className="btn btn-secondary btn-sm refresh-btn"
             onClick={handleRefresh}
             disabled={refreshing}
           >
@@ -624,7 +635,6 @@ export default function SupervisorDashboard() {
 
         {/* ─── CHARTS ROW 1 ─── */}
         <div className="charts-row">
-          {/* Task Trend */}
           <div className="chart-card">
             <div className="chart-card-header">
               <h3 className="chart-card-title">
@@ -632,27 +642,9 @@ export default function SupervisorDashboard() {
                 Task Activity
               </h3>
               <div className="chart-card-actions">
-                <button
-                  type="button"
-                  className={`time-btn ${timeRange === 'week' ? 'active' : ''}`}
-                  onClick={() => setTimeRange('week')}
-                >
-                  Week
-                </button>
-                <button
-                  type="button"
-                  className={`time-btn ${timeRange === 'month' ? 'active' : ''}`}
-                  onClick={() => setTimeRange('month')}
-                >
-                  Month
-                </button>
-                <button
-                  type="button"
-                  className={`time-btn ${timeRange === 'year' ? 'active' : ''}`}
-                  onClick={() => setTimeRange('year')}
-                >
-                  Year
-                </button>
+                <button type="button" className={`time-btn ${timeRange === 'week' ? 'active' : ''}`} onClick={() => setTimeRange('week')}>Week</button>
+                <button type="button" className={`time-btn ${timeRange === 'month' ? 'active' : ''}`} onClick={() => setTimeRange('month')}>Month</button>
+                <button type="button" className={`time-btn ${timeRange === 'year' ? 'active' : ''}`} onClick={() => setTimeRange('year')}>Year</button>
               </div>
             </div>
             <div className="chart-container">
@@ -675,31 +667,14 @@ export default function SupervisorDashboard() {
                     <XAxis dataKey="label" fontSize={11} stroke="var(--text-muted)" tickLine={false} axisLine={false} />
                     <YAxis fontSize={11} stroke="var(--text-muted)" tickLine={false} axisLine={false} allowDecimals={false} />
                     <Tooltip content={<CustomTooltip />} />
-                    <Area
-                      type="monotone"
-                      dataKey="created"
-                      name="Created"
-                      stroke="var(--accent-primary)"
-                      strokeWidth={2}
-                      fillOpacity={1}
-                      fill="url(#createdGradient)"
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="completed"
-                      name="Completed"
-                      stroke="var(--accent-emerald)"
-                      strokeWidth={2}
-                      fillOpacity={1}
-                      fill="url(#completedGradient)"
-                    />
+                    <Area type="monotone" dataKey="created" name="Created" stroke="var(--accent-primary)" strokeWidth={2} fillOpacity={1} fill="url(#createdGradient)" />
+                    <Area type="monotone" dataKey="completed" name="Completed" stroke="var(--accent-emerald)" strokeWidth={2} fillOpacity={1} fill="url(#completedGradient)" />
                   </AreaChart>
                 </ResponsiveContainer>
               )}
             </div>
           </div>
 
-          {/* Project Status Pie */}
           <div className="chart-card">
             <div className="chart-card-header">
               <h3 className="chart-card-title">
@@ -773,7 +748,6 @@ export default function SupervisorDashboard() {
 
         {/* ─── CHARTS ROW 2 ─── */}
         <div className="charts-row">
-          {/* Team Productivity */}
           <div className="chart-card">
             <div className="chart-card-header">
               <h3 className="chart-card-title">
@@ -800,7 +774,6 @@ export default function SupervisorDashboard() {
             </div>
           </div>
 
-          {/* Priority Distribution */}
           <div className="chart-card">
             <div className="chart-card-header">
               <h3 className="chart-card-title">
@@ -833,18 +806,13 @@ export default function SupervisorDashboard() {
 
         {/* ─── PROJECT HEALTH & RECENT ACTIVITY ─── */}
         <div className="dashboard-bottom">
-          {/* Project Health */}
           <div className="health-card">
             <div className="health-card-header">
               <h3 className="health-card-title">
                 <FolderKanban size={16} />
                 Project Health
               </h3>
-              <button
-                type="button"
-                className="view-all-btn"
-                onClick={() => navigate('/supervisor/projects')}
-              >
+              <button type="button" className="view-all-btn" onClick={() => navigate('/supervisor/projects')}>
                 View all →
               </button>
             </div>
@@ -887,7 +855,6 @@ export default function SupervisorDashboard() {
             </div>
           </div>
 
-          {/* Recent Activity */}
           <div className="activity-card">
             <div className="activity-card-header">
               <h3 className="activity-card-title">
@@ -1133,14 +1100,8 @@ export default function SupervisorDashboard() {
           transition: all 0.15s;
         }
 
-        .time-btn:hover {
-          color: var(--text-primary);
-        }
-
-        .time-btn.active {
-          background: var(--accent-primary);
-          color: #fff;
-        }
+        .time-btn:hover { color: var(--text-primary); }
+        .time-btn.active { background: var(--accent-primary); color: #fff; }
 
         .chart-badge {
           font-size: 11px;
@@ -1287,7 +1248,6 @@ export default function SupervisorDashboard() {
           gap: 16px;
         }
 
-        /* Health Card */
         .health-card {
           background: var(--bg-card);
           border: 1px solid var(--border-subtle);
@@ -1405,7 +1365,6 @@ export default function SupervisorDashboard() {
           font-size: 13px;
         }
 
-        /* Activity Card */
         .activity-card {
           background: var(--bg-card);
           border: 1px solid var(--border-subtle);
@@ -1510,79 +1469,35 @@ export default function SupervisorDashboard() {
 
         /* ─── RESPONSIVE ─── */
         @media (max-width: 1200px) {
-          .stats-grid {
-            grid-template-columns: repeat(2, 1fr);
-          }
-          .stats-grid-secondary {
-            grid-template-columns: repeat(3, 1fr);
-          }
+          .stats-grid { grid-template-columns: repeat(2, 1fr); }
+          .stats-grid-secondary { grid-template-columns: repeat(3, 1fr); }
         }
 
         @media (max-width: 992px) {
-          .charts-row {
-            grid-template-columns: 1fr;
-          }
-          .dashboard-bottom {
-            grid-template-columns: 1fr;
-          }
+          .charts-row { grid-template-columns: 1fr; }
+          .dashboard-bottom { grid-template-columns: 1fr; }
         }
 
         @media (max-width: 768px) {
-          .stats-grid {
-            grid-template-columns: 1fr 1fr;
-          }
-          .stats-grid-secondary {
-            grid-template-columns: 1fr 1fr;
-          }
-          .pie-chart-wrapper {
-            flex-direction: column;
-          }
-          .pie-chart-container {
-            width: 140px;
-            height: 140px;
-          }
-          .chart-card {
-            padding: 16px;
-          }
-          .chart-container {
-            height: 160px;
-          }
-          .health-item {
-            flex-wrap: wrap;
-          }
-          .health-badges {
-            width: 100%;
-            margin-top: 4px;
-          }
+          .stats-grid { grid-template-columns: 1fr 1fr; }
+          .stats-grid-secondary { grid-template-columns: 1fr 1fr; }
+          .pie-chart-wrapper { flex-direction: column; }
+          .pie-chart-container { width: 140px; height: 140px; }
+          .chart-card { padding: 16px; }
+          .chart-container { height: 160px; }
+          .health-item { flex-wrap: wrap; }
+          .health-badges { width: 100%; margin-top: 4px; }
         }
 
         @media (max-width: 480px) {
-          .stats-grid {
-            grid-template-columns: 1fr;
-          }
-          .stats-grid-secondary {
-            grid-template-columns: 1fr;
-          }
-          .stat-card-modern {
-            padding: 14px 16px;
-          }
-          .stat-card-value {
-            font-size: 20px;
-          }
-          .chart-card-header {
-            flex-direction: column;
-            align-items: flex-start;
-            gap: 8px;
-          }
-          .page-container.supervisor-dashboard {
-            padding: 10px;
-          }
-          .health-item {
-            padding: 8px 12px;
-          }
-          .activity-item {
-            padding: 8px 12px;
-          }
+          .stats-grid { grid-template-columns: 1fr; }
+          .stats-grid-secondary { grid-template-columns: 1fr; }
+          .stat-card-modern { padding: 14px 16px; }
+          .stat-card-value { font-size: 20px; }
+          .chart-card-header { flex-direction: column; align-items: flex-start; gap: 8px; }
+          .page-container.supervisor-dashboard { padding: 10px; }
+          .health-item { padding: 8px 12px; }
+          .activity-item { padding: 8px 12px; }
         }
       `}</style>
     </div>
