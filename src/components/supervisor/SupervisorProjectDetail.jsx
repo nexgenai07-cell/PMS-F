@@ -44,16 +44,15 @@ const PRIORITY_OPTIONS = ["low", "medium", "high", "critical"];
 const STATUS_OPTIONS = ["todo", "in_progress", "review", "done", "cancelled"];
 const SUPERVISOR_ROLES = ['manager', 'admin', 'supervisor'];
 
-/* ─────────── Local supervisor fallback (only for supervisors WITHOUT a TeamMember row) ─────────── */
+/* ─────────── Local fallbacks ─────────── */
 const SUPERVISOR_STORAGE_KEY = 'pms_project_supervisors';
+const MEMBER_STORAGE_KEY = 'pms_project_members';
 
 function readLocalSupervisors() {
   try {
     const raw = localStorage.getItem(SUPERVISOR_STORAGE_KEY);
     return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
+  } catch { return {}; }
 }
 
 function getLocalSupervisors(projectId) {
@@ -63,16 +62,66 @@ function getLocalSupervisors(projectId) {
   return Array.isArray(ids) ? ids.map(Number) : [];
 }
 
-/* ─────────── Helpers: resolve any id → unified user object ─────────── */
-// users table is the source of truth for names, roles, emails.
-function resolveUserFromId(id, usersList, membersList) {
-  if (id == null) return null;
-  const numId = Number(id);
+function readLocalMembers() {
+  try {
+    const raw = localStorage.getItem(MEMBER_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
+function getLocalMembers(projectId) {
+  if (!projectId) return [];
+  const map = readLocalMembers();
+  const ids = map[String(projectId)];
+  return Array.isArray(ids) ? ids.map(Number) : [];
+}
+
+/* ─────────── Resolve TeamMember id → object ─────────── */
+function resolveTeamMemberId(tmId, usersList, membersList) {
+  if (tmId == null) return null;
+  const numId = Number(tmId);
+
+  // Look up TeamMember first — tmId is a TeamMember.id
+  const tm = membersList.find(m => Number(m.id) === numId);
+  if (tm) {
+    const userObj = usersList.find(u => {
+      const uName = (u.u_name || u.name || '').toLowerCase().trim();
+      const mName = (tm.name || '').toLowerCase().trim();
+      return uName && mName && uName === mName;
+    });
+    return {
+      id: tm.id,
+      userId: userObj?.id ?? tm.id,
+      name: tm.name || userObj?.u_name || 'Unknown',
+      email: tm.email || userObj?.email || '',
+      role: ((userObj?.role) || tm.role || '').toLowerCase(),
+    };
+  }
+
+  // Fall back to user
+  const userObj = usersList.find(u => Number(u.id) === numId);
+  if (userObj) {
+    return {
+      id: userObj.id,
+      userId: userObj.id,
+      name: userObj.u_name || userObj.name || 'Unknown',
+      email: userObj.email || '',
+      role: (userObj.role || '').toLowerCase(),
+    };
+  }
+  return null;
+}
+
+/* ─────────── Resolve User id → object ─────────── */
+function resolveUserId(userId, usersList, membersList) {
+  if (userId == null) return null;
+  const numId = Number(userId);
 
   const userObj = usersList.find(u => Number(u.id) === numId);
   if (userObj) {
     return {
       id: userObj.id,
+      userId: userObj.id,
       name: userObj.u_name || userObj.name || 'Unknown',
       email: userObj.email || '',
       role: (userObj.role || '').toLowerCase(),
@@ -83,13 +132,32 @@ function resolveUserFromId(id, usersList, membersList) {
   if (tm) {
     return {
       id: tm.id,
+      userId: tm.id,
       name: tm.name || 'Unknown',
       email: tm.email || '',
       role: (tm.role || '').toLowerCase(),
     };
   }
-
   return null;
+}
+
+/* ─────────── PTeam field getters ─────────── */
+function getPteamProjectId(entry) {
+  return Number(entry.p ?? entry.p_id ?? entry.project ?? entry.projectId ?? entry.project_id);
+}
+function getPteamTmId(entry) {
+  return Number(entry.tm ?? entry.tm_id ?? entry.team_member ?? entry.member ?? entry.member_id ?? entry.teamMember);
+}
+
+/* ─────────── Compute task progress ─────────── */
+function computeTaskProgress(task) {
+  const raw = Number(task.progress);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  const status = (task.status || '').toLowerCase();
+  if (status === 'done' || status === 'completed') return 100;
+  if (status === 'review') return 75;
+  if (status === 'in_progress' || status === 'in-progress') return 50;
+  return 0;
 }
 
 const LIMITS = {
@@ -192,18 +260,14 @@ export default function SupervisorProjectDetail() {
   const [editTask, setEditTask] = useState(null);
   const [showAddTask, setShowAddTask] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
-  const [text, setText] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isCommenting, setIsCommenting] = useState(false);
   const [modalCommentText, setModalCommentText] = useState("");
   const [isModalCommenting, setIsModalCommenting] = useState(false);
-  const [commentUpdateTrigger, setCommentUpdateTrigger] = useState(0);
 
   const [addTaskTouched, setAddTaskTouched] = useState({});
   const [editTaskTouched, setEditTaskTouched] = useState({});
   const [addTaskSubmitAttempted, setAddTaskSubmitAttempted] = useState(false);
   const [editTaskSubmitAttempted, setEditTaskSubmitAttempted] = useState(false);
-  const [sideCommentTouched, setSideCommentTouched] = useState(false);
   const [modalCommentTouched, setModalCommentTouched] = useState(false);
 
   const addTaskTitleRef = useRef(null);
@@ -238,7 +302,6 @@ export default function SupervisorProjectDetail() {
     };
   }, [editTask]);
 
-  const sideCommentError = validators.comment(text);
   const modalCommentError = validators.comment(modalCommentText);
 
   const isAddTaskValid = Object.values(addTaskErrors).every(e => e === '');
@@ -248,6 +311,13 @@ export default function SupervisorProjectDetail() {
     () => projectMembers.filter(m => !projectSupervisors.some(s => Number(s.id) === Number(m.id))),
     [projectMembers, projectSupervisors]
   );
+
+  /* Overall project % = average of all task progress values */
+  const projectProgress = useMemo(() => {
+    if (!tasks || tasks.length === 0) return 0;
+    const total = tasks.reduce((sum, t) => sum + (Number(t.progress) || 0), 0);
+    return Math.round(total / tasks.length);
+  }, [tasks]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -292,11 +362,6 @@ export default function SupervisorProjectDetail() {
     return comments.filter(c => Number(c.taskId || c.t) === Number(taskId));
   };
 
-  const selectedTaskComments = selectedTask ? getTaskComments(selectedTask.t_id || selectedTask.id) : [];
-  const sortedComments = [...selectedTaskComments].sort((a, b) =>
-    (b.pin || b.pinned) === (a.pin || a.pinned) ? 0 : (b.pin || b.pinned) ? 1 : -1
-  );
-
   const modalTaskComments = selectedTask ? getTaskComments(selectedTask.t_id || selectedTask.id) : [];
   const sortedModalComments = [...modalTaskComments].sort((a, b) =>
     (b.pin || b.pinned) === (a.pin || a.pinned) ? 0 : (b.pin || b.pinned) ? 1 : -1
@@ -326,9 +391,6 @@ export default function SupervisorProjectDetail() {
       const pteamList = pteamData?.data || pteamData || [];
       const statsResponse = statsData?.data || statsData || {};
 
-      console.log('🔬 [Supervisor] users table (source of truth):', usersList.length);
-      console.log('🔬 [Supervisor] Local supervisors for project', projectId, ':', getLocalSupervisors(projectId));
-
       setProject(projectItem);
       setAllTeamMembers(membersList);
       setUsers(usersList);
@@ -344,20 +406,25 @@ export default function SupervisorProjectDetail() {
         avgProgress: statsResponse.avgProgress || 0
       });
 
-      // ─── Build members from PTeam, resolving everything via users table ───
+      // Tasks for this project
+      const projectTasks = allTasks.filter(t => {
+        const taskProjectId = t.p_id || t.p || t.project || t.project_id;
+        return Number(taskProjectId) === Number(projectId);
+      });
+
+      // Members
       const memberMap = new Map();
 
+      // 1. PTeam entries
       if (pteamList && Array.isArray(pteamList) && pteamList.length > 0) {
-        const projectPteamEntries = pteamList.filter(entry => {
-          const entryProjectId = entry.p || entry.p_id || entry.project || entry.projectId || entry.project_id;
-          return Number(entryProjectId) === Number(projectId);
-        });
+        const projectPteamEntries = pteamList.filter(
+          entry => getPteamProjectId(entry) === Number(projectId)
+        );
 
         projectPteamEntries.forEach(entry => {
-          const tmId = entry.tm;
+          const tmId = getPteamTmId(entry);
           if (memberMap.has(tmId)) return;
-
-          const resolved = resolveUserFromId(tmId, usersList, membersList);
+          const resolved = resolveTeamMemberId(tmId, usersList, membersList);
           if (resolved) {
             memberMap.set(tmId, {
               ...resolved,
@@ -368,90 +435,77 @@ export default function SupervisorProjectDetail() {
         });
       }
 
-      // ─── Merge in supervisors from localStorage (for those without a TeamMember row) ───
+      // 2. Local supervisors (user ids)
       const localSupervisorIds = getLocalSupervisors(projectId);
       localSupervisorIds.forEach(sid => {
         if (memberMap.has(sid)) return;
-        const resolved = resolveUserFromId(sid, usersList, membersList);
-        if (resolved) {
-          memberMap.set(Number(sid), {
-            ...resolved,
-            pt_id: null,
-            task_id: null,
-          });
-        }
+        const resolved = resolveUserId(sid, usersList, membersList);
+        if (resolved) memberMap.set(Number(sid), { ...resolved, pt_id: null, task_id: null });
       });
 
-      let memberEntries = Array.from(memberMap.values());
+      // 3. Local members (user ids)
+      const localMemberIds = getLocalMembers(projectId);
+      localMemberIds.forEach(mid => {
+        if (memberMap.has(mid)) return;
+        const resolved = resolveUserId(mid, usersList, membersList);
+        if (resolved) memberMap.set(Number(mid), { ...resolved, pt_id: null, task_id: null });
+      });
 
-      // If nothing found, try pulling from tasks
-      if (memberEntries.length === 0) {
-        const projectTasks = allTasks.filter(t => {
-          const taskProjectId = t.p_id || t.p || t.project || t.project_id;
-          return Number(taskProjectId) === Number(projectId);
-        });
-
-        const memberIds = new Set();
-        projectTasks.forEach(t => {
-          if (t.assign_to) memberIds.add(Number(t.assign_to));
-        });
-
-        memberIds.forEach(mid => {
-          const resolved = resolveUserFromId(mid, usersList, membersList);
+      // 4. Task assignees
+      projectTasks.forEach(t => {
+        const ids = [];
+        if (t.assign_to) ids.push(Number(t.assign_to));
+        if (Array.isArray(t.assignedTo)) t.assignedTo.forEach(a => a && ids.push(Number(a)));
+        ids.forEach(mid => {
+          if (memberMap.has(mid)) return;
+          const resolved = resolveUserId(mid, usersList, membersList);
           if (resolved) {
             memberMap.set(mid, { ...resolved, pt_id: null, task_id: null });
           }
         });
+      });
 
-        memberEntries = Array.from(memberMap.values());
-      }
+      // NOTE: We intentionally do NOT add the creator. A supervisor who
+      // creates a project but doesn't select themselves should still see
+      // the project (handled by created_by in userProjects list) but should
+      // NOT appear in the Supervisors / Members section of the detail page.
 
-      console.log('🔬 [Supervisor] Final memberEntries:', memberEntries);
+      const memberEntries = Array.from(memberMap.values());
       setProjectMembers(memberEntries);
 
-      // ─── Determine supervisors from users table + localStorage fallback ───
+      // Supervisors
       const supervisorMap = new Map();
 
-      // 1. Any member whose USER role is a supervisor role
       memberEntries.forEach(m => {
-        const resolvedUser = usersList.find(u => Number(u.id) === Number(m.id));
-        const role = (resolvedUser?.role || m.role || '').toLowerCase();
+        const resolvedUser = usersList.find(u => Number(u.id) === Number(m.userId ?? m.id));
+        const role = ((resolvedUser?.role) || m.role || '').toLowerCase();
         if (SUPERVISOR_ROLES.includes(role)) {
           supervisorMap.set(Number(m.id), { ...m, role });
         }
       });
 
-      // 2. Any ID in localStorage (for supervisors not in PTeam)
       localSupervisorIds.forEach(sid => {
         if (supervisorMap.has(Number(sid))) return;
-        const resolved = resolveUserFromId(sid, usersList, membersList);
+        const resolved = resolveUserId(sid, usersList, membersList);
         if (resolved) {
-          supervisorMap.set(Number(sid), resolved);
+          supervisorMap.set(Number(sid), { ...resolved, role: resolved.role || 'supervisor' });
         }
       });
 
       const supervisorEntries = Array.from(supervisorMap.values());
-      console.log('🔬 [Supervisor] Supervisors:', supervisorEntries);
       setProjectSupervisors(supervisorEntries);
 
-      const projectTasks = allTasks.filter(t => {
-        const taskProjectId = t.p_id || t.p || t.project || t.project_id;
-        return Number(taskProjectId) === Number(projectId);
-      });
-
+      // Tasks with progress
       const mappedTasks = projectTasks.map(t => ({
         ...t,
-        progress: t.progress ?? (
-          t.status === "done" || t.status === "completed" ? 100 :
-          t.status === "in_progress" || t.status === "in-progress" ? 50 :
-          t.status === "review" ? 75 : 0
-        ),
+        progress: computeTaskProgress(t),
         milestones: t.milestones || [],
         assigneeId: t.assign_to,
       }));
 
       setTasks(mappedTasks);
 
+      // Comments
       if (mappedTasks.length > 0) {
         const allComments = [];
         for (const task of mappedTasks) {
@@ -461,9 +515,7 @@ export default function SupervisorProjectDetail() {
             commentsList.forEach(comment => {
               allComments.push({ ...comment, taskId: task.t_id || task.id });
             });
-          } catch (error) {
-            // silent
-          }
+          } catch (error) { /* silent */ }
         }
         setComments(allComments);
       }
@@ -541,17 +593,6 @@ export default function SupervisorProjectDetail() {
         }
       }
 
-      const taskWithProject = {
-        ...createdTask,
-        p_id: projectId,
-        p: projectId,
-        progress: createdTask.progress || newTask.progress || 0,
-        milestones: createdTask.milestones || [],
-        assign_to: createdTask.assign_to || assignTo,
-      };
-
-      setTasks(prev => [taskWithProject, ...prev]);
-
       setNewTask({
         title: "", desc: "", priority: "medium", status: "todo",
         progress: 0, assignedTo: null, milestones: [],
@@ -615,9 +656,15 @@ export default function SupervisorProjectDetail() {
 
       setTasks(prev => prev.map(t =>
         (t.t_id || t.id) === (updated.t_id || updated.id)
-          ? { ...t, ...updatedTask, progress: updatedTask.progress || updated.progress || 0, assign_to: updatedTask.assign_to || assignTo }
+          ? {
+              ...t,
+              ...updatedTask,
+              progress: computeTaskProgress({ ...t, ...updatedTask }),
+              assign_to: updatedTask.assign_to ?? assignTo,
+            }
           : t
       ));
+
       setEditTask(null);
       resetEditTaskTouched();
       setSelectedTask(updated);
@@ -639,45 +686,12 @@ export default function SupervisorProjectDetail() {
       setShowDeleteConfirm(null);
       setSelectedTask(null);
       toast.success("Task deleted successfully");
-
       await fetchProjectData();
     } catch (error) {
       console.error('Error deleting task:', error);
       const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
       const errorMsg = typeof rawMsg === 'string' ? rawMsg : 'Failed to delete task';
       toast.error(errorMsg);
-    }
-  };
-
-  const addComment = async () => {
-    setSideCommentTouched(true);
-    if (sideCommentError) { toast.error(sideCommentError); return; }
-    if (!selectedTask) { toast.error("Please select a task to comment on"); return; }
-
-    setIsCommenting(true);
-    try {
-      const response = await commentService.addComment({
-        taskId: selectedTask.t_id || selectedTask.id,
-        desc: text.trim(),
-        priority: "normal",
-        pin: false,
-      });
-
-      const newComment = response?.data || response;
-      await NotificationHelper.commentAdded(newComment, user);
-
-      setComments(prev => [...prev, { ...newComment, taskId: selectedTask.t_id || selectedTask.id }]);
-      setText("");
-      setSideCommentTouched(false);
-      setCommentUpdateTrigger(prev => prev + 1);
-      toast.success("Comment added successfully");
-    } catch (error) {
-      console.error('Error adding comment:', error);
-      const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
-      const errorMsg = typeof rawMsg === 'string' ? rawMsg : 'Failed to add comment';
-      toast.error(errorMsg);
-    } finally {
-      setIsCommenting(false);
     }
   };
 
@@ -699,7 +713,6 @@ export default function SupervisorProjectDetail() {
       setComments(prev => [...prev, { ...newComment, taskId: selectedTask.t_id || selectedTask.id }]);
       setModalCommentText("");
       setModalCommentTouched(false);
-      setCommentUpdateTrigger(prev => prev + 1);
       toast.success("Comment added successfully");
     } catch (error) {
       console.error('Error adding comment:', error);
@@ -743,12 +756,10 @@ export default function SupervisorProjectDetail() {
     }
   };
 
-  const progress = stats.completionRate || 0;
-  const done = stats.completedTasks || 0;
+  const progress = projectProgress;
 
   const getMemberName = (memberId) => {
     if (!memberId) return "Unassigned";
-    // users table first
     const u = users.find(x => Number(x.id) === Number(memberId));
     if (u) return u.u_name || u.name || "Unassigned";
     const member = allTeamMembers.find(m => Number(m.id) === Number(memberId));
@@ -1308,36 +1319,14 @@ export default function SupervisorProjectDetail() {
               <span className="info-badge">{comments.length}</span>
             </h4>
 
-            <div className="comment-input-area">
-              <textarea
-                className={`comment-textarea ${sideCommentTouched && sideCommentError ? 'pd-input-error' : ''}`}
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                onBlur={() => setSideCommentTouched(true)}
-                placeholder={selectedTask ? `Write a comment on "${selectedTask.title}"... (Ctrl+Enter to send)` : "Write a comment... (Ctrl+Enter to send)"}
-                maxLength={LIMITS.comment.max}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && e.ctrlKey) {
-                    e.preventDefault();
-                    if (selectedTask) addComment();
-                    else toast.success("Please select a task first");
-                  }
-                }}
-              />
-              {sideCommentTouched && sideCommentError && text.length > 0 && <FieldError message={sideCommentError} />}
-              <button className="comment-send-btn" onClick={addComment} disabled={isCommenting || !text.trim() || !selectedTask}>
-                {isCommenting ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
-                {isCommenting ? 'Sending...' : 'Send'}
-              </button>
-              {!selectedTask && <span style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center' }}>Select a task to add a comment</span>}
-            </div>
-
             <div className="comment-list">
               {comments.length === 0 ? (
                 <div className="comment-empty">
                   <MessageSquare size={24} style={{ opacity: 0.3 }} />
                   <p>No comments yet</p>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Comments will appear here</span>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    Open a task to add a comment
+                  </span>
                 </div>
               ) : (
                 [...comments].sort((a, b) => (b.pin || b.pinned) - (a.pin || a.pinned)).slice(0, 15).map((c) => {
@@ -1406,7 +1395,6 @@ export default function SupervisorProjectDetail() {
         .supervisor-badge { display: inline-flex; align-items: center; margin-left: 4px; }
         .comment-meta-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
         .comment-task-tag { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 12px; font-size: 10px; color: var(--text-muted); background: var(--bg-secondary); border: 1px solid var(--border-subtle); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
-        .comments-card .comment-input-area { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
         .task-comment-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 600; color: var(--text-muted); background: var(--bg-secondary); padding: 1px 8px; border-radius: 12px; border: 1px solid var(--border-subtle); }
         .modal-comments-section { margin-top: 12px; border-top: 1px solid var(--border-subtle); padding-top: 12px; }
         .modal-comment-input { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
@@ -1485,14 +1473,7 @@ export default function SupervisorProjectDetail() {
         .team-member-name { display: block; font-size: 13px; font-weight: 500; color: var(--text-primary); }
         .team-member-role { font-size: 11px; color: var(--text-muted); }
         .comments-card { flex: 1; }
-        .comment-input-area { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
-        .comment-textarea { padding: 10px 12px; border: 1px solid var(--border-default); border-radius: 8px; background: var(--bg-secondary); color: var(--text-primary); font-size: 13px; resize: vertical; min-height: 60px; font-family: inherit; transition: border-color 0.2s; }
-        .comment-textarea:focus { outline: none; border-color: var(--accent-primary); background: var(--bg-card); }
-        .comment-textarea::placeholder { color: var(--text-muted); }
-        .comment-send-btn { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 6px 16px; border: none; border-radius: 8px; background: var(--accent-primary); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; align-self: flex-end; }
-        .comment-send-btn:hover:not(:disabled) { opacity: 0.85; }
-        .comment-send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .comment-list { display: flex; flex-direction: column; gap: 8px; max-height: 300px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border-default) transparent; }
+        .comment-list { display: flex; flex-direction: column; gap: 8px; max-height: 400px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border-default) transparent; }
         .comment-list::-webkit-scrollbar { width: 3px; }
         .comment-list::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 10px; }
         .comment-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px 0; color: var(--text-muted); text-align: center; }

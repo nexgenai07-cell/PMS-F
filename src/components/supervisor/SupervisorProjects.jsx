@@ -5,9 +5,9 @@ import {
   Search, FolderOpen, Plus, Pencil, Trash2,
   X, ListTodo, Milestone, ChevronDown,
   Users, Check, RefreshCw, Filter, Flag,
-  Crown, AlertCircle, Loader2
+  Crown, AlertCircle, Loader2, UserMinus
 } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 
 import Topbar from '../shared/Topbar';
 import {
@@ -32,16 +32,14 @@ const TASK_STATUS_OPTIONS = ['todo', 'in_progress', 'review', 'done'];
 
 const SUPERVISOR_ROLES = ['manager', 'admin', 'supervisor'];
 
-/* ─────────── Local supervisor fallback (only for supervisors WITHOUT a TeamMember row) ─────────── */
+/* ─────────── Local supervisor fallback ─────────── */
 const SUPERVISOR_STORAGE_KEY = 'pms_project_supervisors';
 
 function readLocalSupervisors() {
   try {
     const raw = localStorage.getItem(SUPERVISOR_STORAGE_KEY);
     return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
+  } catch { return {}; }
 }
 
 function getLocalSupervisors(projectId) {
@@ -55,52 +53,166 @@ function setLocalSupervisors(projectId, ids) {
   if (!projectId) return;
   const map = readLocalSupervisors();
   map[String(projectId)] = [...new Set((ids || []).map(Number))];
-  try {
-    localStorage.setItem(SUPERVISOR_STORAGE_KEY, JSON.stringify(map));
-  } catch (e) {
-    console.warn('Could not persist supervisors locally:', e);
-  }
+  try { localStorage.setItem(SUPERVISOR_STORAGE_KEY, JSON.stringify(map)); }
+  catch (e) { console.warn('Could not persist supervisors locally:', e); }
 }
 
 function removeLocalSupervisors(projectId) {
   if (!projectId) return;
   const map = readLocalSupervisors();
   delete map[String(projectId)];
-  try {
-    localStorage.setItem(SUPERVISOR_STORAGE_KEY, JSON.stringify(map));
-  } catch (e) {
-    console.warn('Could not remove local supervisors:', e);
-  }
+  try { localStorage.setItem(SUPERVISOR_STORAGE_KEY, JSON.stringify(map)); }
+  catch (e) { console.warn('Could not remove local supervisors:', e); }
 }
 
-/* ─────────── Helpers: resolve any user/teamMember id → unified object ─────────── */
-// users table is the source of truth for names, roles, emails.
-function resolveUserFromId(id, usersList, membersList) {
-  if (id == null) return null;
-  const numId = Number(id);
+/* ─────────── Local member fallback ─────────── */
+const MEMBER_STORAGE_KEY = 'pms_project_members';
 
-  // Prefer the user record — it has the authoritative role
+function readLocalMembers() {
+  try {
+    const raw = localStorage.getItem(MEMBER_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
+function getLocalMembers(projectId) {
+  if (!projectId) return [];
+  const map = readLocalMembers();
+  const ids = map[String(projectId)];
+  return Array.isArray(ids) ? ids.map(Number) : [];
+}
+
+function setLocalMembers(projectId, ids) {
+  if (!projectId) return;
+  const map = readLocalMembers();
+  map[String(projectId)] = [...new Set((ids || []).map(Number))];
+  try { localStorage.setItem(MEMBER_STORAGE_KEY, JSON.stringify(map)); }
+  catch (e) { console.warn('Could not persist members locally:', e); }
+}
+
+function removeLocalMembers(projectId) {
+  if (!projectId) return;
+  const map = readLocalMembers();
+  delete map[String(projectId)];
+  try { localStorage.setItem(MEMBER_STORAGE_KEY, JSON.stringify(map)); }
+  catch (e) { console.warn('Could not remove local members:', e); }
+}
+
+/* ─────────── Resolve TeamMember id → user-like object ─────────── */
+// A PTeam entry's `tm` refers to a TeamMember, so we resolve against
+// team_members first, and only fall back to users.
+function resolveTeamMemberId(tmId, usersList, membersList) {
+  if (tmId == null) return null;
+  const numId = Number(tmId);
+
+  const tm = membersList.find(m => Number(m.id) === numId);
+  if (tm) {
+    const userObj = usersList.find(u => {
+      const uName = (u.u_name || u.name || '').toLowerCase().trim();
+      const mName = (tm.name || '').toLowerCase().trim();
+      return uName && mName && uName === mName;
+    });
+    return {
+      id: tm.id,
+      userId: userObj?.id ?? tm.id,
+      name: tm.name || userObj?.u_name || 'Unknown',
+      email: tm.email || userObj?.email || '',
+      role: ((userObj?.role) || tm.role || '').toLowerCase(),
+    };
+  }
+
   const userObj = usersList.find(u => Number(u.id) === numId);
   if (userObj) {
     return {
       id: userObj.id,
+      userId: userObj.id,
+      name: userObj.u_name || userObj.name || 'Unknown',
+      email: userObj.email || '',
+      role: (userObj.role || '').toLowerCase(),
+    };
+  }
+  return null;
+}
+
+/* ─────────── Resolve User id → user-like object ─────────── */
+// Used for localStorage fallbacks (which store USER ids).
+function resolveUserId(userId, usersList, membersList) {
+  if (userId == null) return null;
+  const numId = Number(userId);
+
+  const userObj = usersList.find(u => Number(u.id) === numId);
+  if (userObj) {
+    return {
+      id: userObj.id,
+      userId: userObj.id,
       name: userObj.u_name || userObj.name || 'Unknown',
       email: userObj.email || '',
       role: (userObj.role || '').toLowerCase(),
     };
   }
 
-  // Fall back to the TeamMember record
   const tm = membersList.find(m => Number(m.id) === numId);
   if (tm) {
     return {
       id: tm.id,
+      userId: tm.id,
       name: tm.name || 'Unknown',
       email: tm.email || '',
       role: (tm.role || '').toLowerCase(),
     };
   }
+  return null;
+}
 
+/* ─────────── Bulletproof PTeam field getters ─────────── */
+function getPteamProjectId(entry) {
+  return Number(
+    entry.p ?? entry.p_id ?? entry.project ?? entry.projectId ?? entry.project_id
+  );
+}
+function getPteamTmId(entry) {
+  return Number(
+    entry.tm ?? entry.tm_id ?? entry.team_member ?? entry.member ?? entry.member_id ?? entry.teamMember
+  );
+}
+
+/* ─────────── Compute task progress from status when missing/zero ─────────── */
+function computeTaskProgress(task) {
+  const raw = Number(task.progress);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  const status = (task.status || '').toLowerCase();
+  if (status === 'done' || status === 'completed') return 100;
+  if (status === 'review') return 75;
+  if (status === 'in_progress' || status === 'in-progress') return 50;
+  return 0;
+}
+
+/* ─────────── Find real TeamMember id from a user id ─────────── */
+function findRealTeamMemberId(userIdOrObj, teamMembersList, usersList) {
+  if (!userIdOrObj) return null;
+  const id = typeof userIdOrObj === 'object'
+    ? (userIdOrObj.userId ?? userIdOrObj.id)
+    : userIdOrObj;
+  const numId = Number(id);
+
+  const direct = teamMembersList.find(m => !m._placeholder && Number(m.id) === numId);
+  if (direct) return Number(direct.id);
+
+  const userObj = usersList.find(u => Number(u.id) === numId);
+  if (userObj) {
+    const name = (userObj.u_name || userObj.name || '').toLowerCase().trim();
+    const email = (userObj.email || '').toLowerCase().trim();
+    const byName = teamMembersList.find(m =>
+      !m._placeholder && (m.name || '').toLowerCase().trim() === name
+    );
+    if (byName) return Number(byName.id);
+    if (email) {
+      const byEmail = teamMembersList.find(m =>
+        !m._placeholder && (m.email || '').toLowerCase().trim() === email
+      );
+      if (byEmail) return Number(byEmail.id);
+    }
+  }
   return null;
 }
 
@@ -262,7 +374,7 @@ function MemberPicker({ selected = [], onChange, label = 'Members', members = []
   );
 }
 
-function ProjectMembersPanel({ members, onEdit }) {
+function ProjectMembersPanel({ members, onEdit, onRemove }) {
   return (
     <div className="lp-members-panel">
       <div className="lp-members-panel-header">
@@ -281,7 +393,17 @@ function ProjectMembersPanel({ members, onEdit }) {
               return (
                 <div key={key} className="lp-member-row">
                   <span className="lp-member-avatar">{(m.name || '?')[0].toUpperCase()}</span>
-                  <span style={{ fontSize: 13 }}>{m.name}</span>
+                  <span style={{ fontSize: 13, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {m.name}
+                  </span>
+                  <button
+                    className="lp-icon-btn danger"
+                    title={`Remove ${m.name} from project`}
+                    onClick={() => onRemove && onRemove(m)}
+                    style={{ padding: '3px 4px' }}
+                  >
+                    <UserMinus size={11} />
+                  </button>
                 </div>
               );
             })}
@@ -299,7 +421,6 @@ export default function SupervisorProjects() {
 
   const currentUserId = user?.id || user?.u_id;
 
-  // State
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [projects, setProjects] = useState([]);
@@ -310,9 +431,8 @@ export default function SupervisorProjects() {
   const [allSupervisors, setAllSupervisors] = useState([]);
   const [projectStatsMap, setProjectStatsMap] = useState({});
 
-  // These are the two separate lists used by the pickers
-  const [supervisorOptions, setSupervisorOptions] = useState([]); // only supervisors
-  const [memberOptions, setMemberOptions] = useState([]);         // only regular members
+  const [supervisorOptions, setSupervisorOptions] = useState([]);
+  const [memberOptions, setMemberOptions] = useState([]);
 
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
@@ -329,6 +449,11 @@ export default function SupervisorProjects() {
   const [deleteTaskId, setDeleteTaskId] = useState(null);
   const [deleteProjectId, setDeleteProjectId] = useState(null);
   const [editMembersFor, setEditMembersFor] = useState(null);
+
+  // Remove-member modal
+  const [removeMemberInfo, setRemoveMemberInfo] = useState(null);
+  const [reassignTo, setReassignTo] = useState('');
+  const [removeMemberSaving, setRemoveMemberSaving] = useState(false);
 
   const [savingProject, setSavingProject] = useState(false);
   const [savingTask, setSavingTask] = useState(false);
@@ -402,6 +527,7 @@ export default function SupervisorProjects() {
   useEffect(() => {
     const onKey = (e) => {
       if (e.key !== 'Escape') return;
+      if (removeMemberInfo) { setRemoveMemberInfo(null); setReassignTo(''); return; }
       if (deleteTaskId !== null) { setDeleteTaskId(null); return; }
       if (deleteProjectId !== null) { setDeleteProjectId(null); return; }
       if (editTask) { setEditTask(null); setEditTaskTouched({}); setEditTaskSubmitAttempted(false); return; }
@@ -412,7 +538,7 @@ export default function SupervisorProjects() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [deleteTaskId, deleteProjectId, editTask, selectedTask, taskAddModal, projectModal, taskListModal]);
+  }, [removeMemberInfo, deleteTaskId, deleteProjectId, editTask, selectedTask, taskAddModal, projectModal, taskListModal]);
 
   useEffect(() => {
     if (!projectModal) return;
@@ -428,25 +554,19 @@ export default function SupervisorProjects() {
 
   useEffect(() => { fetchData(); }, []);
 
-  /* ─── Build the two exclusive lists ─── */
   const categorizeMembers = (members, users) => {
     const supervisors = [];
     const regularMembers = [];
 
     members.forEach(m => {
       let role = (m.role || '').toLowerCase();
-
       if (!role || role === 'member') {
         const userObj = users.find(u => Number(u.id) === Number(m.id));
         if (userObj) role = (userObj.role || '').toLowerCase();
       }
-
       const isSupervisor = SUPERVISOR_ROLES.includes(role);
-      if (isSupervisor) {
-        supervisors.push({ ...m, role: role || 'supervisor' });
-      } else {
-        regularMembers.push({ ...m, role: role || 'member' });
-      }
+      if (isSupervisor) supervisors.push({ ...m, role: role || 'supervisor' });
+      else regularMembers.push({ ...m, role: role || 'member' });
     });
 
     return { supervisors, regularMembers };
@@ -470,51 +590,25 @@ export default function SupervisorProjects() {
       const usersList = usersData?.data || usersData || [];
       const pteamList = pteamData?.data || pteamData || [];
 
-      console.log('🔵 [Supervisor] team_members count:', membersList.length, '| users count:', usersList.length);
-
       let activeMembersList = membersList.filter(m => m.is_deleted !== 1);
-
       const userId = user?.id || user?.u_id;
 
-      if (activeMembersList.length === 0) {
-        console.warn(
-          '🚨 team_members table is EMPTY. No one can be assigned to projects until the backend ' +
-          'creates TeamMember rows for existing users. Contact an admin.'
-        );
-      }
-
-      // Filter to only TeamMembers that have a matching User row
       if (activeMembersList.length > 0) {
-        const filtered = activeMembersList.filter(m => {
+        activeMembersList = activeMembersList.filter(m => {
           const userById = usersList.find(u => Number(u.id) === Number(m.id));
           const userByName = usersList.find(u => {
             const userName = (u.u_name || u.name || '').toLowerCase().trim();
             const memberName = (m.name || '').toLowerCase().trim();
             return userName && memberName && userName === memberName;
           });
-          const userByEmail = m.email
-            ? usersList.find(u => (u.email || '').toLowerCase() === (m.email || '').toLowerCase())
-            : null;
-
-          const hasMatch = !!(userById || userByName || userByEmail);
-          if (!hasMatch) {
-            console.log(`⏭️ Excluding TeamMember ${m.id} "${m.name}" — no matching User`);
-          }
-          return hasMatch;
+          return !!(userById || userByName);
         });
-        activeMembersList = filtered;
       }
 
-      // Ensure the current user is in the list
       const currentUserInMembers = activeMembersList.some(m => Number(m.id) === Number(userId));
       if (!currentUserInMembers && userId) {
         const userObj = usersList.find(u => Number(u.id) === Number(userId));
         if (userObj) {
-          console.warn(
-            `⚠️ Current user "${userObj.u_name}" is not a TeamMember. Adding them to the list ` +
-            `so they appear in the picker, but the save will fail until the backend creates ` +
-            `a TeamMember row for them.`
-          );
           activeMembersList.push({
             id: userId,
             name: userObj.u_name || userObj.name || 'User',
@@ -526,7 +620,7 @@ export default function SupervisorProjects() {
         }
       }
 
-      // ─── Build the supervisor list from ALL users (users table is source of truth) ───
+      // Supervisor options come from USERS (role-based)
       const allSupervisorUsers = usersList
         .filter(u => SUPERVISOR_ROLES.includes((u.role || '').toLowerCase()))
         .map(u => ({
@@ -536,7 +630,6 @@ export default function SupervisorProjects() {
           role: (u.role || 'supervisor').toLowerCase(),
         }));
 
-      // Merge in any TeamMembers that are supervisors but missing from usersList
       const supervisorIdSet = new Set(allSupervisorUsers.map(s => Number(s.id)));
       activeMembersList.forEach(m => {
         const userObj = usersList.find(u => Number(u.id) === Number(m.id));
@@ -552,21 +645,14 @@ export default function SupervisorProjects() {
         }
       });
 
-      console.log('🔵 [Supervisor] Supervisor options (from users + members):',
-        allSupervisorUsers.map(s => `${s.name} (${s.role})`));
-
       setSupervisorOptions(allSupervisorUsers);
       setAllSupervisors(allSupervisorUsers);
 
-      // ─── Build the regular member list from TeamMembers only ───
-      const { regularMembers: memberList } =
-        categorizeMembers(activeMembersList, usersList);
-
-      console.log('🔵 [Supervisor] Member options:', memberList.map(m => `${m.name} (${m.role})`));
+      const { regularMembers: memberList } = categorizeMembers(activeMembersList, usersList);
       setMemberOptions(memberList);
       setTeamMembers(activeMembersList);
 
-      // ─── Projects the current user has access to ───
+      // Projects this user can see
       const userProjects = projectsList.filter(p => {
         const isCreator = Number(p.created_by) === Number(userId);
         const isMember = pteamList.some(pteam =>
@@ -578,14 +664,15 @@ export default function SupervisorProjects() {
 
       const projectsWithMembers = userProjects.map(project => {
         const projectId = project.p_id || project.id;
-        const projectPteamEntries = pteamList.filter(entry => Number(entry.p) === Number(projectId));
+        const projectPteamEntries = pteamList.filter(entry => getPteamProjectId(entry) === Number(projectId));
 
-        // ─── Build members from PTeam via users table ───
         const memberMap = new Map();
+
+        // 1. PTeam entries
         projectPteamEntries.forEach(entry => {
-          const tmId = entry.tm;
+          const tmId = getPteamTmId(entry);
           if (memberMap.has(tmId)) return;
-          const resolved = resolveUserFromId(tmId, usersList, activeMembersList);
+          const resolved = resolveTeamMemberId(tmId, usersList, activeMembersList);
           if (resolved) {
             memberMap.set(tmId, {
               ...resolved,
@@ -595,24 +682,32 @@ export default function SupervisorProjects() {
           }
         });
 
-        const projectMembersRaw = Array.from(memberMap.values());
-
-        // ─── Determine supervisors ───
-        // Sources, in order of preference:
-        //   1. localStorage fallback (for supervisors without TeamMember)
-        //   2. PTeam entries whose resolved user role is a supervisor role
-        const supervisorMap = new Map();
-
-        // 1. From localStorage
-        const localSupervisorIds = getLocalSupervisors(projectId);
-        localSupervisorIds.forEach(sid => {
-          const resolved = resolveUserFromId(sid, usersList, activeMembersList);
-          if (resolved) {
-            supervisorMap.set(Number(sid), resolved);
-          }
+        // 2. Local supervisors (user ids)
+        getLocalSupervisors(projectId).forEach(sid => {
+          if (memberMap.has(sid)) return;
+          const resolved = resolveUserId(sid, usersList, activeMembersList);
+          if (resolved) memberMap.set(Number(sid), { ...resolved, pt_id: null, task_id: null });
         });
 
-        // 2. From PTeam entries (using the user's role as source of truth)
+        // 3. Local members (user ids)
+        getLocalMembers(projectId).forEach(mid => {
+          if (memberMap.has(mid)) return;
+          const resolved = resolveUserId(mid, usersList, activeMembersList);
+          if (resolved) memberMap.set(Number(mid), { ...resolved, pt_id: null, task_id: null });
+        });
+
+        // Task assignees and project creator are NOT auto-added as project members.
+        // Only users explicitly attached via PTeam or localStorage show up.
+
+        const projectMembersRaw = Array.from(memberMap.values());
+
+        const supervisorMap = new Map();
+
+        getLocalSupervisors(projectId).forEach(sid => {
+          const resolved = resolveUserId(sid, usersList, activeMembersList);
+          if (resolved) supervisorMap.set(Number(sid), resolved);
+        });
+
         projectMembersRaw.forEach(m => {
           if (supervisorMap.has(Number(m.id))) return;
           const role = (m.role || '').toLowerCase();
@@ -622,27 +717,27 @@ export default function SupervisorProjects() {
         });
 
         const supervisorMembers = Array.from(supervisorMap.values());
-
-        // Regular members = project members minus supervisors
-        const regularMembers = projectMembersRaw.filter(m =>
-          !supervisorMap.has(Number(m.id))
-        );
-
-        // All members (for AvatarGroup + count)
-        const allMembers = [...supervisorMembers, ...regularMembers];
+        const regularMembersList = projectMembersRaw.filter(m => !supervisorMap.has(Number(m.id)));
+        const allMembers = [...supervisorMembers, ...regularMembersList];
 
         return {
           ...project,
           members: allMembers,
           supervisorMembers,
-          regularMembers,
+          regularMembers: regularMembersList,
           memberIds: allMembers.map(m => m.id),
           supervisorIds: supervisorMembers.map(m => m.id),
         };
       });
 
+      // Map task progress (for the modal so it shows computed % too)
+      const mappedTasks = tasksList.map(t => ({
+        ...t,
+        progress: computeTaskProgress(t),
+      }));
+
       setProjects(projectsWithMembers);
-      setTasks(tasksList);
+      setTasks(mappedTasks);
       setUsers(usersList);
       setPteamEntries(pteamList);
 
@@ -688,10 +783,7 @@ export default function SupervisorProjects() {
   });
 
   const totalPages = Math.ceil(filtered.length / itemsPerPage);
-  const paginatedProjects = filtered.slice(
-    (currentPage - 1) * itemsPerPage,
-    currentPage * itemsPerPage
-  );
+  const paginatedProjects = filtered.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
 
   const resetProjectTouched = () => { setProjectTouched({}); setProjectSubmitAttempted(false); };
   const markProjectTouched = (field) => setProjectTouched(prev => ({ ...prev, [field]: true }));
@@ -710,7 +802,7 @@ export default function SupervisorProjects() {
       startDate: '',
       deadline: '',
       members: [],
-      supervisors: currentUserId ? [currentUserId] : []
+      supervisors: []
     });
     resetProjectTouched();
     setProjectModal(true);
@@ -735,12 +827,11 @@ export default function SupervisorProjects() {
     try {
       const userId = user?.id || user?.u_id || null;
 
-      const supervisorsToUse = form.supervisors.length > 0
-        ? form.supervisors
+      // Auto-assign creator as supervisor ONLY when form.supervisors is empty
+      const supervisorsFromForm = [...new Set(form.supervisors)];
+      const finalSupervisors = supervisorsFromForm.length > 0
+        ? supervisorsFromForm
         : (userId ? [userId] : []);
-      const finalSupervisors = userId && !supervisorsToUse.includes(userId)
-        ? [...supervisorsToUse, userId]
-        : supervisorsToUse;
 
       const projectData = {
         name: form.name.trim(),
@@ -752,7 +843,7 @@ export default function SupervisorProjects() {
         created_by: userId,
       };
 
-      const uniqueSupervisors = [...new Set(finalSupervisors)];
+      const uniqueSupervisors = finalSupervisors;
       const uniqueMembers = [...new Set(form.members)];
 
       let createdProject;
@@ -764,69 +855,63 @@ export default function SupervisorProjects() {
         createdProject = updated?.data || updated;
         const projectId = createdProject.p_id || createdProject.id;
 
-        const currentPteam = pteamEntries.filter(entry => Number(entry.p) === Number(projectId));
+        const currentPteam = pteamEntries.filter(entry => getPteamProjectId(entry) === Number(projectId));
+        const currentMemberIds = [...new Set(currentPteam.map(entry => getPteamTmId(entry)))];
 
-        const currentSupervisorIds = [...new Set(
-          currentPteam
-            .filter(entry => {
-              const resolved = resolveUserFromId(entry.tm, users, teamMembers);
-              const role = (resolved?.role || '').toLowerCase();
-              return SUPERVISOR_ROLES.includes(role);
-            })
-            .map(entry => Number(entry.tm))
-        )];
-
-        const currentMemberIds = [...new Set(currentPteam.map(entry => Number(entry.tm)))];
-
-        // Only add REGULAR members to PTeam
-        const newMemberIds = [...new Set(
-          uniqueMembers
-            .map(uid => {
-              const teamMember = teamMembers.find(m => Number(m.id) === Number(uid));
-              return teamMember ? Number(teamMember.id) : null;
-            })
-            .filter(id => id !== null && !isNaN(id))
-        )];
-
-        for (const tmId of newMemberIds) {
-          if (!currentMemberIds.includes(tmId)) {
-            try { await projectTeamService.addMemberToProject(projectId, tmId); }
-            catch (e) { console.warn(`Could not add member ${tmId}:`, e); }
-          }
-        }
-
-        // Try to add supervisors to PTeam; fall back to localStorage
-        const localFallback = [];
+        // ── Supervisors: try PTeam, fall back to localStorage ──
+        const localSupervisorFallback = [];
         for (const supId of uniqueSupervisors) {
-          const supTeamMember = teamMembers.find(m => Number(m.id) === Number(supId));
-          if (supTeamMember && !currentMemberIds.includes(Number(supTeamMember.id))) {
+          const realTmId = findRealTeamMemberId(supId, teamMembers, users);
+          if (!realTmId) {
+            localSupervisorFallback.push(supId);
+            continue;
+          }
+          if (!currentMemberIds.includes(realTmId)) {
             try {
-              await projectTeamService.addMemberToProject(projectId, Number(supTeamMember.id));
-              console.log(`✅ Supervisor ${supId} added to PTeam`);
+              await projectTeamService.addMemberToProject(projectId, realTmId);
             } catch (e) {
-              console.warn(`Supervisor ${supId} couldn't be added to PTeam — using localStorage fallback`);
-              localFallback.push(supId);
+              localSupervisorFallback.push(supId);
             }
-          } else if (!supTeamMember) {
-            console.log(`Supervisor ${supId} has no TeamMember row — using localStorage fallback`);
-            localFallback.push(supId);
           }
         }
 
-        // Remove PTeam entries that are no longer supervisors OR members
-        const allNewIds = [...uniqueSupervisors, ...newMemberIds];
-        for (const currentId of currentMemberIds) {
-          if (!allNewIds.includes(currentId)) {
-            const entryToRemove = currentPteam.find(entry => Number(entry.tm) === currentId);
+        // ── Regular members: try PTeam, fall back to localStorage ──
+        const localMemberFallback = [];
+        for (const memberId of uniqueMembers) {
+          const realTmId = findRealTeamMemberId(memberId, teamMembers, users);
+          if (!realTmId) {
+            localMemberFallback.push(memberId);
+            continue;
+          }
+          if (!currentMemberIds.includes(realTmId)) {
+            try {
+              await projectTeamService.addMemberToProject(projectId, realTmId);
+            } catch (e) {
+              localMemberFallback.push(memberId);
+            }
+          }
+        }
+
+        // Remove no-longer-wanted PTeam entries
+        const allWantedTmIds = [
+          ...uniqueSupervisors.map(id => findRealTeamMemberId(id, teamMembers, users)).filter(Boolean),
+          ...uniqueMembers.map(id => findRealTeamMemberId(id, teamMembers, users)).filter(Boolean),
+        ];
+        for (const currentTmId of currentMemberIds) {
+          if (!allWantedTmIds.includes(currentTmId)) {
+            const entryToRemove = currentPteam.find(entry => getPteamTmId(entry) === currentTmId);
             if (entryToRemove) {
               try { await projectTeamService.removeMemberFromProject(entryToRemove.pt_id); }
-              catch (e) { console.warn(`Could not remove ${currentId}:`, e); }
+              catch (e) { console.warn(`Could not remove tm ${currentTmId}:`, e); }
             }
           }
         }
 
-        // 💾 Persist only those that couldn't go through PTeam
-        setLocalSupervisors(projectId, localFallback);
+        setLocalSupervisors(projectId, localSupervisorFallback);
+        // Only overwrite members fallback when the form had members
+        if (uniqueMembers.length > 0) {
+          setLocalMembers(projectId, localMemberFallback);
+        }
 
         setProjects(projects.map(p =>
           (p.p_id || p.id) === (editProject.p_id || editProject.id) ? createdProject : p
@@ -837,58 +922,38 @@ export default function SupervisorProjects() {
         createdProject = newProject?.data || newProject;
         const projectId = createdProject.p_id || createdProject.id;
 
-        if (createdProject && userId) {
-          const selfInTeamMembers = teamMembers.find(m => Number(m.id) === Number(userId));
-          if (selfInTeamMembers) {
-            try { await projectTeamService.addMemberToProject(projectId, userId); }
-            catch (e) { console.warn('Could not add creator to PTeam:', e); }
-          } else {
-            console.warn('⚠️ Current user is not a TeamMember — skipping PTeam add');
-          }
-        }
-
-        // Regular members → PTeam
-        if (createdProject && uniqueMembers.length > 0) {
-          for (const memberId of uniqueMembers) {
-            const teamMember = teamMembers.find(m => Number(m.id) === Number(memberId));
-            if (!teamMember) {
-              console.warn(`⚠️ No TeamMember for member ${memberId} — skipping`);
-              continue;
-            }
-            try {
-              await projectTeamService.addMemberToProject(projectId, Number(teamMember.id));
-            } catch (e) { console.warn(`Could not add member ${memberId}:`, e); }
-          }
-        }
-
-        // Supervisors → try PTeam, fall back to localStorage
-        const localFallback = [];
+        const localSupervisorFallback = [];
         for (const supId of uniqueSupervisors) {
-          if (Number(supId) === Number(userId)) {
-            // current user — already handled above
+          const realTmId = findRealTeamMemberId(supId, teamMembers, users);
+          if (!realTmId) {
+            localSupervisorFallback.push(supId);
             continue;
           }
-          const supTeamMember = teamMembers.find(m => Number(m.id) === Number(supId));
-          if (supTeamMember) {
-            try {
-              await projectTeamService.addMemberToProject(projectId, Number(supTeamMember.id));
-              console.log(`✅ Supervisor ${supId} added to PTeam`);
-            } catch (e) {
-              console.warn(`Supervisor ${supId} couldn't be added to PTeam — using localStorage fallback`);
-              localFallback.push(supId);
-            }
-          } else {
-            console.log(`Supervisor ${supId} has no TeamMember row — using localStorage fallback`);
-            localFallback.push(supId);
+          try {
+            await projectTeamService.addMemberToProject(projectId, realTmId);
+          } catch (e) {
+            localSupervisorFallback.push(supId);
           }
         }
 
-        // Also include current user in localStorage fallback if they had no TeamMember
-        if (userId && !teamMembers.find(m => Number(m.id) === Number(userId))) {
-          if (!localFallback.includes(userId)) localFallback.push(userId);
+        const localMemberFallback = [];
+        for (const memberId of uniqueMembers) {
+          const realTmId = findRealTeamMemberId(memberId, teamMembers, users);
+          if (!realTmId) {
+            localMemberFallback.push(memberId);
+            continue;
+          }
+          try {
+            await projectTeamService.addMemberToProject(projectId, realTmId);
+          } catch (e) {
+            localMemberFallback.push(memberId);
+          }
         }
 
-        setLocalSupervisors(projectId, localFallback);
+        setLocalSupervisors(projectId, localSupervisorFallback);
+        if (uniqueMembers.length > 0) {
+          setLocalMembers(projectId, localMemberFallback);
+        }
 
         setProjects([createdProject, ...projects]);
         toast.success('Project created successfully');
@@ -911,8 +976,8 @@ export default function SupervisorProjects() {
   const handleDeleteProject = async () => {
     try {
       await projectService.deleteProject(deleteProjectId);
-      // Clean up local supervisor storage
       removeLocalSupervisors(deleteProjectId);
+      removeLocalMembers(deleteProjectId);
       setProjects(projects.filter(p => (p.p_id || p.id) !== deleteProjectId));
       setDeleteProjectId(null);
       toast.success('Project deleted successfully');
@@ -985,7 +1050,7 @@ export default function SupervisorProjects() {
         toast.success('Task created successfully');
       }
 
-      setTasks([newTask, ...tasks]);
+      await fetchData();
       closeTaskAddModal();
     } catch (error) {
       console.error('Error creating task:', error);
@@ -1043,10 +1108,10 @@ export default function SupervisorProjects() {
       });
 
       const updatedTask = response?.data || response;
-      setTasks(tasks.map(t => (t.t_id || t.id) === (editTask.t_id || editTask.id) ? updatedTask : t));
       closeEditTask();
       setSelectedTask(null);
       toast.success('Task updated successfully');
+      await fetchData();
     } catch (error) {
       console.error('Error updating task:', error);
       const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
@@ -1060,10 +1125,10 @@ export default function SupervisorProjects() {
   const handleDeleteTask = async () => {
     try {
       await taskService.deleteTask(deleteTaskId);
-      setTasks(tasks.filter(t => (t.t_id || t.id) !== deleteTaskId));
       setDeleteTaskId(null);
       setSelectedTask(null);
       toast.success('Task deleted successfully');
+      await fetchData();
     } catch (error) {
       console.error('Error deleting task:', error);
       const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
@@ -1086,10 +1151,6 @@ export default function SupervisorProjects() {
     setEditProject(project);
 
     const supervisorIds = [...new Set(project.supervisorMembers?.map(s => s.id) || [])];
-    if (currentUserId && !supervisorIds.includes(currentUserId)) {
-      supervisorIds.push(currentUserId);
-    }
-
     const memberIds = [...new Set(project.regularMembers?.map(m => m.id) || [])];
 
     setForm({
@@ -1104,6 +1165,96 @@ export default function SupervisorProjects() {
     });
     resetProjectTouched();
     setProjectModal(true);
+  };
+
+  /* ═══════════════ REMOVE-MEMBER FLOW ═══════════════ */
+
+  const promptRemoveMember = (member) => {
+    if (!taskListModal) return;
+    const projectId = taskListModal.p_id || taskListModal.id;
+
+    const memberUserId = Number(member.userId ?? member.id);
+
+    // Find tasks in this project currently assigned to this member
+    const assignedTasks = tasks.filter(t => {
+      const belongsToProject = Number(t.p_id || t.p) === Number(projectId);
+      if (!belongsToProject) return false;
+      const ids = [];
+      if (t.assign_to) ids.push(Number(t.assign_to));
+      if (Array.isArray(t.assignedTo)) t.assignedTo.forEach(a => a && ids.push(Number(a)));
+      return ids.includes(memberUserId);
+    });
+
+    setRemoveMemberInfo({
+      projectId,
+      member,
+      assignedTasks,
+    });
+    setReassignTo('');
+  };
+
+  const confirmRemoveMember = async () => {
+    if (!removeMemberInfo) return;
+    const { projectId, member, assignedTasks } = removeMemberInfo;
+    const memberUserId = Number(member.userId ?? member.id);
+
+    setRemoveMemberSaving(true);
+    try {
+      // 1) Reassign / unassign tasks
+      if (assignedTasks.length > 0) {
+        for (const t of assignedTasks) {
+          const tid = t.t_id || t.id;
+          if (!tid) continue;
+
+          const payload = {
+            title: t.title,
+            description: t.desc || '',
+            status: t.status,
+            priority: t.priority,
+            progress: t.progress ?? 0,
+            assignTo: reassignTo ? Number(reassignTo) : null,
+          };
+
+          try {
+            await taskService.updateTask(tid, payload);
+          } catch (e) {
+            console.warn(`Could not ${reassignTo ? 'reassign' : 'unassign'} task ${tid}:`, e);
+          }
+        }
+      }
+
+      // 2) Remove from PTeam if they had a row
+      const currentPteam = pteamEntries.filter(entry => getPteamProjectId(entry) === Number(projectId));
+      const realTmId = findRealTeamMemberId(member, teamMembers, users);
+      if (realTmId) {
+        const entry = currentPteam.find(e => getPteamTmId(e) === realTmId);
+        if (entry) {
+          try { await projectTeamService.removeMemberFromProject(entry.pt_id); }
+          catch (e) { console.warn('Could not remove PTeam entry:', e); }
+        }
+      }
+
+      // 3) Remove from localStorage fallbacks
+      const localSups = getLocalSupervisors(projectId).filter(id => Number(id) !== memberUserId);
+      const localMems = getLocalMembers(projectId).filter(id => Number(id) !== memberUserId);
+      setLocalSupervisors(projectId, localSups);
+      setLocalMembers(projectId, localMems);
+
+      toast.success(
+        reassignTo
+          ? `${member.name} removed. Their tasks reassigned.`
+          : `${member.name} removed. Their tasks are now unassigned.`
+      );
+
+      setRemoveMemberInfo(null);
+      setReassignTo('');
+      await fetchData();
+    } catch (error) {
+      console.error('Error removing member:', error);
+      toast.error('Failed to remove member');
+    } finally {
+      setRemoveMemberSaving(false);
+    }
   };
 
   if (loading) {
@@ -1394,7 +1545,7 @@ export default function SupervisorProjects() {
                       <Users size={14} /><span>Edit Members</span>
                     </div>
                     <MemberPicker
-                      selected={taskListModal.members?.map(m => m.id) || []}
+                      selected={taskListModal.members?.map(m => m.userId ?? m.id) || []}
                       onChange={(nm) => setTaskListModal(prev => ({ ...prev, members: nm.map(id => teamMembers.find(m => m.id === id) || { id }) }))}
                       label=""
                       members={teamMembers}
@@ -1417,6 +1568,7 @@ export default function SupervisorProjects() {
                   <ProjectMembersPanel
                     members={getProjectMembers(taskListModal)}
                     onEdit={() => setEditMembersFor(taskListModal.p_id || taskListModal.id)}
+                    onRemove={promptRemoveMember}
                   />
                 )}
               </div>
@@ -1653,6 +1805,132 @@ export default function SupervisorProjects() {
         </div>
       )}
 
+      {/* ─── REMOVE MEMBER MODAL ─── */}
+      <AnimatePresence>
+        {removeMemberInfo && (
+          <motion.div
+            className="lp-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => { if (!removeMemberSaving) { setRemoveMemberInfo(null); setReassignTo(''); } }}
+          >
+            <motion.div
+              className="lp-modal"
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={e => e.stopPropagation()}
+              style={{ maxWidth: 480 }}
+            >
+              <div className="lp-modal-header">
+                <h2 className="lp-modal-title">
+                  <UserMinus size={16} /> Remove member
+                </h2>
+                <button
+                  className="lp-icon-btn"
+                  onClick={() => { setRemoveMemberInfo(null); setReassignTo(''); }}
+                  disabled={removeMemberSaving}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="lp-modal-body lp-edit-form">
+                <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
+                  Remove <strong>{removeMemberInfo.member.name}</strong> from this project?
+                </p>
+
+                {removeMemberInfo.assignedTasks.length > 0 ? (
+                  <>
+                    <div style={{
+                      padding: '10px 12px',
+                      background: 'rgba(245, 158, 11, 0.08)',
+                      border: '1px solid rgba(245, 158, 11, 0.25)',
+                      borderRadius: 8,
+                      fontSize: 12.5,
+                      color: 'var(--text-secondary)',
+                    }}>
+                      <AlertCircle size={12} style={{ display: 'inline', marginRight: 4, color: '#f59e0b' }} />
+                      This member has <strong>{removeMemberInfo.assignedTasks.length}</strong> assigned
+                      task{removeMemberInfo.assignedTasks.length !== 1 ? 's' : ''} in this project.
+                    </div>
+
+                    <div style={{ maxHeight: 120, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {removeMemberInfo.assignedTasks.map(t => (
+                        <div key={t.t_id || t.id} style={{
+                          fontSize: 12.5,
+                          padding: '6px 10px',
+                          background: 'var(--bg-secondary)',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: 6,
+                          color: 'var(--text-primary)',
+                        }}>
+                          📋 {t.title}
+                        </div>
+                      ))}
+                    </div>
+
+                    <label className="lp-label" style={{ marginTop: 6 }}>
+                      Reassign those tasks to
+                    </label>
+                    <select
+                      className="input lp-input"
+                      value={reassignTo}
+                      onChange={e => setReassignTo(e.target.value)}
+                      disabled={removeMemberSaving}
+                    >
+                      <option value="">— Leave unassigned —</option>
+                      {(taskListModal?.members || [])
+                        .filter(m => Number(m.userId ?? m.id) !== Number(removeMemberInfo.member.userId ?? removeMemberInfo.member.id))
+                        .map(m => (
+                          <option key={m.id} value={m.userId ?? m.id}>{m.name}</option>
+                        ))
+                      }
+                    </select>
+                    <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: 0 }}>
+                      If you don't pick anyone, the tasks will be left unassigned.
+                    </p>
+                  </>
+                ) : (
+                  <div style={{
+                    padding: '10px 12px',
+                    background: 'rgba(52, 211, 153, 0.08)',
+                    border: '1px solid rgba(52, 211, 153, 0.25)',
+                    borderRadius: 8,
+                    fontSize: 12.5,
+                    color: 'var(--text-secondary)',
+                  }}>
+                    <Check size={12} style={{ display: 'inline', marginRight: 4, color: '#34d399' }} />
+                    No tasks assigned to this member in this project.
+                  </div>
+                )}
+              </div>
+
+              <div className="lp-modal-footer">
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => { setRemoveMemberInfo(null); setReassignTo(''); }}
+                  disabled={removeMemberSaving}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-danger btn-sm"
+                  onClick={confirmRemoveMember}
+                  disabled={removeMemberSaving}
+                >
+                  {removeMemberSaving
+                    ? <><Loader2 size={13} className="spin" /> Removing...</>
+                    : <><Trash2 size={13} /> Remove member</>
+                  }
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* DELETE TASK */}
       {deleteTaskId !== null && (
         <div className="lp-overlay" onClick={() => setDeleteTaskId(null)}>
@@ -1752,11 +2030,12 @@ export default function SupervisorProjects() {
                 </div>
               </div>
 
-              {/* ─── SUPERVISORS PICKER ─── */}
               <div>
                 <label className="lp-label">
                   <Crown size={14} style={{ display: 'inline', marginRight: 4 }} />
-                  Select Supervisors <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(optional — you'll be added automatically)</span>
+                  Select Supervisors <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>
+                    (optional — if none selected, you'll be assigned automatically)
+                  </span>
                 </label>
                 <div className="lp-supervisor-picker">
                   {supervisorOptions.length === 0 ? (
@@ -1781,11 +2060,7 @@ export default function SupervisorProjects() {
                             key={s.id}
                             type="button"
                             className={`lp-supervisor-chip ${isSelected ? 'selected' : ''} ${isCurrentUser ? 'current-user' : ''}`}
-                            disabled={isCurrentUser}
-                            title={isCurrentUser ? 'You are automatically the supervisor of this project' : undefined}
-                            style={isCurrentUser ? { cursor: 'not-allowed' } : undefined}
                             onClick={() => {
-                              if (isCurrentUser) return;
                               setForm(prev => ({
                                 ...prev,
                                 supervisors: isSelected
@@ -1793,6 +2068,7 @@ export default function SupervisorProjects() {
                                   : [...prev.supervisors, s.id]
                               }));
                             }}
+                            title={isCurrentUser ? 'Toggle yourself as supervisor of this project' : undefined}
                           >
                             <span className="lp-member-avatar-sm">{(s.name || '?')[0].toUpperCase()}</span>
                             {s.name}
@@ -1805,7 +2081,8 @@ export default function SupervisorProjects() {
                   )}
                 </div>
                 <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
-                  Add other supervisors who should also have access. You're always included.
+                  If you don't select any supervisor, you'll be assigned automatically.
+                  If you select at least one, you're not required to include yourself.
                 </p>
                 <div style={{
                   marginTop: 8,
@@ -1825,13 +2102,12 @@ export default function SupervisorProjects() {
                   ) : (
                     <>
                       <Check size={12} style={{ display: 'inline', marginRight: 4, color: '#34d399' }} />
-                      You will be added as the supervisor automatically
+                      You will be assigned as the supervisor automatically
                     </>
                   )}
                 </div>
               </div>
 
-              {/* ─── TEAM MEMBERS PICKER ─── */}
               <MemberPicker
                 selected={form.members}
                 onChange={ids => setForm({ ...form, members: ids })}
@@ -1891,10 +2167,9 @@ export default function SupervisorProjects() {
         .lp-supervisor-badge { display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 7px; font-size: 10px; font-weight: 600; background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); }
         .lp-supervisor-picker { padding: 10px 12px; border-radius: 9px; border: 1px solid rgba(245, 158, 11, 0.25); background: rgba(245, 158, 11, 0.03); min-height: 44px; }
         .lp-supervisor-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px 4px 6px; border-radius: 20px; border: 1px solid var(--border-subtle); background: var(--bg-card); color: var(--text-primary); font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s; }
-        .lp-supervisor-chip:hover:not(:disabled) { border-color: #f59e0b; background: var(--bg-hover); }
+        .lp-supervisor-chip:hover { border-color: #f59e0b; background: var(--bg-hover); }
         .lp-supervisor-chip.selected { background: rgba(245, 158, 11, 0.12); border-color: #f59e0b; }
         .lp-supervisor-chip.current-user { border-color: #34d399; background: rgba(52, 211, 153, 0.1); }
-        .lp-supervisor-chip:disabled { opacity: 1; }
         .lp-current-user-badge { font-size: 9px; color: #34d399; font-weight: 600; }
         .lp-filters-container { display: flex; flex-direction: column; gap: 14px; margin-bottom: 24px; background: var(--bg-card); padding: 18px 20px; border-radius: 14px; border: 1px solid var(--border-subtle); transition: all 0.2s ease; }
         .lp-filters-container:focus-within { border-color: var(--accent-primary); box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08); }
@@ -2038,7 +2313,6 @@ export default function SupervisorProjects() {
           .lp-icon-btn { padding: 4px 5px; }
           .lp-card-badges > * { max-width: 76px !important; font-size: 10px !important; }
         }
-          
       `}</style>
     </div>
   );
