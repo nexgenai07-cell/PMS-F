@@ -32,7 +32,7 @@ const TASK_STATUS_OPTIONS = ['todo', 'in_progress', 'review', 'done'];
 
 const SUPERVISOR_ROLES = ['manager', 'admin', 'supervisor'];
 
-/* ─────────── Local supervisor fallback ─────────── */
+/* ─────────── Local supervisor fallback (ONLY for supervisors) ─────────── */
 const SUPERVISOR_STORAGE_KEY = 'pms_project_supervisors';
 
 function readLocalSupervisors() {
@@ -65,42 +65,9 @@ function removeLocalSupervisors(projectId) {
   catch (e) { console.warn('Could not remove local supervisors:', e); }
 }
 
-/* ─────────── Local member fallback ─────────── */
-const MEMBER_STORAGE_KEY = 'pms_project_members';
-
-function readLocalMembers() {
-  try {
-    const raw = localStorage.getItem(MEMBER_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch { return {}; }
-}
-
-function getLocalMembers(projectId) {
-  if (!projectId) return [];
-  const map = readLocalMembers();
-  const ids = map[String(projectId)];
-  return Array.isArray(ids) ? ids.map(Number) : [];
-}
-
-function setLocalMembers(projectId, ids) {
-  if (!projectId) return;
-  const map = readLocalMembers();
-  map[String(projectId)] = [...new Set((ids || []).map(Number))];
-  try { localStorage.setItem(MEMBER_STORAGE_KEY, JSON.stringify(map)); }
-  catch (e) { console.warn('Could not persist members locally:', e); }
-}
-
-function removeLocalMembers(projectId) {
-  if (!projectId) return;
-  const map = readLocalMembers();
-  delete map[String(projectId)];
-  try { localStorage.setItem(MEMBER_STORAGE_KEY, JSON.stringify(map)); }
-  catch (e) { console.warn('Could not remove local members:', e); }
-}
-
 /* ─────────── Resolve TeamMember id → user-like object ─────────── */
 // A PTeam entry's `tm` refers to a TeamMember, so we resolve against
-// team_members first, and only fall back to users.
+// team_members first, then map to user for role info.
 function resolveTeamMemberId(tmId, usersList, membersList) {
   if (tmId == null) return null;
   const numId = Number(tmId);
@@ -134,8 +101,7 @@ function resolveTeamMemberId(tmId, usersList, membersList) {
   return null;
 }
 
-/* ─────────── Resolve User id → user-like object ─────────── */
-// Used for localStorage fallbacks (which store USER ids).
+/* ─────────── Resolve User id → object ─────────── */
 function resolveUserId(userId, usersList, membersList) {
   if (userId == null) return null;
   const numId = Number(userId);
@@ -164,19 +130,15 @@ function resolveUserId(userId, usersList, membersList) {
   return null;
 }
 
-/* ─────────── Bulletproof PTeam field getters ─────────── */
+/* ─────────── PTeam field getters ─────────── */
 function getPteamProjectId(entry) {
-  return Number(
-    entry.p ?? entry.p_id ?? entry.project ?? entry.projectId ?? entry.project_id
-  );
+  return Number(entry.p ?? entry.p_id ?? entry.project ?? entry.projectId ?? entry.project_id);
 }
 function getPteamTmId(entry) {
-  return Number(
-    entry.tm ?? entry.tm_id ?? entry.team_member ?? entry.member ?? entry.member_id ?? entry.teamMember
-  );
+  return Number(entry.tm ?? entry.tm_id ?? entry.team_member ?? entry.member ?? entry.member_id ?? entry.teamMember);
 }
 
-/* ─────────── Compute task progress from status when missing/zero ─────────── */
+/* ─────────── Compute task progress from status ─────────── */
 function computeTaskProgress(task) {
   const raw = Number(task.progress);
   if (Number.isFinite(raw) && raw > 0) return raw;
@@ -450,7 +412,6 @@ export default function SupervisorProjects() {
   const [deleteProjectId, setDeleteProjectId] = useState(null);
   const [editMembersFor, setEditMembersFor] = useState(null);
 
-  // Remove-member modal
   const [removeMemberInfo, setRemoveMemberInfo] = useState(null);
   const [reassignTo, setReassignTo] = useState('');
   const [removeMemberSaving, setRemoveMemberSaving] = useState(false);
@@ -590,6 +551,7 @@ export default function SupervisorProjects() {
       const usersList = usersData?.data || usersData || [];
       const pteamList = pteamData?.data || pteamData || [];
 
+      // Only real, non-deleted team members
       let activeMembersList = membersList.filter(m => m.is_deleted !== 1);
       const userId = user?.id || user?.u_id;
 
@@ -605,6 +567,7 @@ export default function SupervisorProjects() {
         });
       }
 
+      // Add current user as a placeholder ONLY for supervisor picker
       const currentUserInMembers = activeMembersList.some(m => Number(m.id) === Number(userId));
       if (!currentUserInMembers && userId) {
         const userObj = usersList.find(u => Number(u.id) === Number(userId));
@@ -620,7 +583,7 @@ export default function SupervisorProjects() {
         }
       }
 
-      // Supervisor options come from USERS (role-based)
+      // Supervisor options: users with supervisor role
       const allSupervisorUsers = usersList
         .filter(u => SUPERVISOR_ROLES.includes((u.role || '').toLowerCase()))
         .map(u => ({
@@ -648,6 +611,7 @@ export default function SupervisorProjects() {
       setSupervisorOptions(allSupervisorUsers);
       setAllSupervisors(allSupervisorUsers);
 
+      // STRICT: member options = REAL TeamMembers only (exclude supervisors)
       const { regularMembers: memberList } = categorizeMembers(activeMembersList, usersList);
       setMemberOptions(memberList);
       setTeamMembers(activeMembersList);
@@ -668,7 +632,7 @@ export default function SupervisorProjects() {
 
         const memberMap = new Map();
 
-        // 1. PTeam entries
+        // 1. PTeam entries — the ONLY source of members
         projectPteamEntries.forEach(entry => {
           const tmId = getPteamTmId(entry);
           if (memberMap.has(tmId)) return;
@@ -682,22 +646,15 @@ export default function SupervisorProjects() {
           }
         });
 
-        // 2. Local supervisors (user ids)
+        // 2. Local supervisors — user ids (fallback for supervisors only)
         getLocalSupervisors(projectId).forEach(sid => {
           if (memberMap.has(sid)) return;
           const resolved = resolveUserId(sid, usersList, activeMembersList);
           if (resolved) memberMap.set(Number(sid), { ...resolved, pt_id: null, task_id: null });
         });
 
-        // 3. Local members (user ids)
-        getLocalMembers(projectId).forEach(mid => {
-          if (memberMap.has(mid)) return;
-          const resolved = resolveUserId(mid, usersList, activeMembersList);
-          if (resolved) memberMap.set(Number(mid), { ...resolved, pt_id: null, task_id: null });
-        });
-
-        // Task assignees and project creator are NOT auto-added as project members.
-        // Only users explicitly attached via PTeam or localStorage show up.
+        // NOTE: no task assignees, no creator, no local member fallback.
+        // Members come strictly from PTeam.
 
         const projectMembersRaw = Array.from(memberMap.values());
 
@@ -730,7 +687,7 @@ export default function SupervisorProjects() {
         };
       });
 
-      // Map task progress (for the modal so it shows computed % too)
+      // Compute progress for task-list modal
       const mappedTasks = tasksList.map(t => ({
         ...t,
         progress: computeTaskProgress(t),
@@ -858,7 +815,7 @@ export default function SupervisorProjects() {
         const currentPteam = pteamEntries.filter(entry => getPteamProjectId(entry) === Number(projectId));
         const currentMemberIds = [...new Set(currentPteam.map(entry => getPteamTmId(entry)))];
 
-        // ── Supervisors: try PTeam, fall back to localStorage ──
+        // ── Supervisors: try PTeam, fall back to localStorage (supervisors only) ──
         const localSupervisorFallback = [];
         for (const supId of uniqueSupervisors) {
           const realTmId = findRealTeamMemberId(supId, teamMembers, users);
@@ -875,19 +832,18 @@ export default function SupervisorProjects() {
           }
         }
 
-        // ── Regular members: try PTeam, fall back to localStorage ──
-        const localMemberFallback = [];
+        // ── Regular members: PTeam only (STRICT) ──
         for (const memberId of uniqueMembers) {
           const realTmId = findRealTeamMemberId(memberId, teamMembers, users);
           if (!realTmId) {
-            localMemberFallback.push(memberId);
+            console.warn(`Member ${memberId} has no TeamMember row — skipping (only TeamMembers can be project members)`);
             continue;
           }
           if (!currentMemberIds.includes(realTmId)) {
             try {
               await projectTeamService.addMemberToProject(projectId, realTmId);
             } catch (e) {
-              localMemberFallback.push(memberId);
+              console.warn(`Could not add member ${memberId} to PTeam:`, e);
             }
           }
         }
@@ -908,10 +864,6 @@ export default function SupervisorProjects() {
         }
 
         setLocalSupervisors(projectId, localSupervisorFallback);
-        // Only overwrite members fallback when the form had members
-        if (uniqueMembers.length > 0) {
-          setLocalMembers(projectId, localMemberFallback);
-        }
 
         setProjects(projects.map(p =>
           (p.p_id || p.id) === (editProject.p_id || editProject.id) ? createdProject : p
@@ -922,6 +874,7 @@ export default function SupervisorProjects() {
         createdProject = newProject?.data || newProject;
         const projectId = createdProject.p_id || createdProject.id;
 
+        // Supervisors
         const localSupervisorFallback = [];
         for (const supId of uniqueSupervisors) {
           const realTmId = findRealTeamMemberId(supId, teamMembers, users);
@@ -936,24 +889,21 @@ export default function SupervisorProjects() {
           }
         }
 
-        const localMemberFallback = [];
+        // Regular members: PTeam only (STRICT)
         for (const memberId of uniqueMembers) {
           const realTmId = findRealTeamMemberId(memberId, teamMembers, users);
           if (!realTmId) {
-            localMemberFallback.push(memberId);
+            console.warn(`Member ${memberId} has no TeamMember row — skipping`);
             continue;
           }
           try {
             await projectTeamService.addMemberToProject(projectId, realTmId);
           } catch (e) {
-            localMemberFallback.push(memberId);
+            console.warn(`Could not add member ${memberId} to PTeam:`, e);
           }
         }
 
         setLocalSupervisors(projectId, localSupervisorFallback);
-        if (uniqueMembers.length > 0) {
-          setLocalMembers(projectId, localMemberFallback);
-        }
 
         setProjects([createdProject, ...projects]);
         toast.success('Project created successfully');
@@ -977,7 +927,6 @@ export default function SupervisorProjects() {
     try {
       await projectService.deleteProject(deleteProjectId);
       removeLocalSupervisors(deleteProjectId);
-      removeLocalMembers(deleteProjectId);
       setProjects(projects.filter(p => (p.p_id || p.id) !== deleteProjectId));
       setDeleteProjectId(null);
       toast.success('Project deleted successfully');
@@ -1172,10 +1121,8 @@ export default function SupervisorProjects() {
   const promptRemoveMember = (member) => {
     if (!taskListModal) return;
     const projectId = taskListModal.p_id || taskListModal.id;
-
     const memberUserId = Number(member.userId ?? member.id);
 
-    // Find tasks in this project currently assigned to this member
     const assignedTasks = tasks.filter(t => {
       const belongsToProject = Number(t.p_id || t.p) === Number(projectId);
       if (!belongsToProject) return false;
@@ -1223,7 +1170,7 @@ export default function SupervisorProjects() {
         }
       }
 
-      // 2) Remove from PTeam if they had a row
+      // 2) Remove from PTeam (if they had a row)
       const currentPteam = pteamEntries.filter(entry => getPteamProjectId(entry) === Number(projectId));
       const realTmId = findRealTeamMemberId(member, teamMembers, users);
       if (realTmId) {
@@ -1234,11 +1181,9 @@ export default function SupervisorProjects() {
         }
       }
 
-      // 3) Remove from localStorage fallbacks
+      // 3) Remove from local supervisors fallback (if present)
       const localSups = getLocalSupervisors(projectId).filter(id => Number(id) !== memberUserId);
-      const localMems = getLocalMembers(projectId).filter(id => Number(id) !== memberUserId);
       setLocalSupervisors(projectId, localSups);
-      setLocalMembers(projectId, localMems);
 
       toast.success(
         reassignTo
@@ -1545,7 +1490,7 @@ export default function SupervisorProjects() {
                       <Users size={14} /><span>Edit Members</span>
                     </div>
                     <MemberPicker
-                      selected={taskListModal.members?.map(m => m.userId ?? m.id) || []}
+                      selected={taskListModal.members?.map(m => m.id) || []}
                       onChange={(nm) => setTaskListModal(prev => ({ ...prev, members: nm.map(id => teamMembers.find(m => m.id === id) || { id }) }))}
                       label=""
                       members={teamMembers}

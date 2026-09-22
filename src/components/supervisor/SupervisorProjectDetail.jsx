@@ -45,9 +45,8 @@ const PRIORITY_OPTIONS = ["low", "medium", "high", "critical"];
 const STATUS_OPTIONS = ["todo", "in_progress", "review", "done", "cancelled"];
 const SUPERVISOR_ROLES = ['manager', 'admin', 'supervisor'];
 
-/* ─────────── Local fallbacks ─────────── */
+/* ─────────── Local supervisor fallback (supervisors only) ─────────── */
 const SUPERVISOR_STORAGE_KEY = 'pms_project_supervisors';
-const MEMBER_STORAGE_KEY = 'pms_project_members';
 
 function readLocalSupervisors() {
   try {
@@ -71,29 +70,9 @@ function setLocalSupervisors(projectId, ids) {
   catch (e) { console.warn('Could not persist supervisors locally:', e); }
 }
 
-function readLocalMembers() {
-  try {
-    const raw = localStorage.getItem(MEMBER_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch { return {}; }
-}
-
-function getLocalMembers(projectId) {
-  if (!projectId) return [];
-  const map = readLocalMembers();
-  const ids = map[String(projectId)];
-  return Array.isArray(ids) ? ids.map(Number) : [];
-}
-
-function setLocalMembers(projectId, ids) {
-  if (!projectId) return;
-  const map = readLocalMembers();
-  map[String(projectId)] = [...new Set((ids || []).map(Number))];
-  try { localStorage.setItem(MEMBER_STORAGE_KEY, JSON.stringify(map)); }
-  catch (e) { console.warn('Could not persist members locally:', e); }
-}
-
-/* ─────────── Resolve TeamMember id → object ─────────── */
+/* ─────────── Resolve TeamMember id → user-like object ─────────── */
+// PTeam entries' `tm` refers to a TeamMember id. We resolve against
+// team_members first (authoritative name), then map to user for role info.
 function resolveTeamMemberId(tmId, usersList, membersList) {
   if (tmId == null) return null;
   const numId = Number(tmId);
@@ -127,7 +106,7 @@ function resolveTeamMemberId(tmId, usersList, membersList) {
   return null;
 }
 
-/* ─────────── Resolve User id → object ─────────── */
+/* ─────────── Resolve User id → object (used for local supervisors) ─────────── */
 function resolveUserId(userId, usersList, membersList) {
   if (userId == null) return null;
   const numId = Number(userId);
@@ -164,7 +143,7 @@ function getPteamTmId(entry) {
   return Number(entry.tm ?? entry.tm_id ?? entry.team_member ?? entry.member ?? entry.member_id ?? entry.teamMember);
 }
 
-/* ─────────── Compute task progress ─────────── */
+/* ─────────── Compute task progress from status ─────────── */
 function computeTaskProgress(task) {
   const raw = Number(task.progress);
   if (Number.isFinite(raw) && raw > 0) return raw;
@@ -175,7 +154,7 @@ function computeTaskProgress(task) {
   return 0;
 }
 
-/* ─────────── Find real TeamMember id ─────────── */
+/* ─────────── Find real TeamMember id from a user id ─────────── */
 function findRealTeamMemberId(userIdOrObj, teamMembersList, usersList) {
   if (!userIdOrObj) return null;
   const id = typeof userIdOrObj === 'object'
@@ -315,7 +294,7 @@ export default function SupervisorProjectDetail() {
   const [editTaskSubmitAttempted, setEditTaskSubmitAttempted] = useState(false);
   const [modalCommentTouched, setModalCommentTouched] = useState(false);
 
-  // Remove member state
+  // Remove member modal
   const [removeMemberInfo, setRemoveMemberInfo] = useState(null);
   const [reassignTo, setReassignTo] = useState('');
   const [removeMemberSaving, setRemoveMemberSaving] = useState(false);
@@ -462,7 +441,7 @@ export default function SupervisorProjectDetail() {
         return Number(taskProjectId) === Number(projectId);
       });
 
-      // Members: PTeam + local supervisors + local members only
+      // ─── Build members from PTeam only ───
       const memberMap = new Map();
 
       if (pteamList && Array.isArray(pteamList) && pteamList.length > 0) {
@@ -484,6 +463,7 @@ export default function SupervisorProjectDetail() {
         });
       }
 
+      // ─── Merge local supervisors (user ids) — ONLY supervisors ───
       const localSupervisorIds = getLocalSupervisors(projectId);
       localSupervisorIds.forEach(sid => {
         if (memberMap.has(sid)) return;
@@ -491,18 +471,12 @@ export default function SupervisorProjectDetail() {
         if (resolved) memberMap.set(Number(sid), { ...resolved, pt_id: null, task_id: null });
       });
 
-      const localMemberIds = getLocalMembers(projectId);
-      localMemberIds.forEach(mid => {
-        if (memberMap.has(mid)) return;
-        const resolved = resolveUserId(mid, usersList, membersList);
-        if (resolved) memberMap.set(Number(mid), { ...resolved, pt_id: null, task_id: null });
-      });
-
-      // NOTE: Task assignees and creator are NOT auto-added as project members.
+      // Members come ONLY from PTeam. No task assignees, no creator, no local member fallback.
 
       const memberEntries = Array.from(memberMap.values());
       setProjectMembers(memberEntries);
 
+      // ─── Determine supervisors ───
       const supervisorMap = new Map();
 
       memberEntries.forEach(m => {
@@ -524,6 +498,7 @@ export default function SupervisorProjectDetail() {
       const supervisorEntries = Array.from(supervisorMap.values());
       setProjectSupervisors(supervisorEntries);
 
+      // ─── Map tasks with progress ───
       const mappedTasks = projectTasks.map(t => ({
         ...t,
         progress: computeTaskProgress(t),
@@ -533,6 +508,7 @@ export default function SupervisorProjectDetail() {
 
       setTasks(mappedTasks);
 
+      // ─── Load comments per task ───
       if (mappedTasks.length > 0) {
         const allComments = [];
         for (const task of mappedTasks) {
@@ -788,6 +764,7 @@ export default function SupervisorProjectDetail() {
   const promptRemoveMember = (member) => {
     const memberUserId = Number(member.userId ?? member.id);
 
+    // Tasks in this project assigned to this member
     const assignedTasks = tasks.filter(t => {
       const belongsToProject = Number(t.p_id || t.p) === Number(projectId);
       if (!belongsToProject) return false;
@@ -812,7 +789,7 @@ export default function SupervisorProjectDetail() {
 
     setRemoveMemberSaving(true);
     try {
-      // 1) Reassign / unassign tasks in this project
+      // 1) Reassign / unassign tasks
       if (assignedTasks.length > 0) {
         for (const t of assignedTasks) {
           const tid = t.t_id || t.id;
@@ -846,11 +823,9 @@ export default function SupervisorProjectDetail() {
         }
       }
 
-      // 3) Remove from localStorage fallbacks
+      // 3) Remove from local supervisors fallback (if present)
       const localSups = getLocalSupervisors(pId).filter(id => Number(id) !== memberUserId);
-      const localMems = getLocalMembers(pId).filter(id => Number(id) !== memberUserId);
       setLocalSupervisors(pId, localSups);
-      setLocalMembers(pId, localMems);
 
       toast.success(
         reassignTo
@@ -935,7 +910,7 @@ export default function SupervisorProjectDetail() {
         }
       />
 
-      {/* TASK DETAIL MODAL */}
+      {/* ─── TASK DETAIL MODAL ─── */}
       <AnimatePresence>
         {selectedTask && (
           <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setSelectedTask(null)}>
@@ -1055,7 +1030,7 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* EDIT TASK MODAL */}
+      {/* ─── EDIT TASK MODAL ─── */}
       <AnimatePresence>
         {editTask && (
           <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setEditTask(null); resetEditTaskTouched(); }}>
@@ -1114,7 +1089,11 @@ export default function SupervisorProjectDetail() {
 
                 <div className="form-group">
                   <label className="form-label">Assign To</label>
-                  <select className="form-input" value={editTask.assign_to || editTask.assignTo || ''} onChange={(e) => setEditTask({ ...editTask, assign_to: e.target.value ? parseInt(e.target.value) : null })}>
+                  <select
+                    className="form-input"
+                    value={editTask.assign_to || editTask.assignTo || ''}
+                    onChange={(e) => setEditTask({ ...editTask, assign_to: e.target.value ? parseInt(e.target.value) : null })}
+                  >
                     <option value="">Unassigned</option>
                     {projectMembers.map((m) => (
                       <option key={m.id} value={m.userId ?? m.id}>
@@ -1141,7 +1120,7 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* ADD TASK MODAL */}
+      {/* ─── ADD TASK MODAL ─── */}
       <AnimatePresence>
         {showAddTask && (
           <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setShowAddTask(false); resetAddTaskTouched(); }}>
@@ -1202,7 +1181,11 @@ export default function SupervisorProjectDetail() {
 
                 <div className="form-group">
                   <label className="form-label">Assign Team Member</label>
-                  <select className="form-input" value={newTask.assignedTo || ""} onChange={(e) => setNewTask({ ...newTask, assignedTo: e.target.value ? parseInt(e.target.value) : null })}>
+                  <select
+                    className="form-input"
+                    value={newTask.assignedTo || ""}
+                    onChange={(e) => setNewTask({ ...newTask, assignedTo: e.target.value ? parseInt(e.target.value) : null })}
+                  >
                     <option value="">Select Member</option>
                     {projectMembers.map((mem) => (
                       <option key={mem.id} value={mem.userId ?? mem.id}>
@@ -1229,7 +1212,7 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* REMOVE MEMBER MODAL */}
+      {/* ─── REMOVE MEMBER MODAL ─── */}
       <AnimatePresence>
         {removeMemberInfo && (
           <motion.div
@@ -1355,7 +1338,7 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* DELETE CONFIRM */}
+      {/* ─── DELETE CONFIRM ─── */}
       <AnimatePresence>
         {showDeleteConfirm !== null && (
           <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowDeleteConfirm(null)}>
@@ -1374,7 +1357,7 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* PROJECT BODY */}
+      {/* ─── PROJECT BODY ─── */}
       <div className="project-body">
         <div className="project-left">
           <div className="project-overview-card">
