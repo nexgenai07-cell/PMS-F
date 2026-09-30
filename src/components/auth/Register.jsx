@@ -23,7 +23,6 @@ const STRENGTH_MAP = {
   5: { label: 'Very Strong', color: '#10b981', feedback: 'Excellent password security!' }
 };
 
-// Single source of truth for password rules (validator + checklist)
 const PASSWORD_RULES = [
   { key: 'length', label: 'Min 8 characters', test: (p) => p.length >= 8 },
   { key: 'case', label: 'Uppercase & lowercase', test: (p) => /[a-z]/.test(p) && /[A-Z]/.test(p) },
@@ -31,8 +30,53 @@ const PASSWORD_RULES = [
   { key: 'special', label: 'Special character', test: (p) => /[^a-zA-Z0-9]/.test(p) }
 ];
 
-const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+// 🆕 Issue #3 fix — tighter regex:
+//   - Local part: 1-64 chars, no leading/trailing dots, no consecutive dots
+//   - Domain: labels 1-63 chars, TLD 2-24 letters
+const EMAIL_REGEX = /^[a-zA-Z0-9](?:[a-zA-Z0-9._%+-]{0,62}[a-zA-Z0-9])?@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,24}$/;
+
+// 🆕 Issue #3 fix — reject emails with consecutive dots in local part
+const HAS_CONSECUTIVE_DOTS = /\.\./;
+
+// 🆕 Issue #3 fix — block obviously wrong TLDs (single-char, digits-only, etc.)
+const BAD_TLD = /\.(\d+|[a-zA-Z])$/;
+
 const USERNAME_REGEX = /^[a-zA-Z0-9_]+$/;
+
+// 🆕 Issue #3 fix — common typo domains that pass regex but don't exist
+// If the domain matches one of these, we reject with a "Did you mean X?" hint.
+const TYPO_DOMAINS = {
+  'mail.com': 'This domain accepts mail but rarely for signups. Use gmail.com, outlook.com, or your company email.',
+  'gmial.com': 'gmail.com',
+  'gmai.com': 'gmail.com',
+  'gmal.com': 'gmail.com',
+  'gamil.com': 'gmail.com',
+  'gmaill.com': 'gmail.com',
+  'gmail.co': 'gmail.com',
+  'gmail.con': 'gmail.com',
+  'gmail.cm': 'gmail.com',
+  'yahho.com': 'yahoo.com',
+  'yaho.com': 'yahoo.com',
+  'yahoo.con': 'yahoo.com',
+  'yaho.co': 'yahoo.com',
+  'hotmial.com': 'hotmail.com',
+  'hotmai.com': 'hotmail.com',
+  'hotmail.con': 'hotmail.com',
+  'outlok.com': 'outlook.com',
+  'outlook.con': 'outlook.com',
+  'outlook.co': 'outlook.com',
+  'iclod.com': 'icloud.com',
+  'icloud.con': 'icloud.com',
+  'protonmai.com': 'protonmail.com',
+  'protonmail.con': 'protonmail.com',
+};
+
+// 🆕 Issue #3 fix — emails on disposable / throwaway services
+const DISPOSABLE_DOMAINS = [
+  'mailinator.com', '10minutemail.com', 'tempmail.com', 'guerrillamail.com',
+  'throwawaymail.com', 'yopmail.com', 'trashmail.com', 'sharklasers.com',
+  'getairmail.com', 'maildrop.cc', 'temp-mail.org', 'fakeinbox.com'
+];
 
 function scorePassword(password) {
   let score = 0;
@@ -42,6 +86,88 @@ function scorePassword(password) {
   if (/\d/.test(password)) score++;
   if (/[^a-zA-Z0-9]/.test(password)) score++;
   return Math.min(score, 5);
+}
+
+// 🆕 Issue #3 fix — enhanced email validator
+function validateEmail(value) {
+  const v = (value ?? '').trim().toLowerCase();
+
+  if (!v) return { valid: false, message: 'Email is required' };
+  if (v.length > 254) {
+    return { valid: false, message: 'Email address is too long (maximum 254 characters)' };
+  }
+
+  // Must contain exactly one @
+  const atCount = (v.match(/@/g) || []).length;
+  if (atCount !== 1) {
+    return { valid: false, message: 'Email must contain exactly one @ symbol' };
+  }
+
+  const [localPart, domain] = v.split('@');
+
+  // Local part length
+  if (localPart.length > 64) {
+    return { valid: false, message: 'Email local part is too long (maximum 64 characters)' };
+  }
+
+  // Local part no consecutive dots
+  if (HAS_CONSECUTIVE_DOTS.test(localPart)) {
+    return { valid: false, message: 'Email cannot contain consecutive dots' };
+  }
+
+  // Overall regex
+  if (!EMAIL_REGEX.test(v)) {
+    return {
+      valid: false,
+      message: 'Please enter a valid email address (e.g., you@gmail.com or you@company.com)',
+    };
+  }
+
+  // TLD must be letters only, 2-24 chars
+  if (BAD_TLD.test(v)) {
+    return {
+      valid: false,
+      message: 'Email domain is invalid. The part after the last dot must be at least 2 letters (e.g., .com, .org, .net)',
+    };
+  }
+
+  // 🆕 Block known typo domains with a helpful correction hint
+  if (TYPO_DOMAINS[domain]) {
+    const suggestion = TYPO_DOMAINS[domain];
+    const isCorrection = suggestion.includes('.');
+    return {
+      valid: false,
+      message: isCorrection
+        ? `"${domain}" looks like a typo. Did you mean "${suggestion}"?`
+        : suggestion,
+    };
+  }
+
+  // 🆕 Block disposable email providers
+  if (DISPOSABLE_DOMAINS.includes(domain)) {
+    return {
+      valid: false,
+      message: 'Disposable email addresses are not allowed. Please use a permanent email.',
+    };
+  }
+
+  // 🆕 Block obviously internal-looking fake domains (test, example, localhost)
+  if (
+    domain === 'test' ||
+    domain === 'localhost' ||
+    domain === 'example.com' ||
+    domain === 'example.org' ||
+    domain.endsWith('.test') ||
+    domain.endsWith('.invalid') ||
+    domain.endsWith('.local')
+  ) {
+    return {
+      valid: false,
+      message: 'This email domain is reserved and cannot be used for registration.',
+    };
+  }
+
+  return { valid: true, message: '' };
 }
 
 // Validation functions
@@ -57,15 +183,8 @@ const validators = {
     return { valid: true, message: '' };
   },
 
-  email: (value) => {
-    const v = (value ?? '').trim();
-    if (!v) return { valid: false, message: 'Email is required' };
-    if (v.length > 254) return { valid: false, message: 'Email address is too long (maximum 254 characters)' };
-    if (!EMAIL_REGEX.test(v)) {
-      return { valid: false, message: 'Please enter a valid email address (e.g., user@domain.com)' };
-    }
-    return { valid: true, message: '' };
-  },
+  // 🆕 Issue #3 fix — delegate to the enhanced validator
+  email: (value) => validateEmail(value),
 
   password: (value) => {
     const v = value ?? '';
@@ -92,7 +211,6 @@ const validators = {
   }
 };
 
-// Extract a human-readable message from an arbitrary backend error value.
 function unwrapError(value) {
   if (value == null) return null;
   if (Array.isArray(value)) return value.length ? unwrapError(value[0]) : null;
@@ -103,7 +221,6 @@ function unwrapError(value) {
   return String(value);
 }
 
-// Turn a backend error response into { fieldName: message } + optional generalError
 function extractFieldErrors(errorData) {
   const fieldMap = {};
   let generalError = null;
@@ -164,7 +281,6 @@ export default function Register() {
     confirmPassword: false,
     role: false
   });
-  // Server-side errors (kept separate from derived client errors)
   const [serverErrors, setServerErrors] = useState({});
 
   const { register } = useAuth();
@@ -173,7 +289,6 @@ export default function Register() {
   const strengthScore = scorePassword(formData.password);
   const strength = STRENGTH_MAP[strengthScore];
 
-  // Derived client-side validation errors
   const clientErrors = useMemo(() => ({
     u_name: validators.username(formData.u_name).message,
     email: validators.email(formData.email).message,
@@ -182,7 +297,6 @@ export default function Register() {
     role: validators.role(formData.role).message
   }), [formData]);
 
-  // Merge: server error wins until the user edits the field
   const validationErrors = useMemo(() => {
     const merged = { ...clientErrors };
     Object.keys(serverErrors).forEach((field) => {
@@ -193,10 +307,8 @@ export default function Register() {
 
   const isFormValid = Object.values(clientErrors).every((e) => e === '');
 
-  // Handle field change
   const handleFieldChange = (field, value) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
-    // Clear the server error for this field once the user edits it
     setServerErrors((prev) => {
       if (!prev[field]) return prev;
       const next = { ...prev };
@@ -213,7 +325,6 @@ export default function Register() {
     }
   };
 
-  // Handle field blur
   const handleBlur = (field) => {
     setTouched((prev) => ({ ...prev, [field]: true }));
     if (field === 'password' && formData.confirmPassword) {
@@ -221,110 +332,101 @@ export default function Register() {
     }
   };
 
-  // Handle role selection
   const handleRoleSelect = (role) => {
     handleFieldChange('role', role);
     setTouched((prev) => ({ ...prev, role: true }));
   };
 
-  // Get field status for styling
   const getFieldStatus = (field) => {
     if (!touched[field]) return 'idle';
     return validationErrors[field] ? 'error' : 'success';
   };
 
   const handleSubmit = async (e) => {
-  e.preventDefault();
+    e.preventDefault();
 
-  // Mark everything touched so all errors surface
-  setTouched({
-    u_name: true,
-    email: true,
-    password: true,
-    confirmPassword: true,
-    role: true
-  });
-
-  if (!isFormValid) {
-    toast.error('Please fix all errors before submitting');
-    return;
-  }
-
-  setLoading(true);
-  try {
-    const registrationData = {
-      u_name: formData.u_name.trim(),
-      email: formData.email.trim(),
-      password: formData.password,
-      role: formData.role
-    };
-
-    // 1. Register the user
-    const user = await register(registrationData);
-
-    // 2. Fire-and-forget: create a Team Member entry (best-effort)
-    const teamMemberData = {
-      name: formData.u_name.trim(),
-      role: formData.role === 'manager' ? 'Supervisor' : 'Team Lead',
-      email: formData.email.trim(),
-      qualification: 'New Member',
-      experience: 0,
-      skills: 'New User',
-      description: `Auto-created team member for ${formData.u_name}`,
-      added_by: user?.id || 1
-    };
-
-    teamService.addTeamMember(teamMemberData).catch((teamError) => {
-      console.warn('⚠️ Team member creation failed (non-fatal):', teamError);
+    setTouched({
+      u_name: true,
+      email: true,
+      password: true,
+      confirmPassword: true,
+      role: true
     });
 
-    // 3. Set the "verifying" flag so AppRoutes doesn't redirect
-    //    /register or /login to the role home while verification is pending.
-    localStorage.setItem('verifying_email', formData.email.trim());
-
-    // 4. Navigate immediately. `replace: true` removes /register from history.
-    toast.success('Account created! Check your email to verify.');
-    navigate('/verify-email', {
-      replace: true,
-      state: {
-        email: formData.email.trim(),
-        name: formData.u_name.trim()
-      }
-    });
-  } catch (err) {
-    console.error('🔴 Registration error:', err);
-
-    const errorData = err?.response?.data;
-    console.log('📋 Error data:', errorData);
-
-    setServerErrors({});
-
-    const { fieldMap, generalError } = extractFieldErrors(errorData);
-
-    if (Object.keys(fieldMap).length > 0) {
-      setServerErrors(fieldMap);
-      setTouched((prev) => {
-        const next = { ...prev };
-        Object.keys(fieldMap).forEach((f) => { next[f] = true; });
-        return next;
-      });
-      toast.error(Object.values(fieldMap)[0]);
-    } else if (generalError) {
-      toast.error(generalError);
-    } else {
-      toast.error('Registration failed. Please try again.');
+    if (!isFormValid) {
+      toast.error('Please fix all errors before submitting');
+      return;
     }
-    return;
-  } finally {
-    setLoading(false);
-  }
-};
+
+    setLoading(true);
+    try {
+      const registrationData = {
+        u_name: formData.u_name.trim(),
+        email: formData.email.trim().toLowerCase(),   // 🆕 normalize case
+        password: formData.password,
+        role: formData.role
+      };
+
+      const user = await register(registrationData);
+
+      const teamMemberData = {
+        name: formData.u_name.trim(),
+        role: formData.role === 'manager' ? 'Supervisor' : 'Team Lead',
+        email: formData.email.trim().toLowerCase(),
+        qualification: 'New Member',
+        experience: 0,
+        skills: 'New User',
+        description: `Auto-created team member for ${formData.u_name}`,
+        added_by: user?.id || 1
+      };
+
+      teamService.addTeamMember(teamMemberData).catch((teamError) => {
+        console.warn('⚠️ Team member creation failed (non-fatal):', teamError);
+      });
+
+      localStorage.setItem('verifying_email', formData.email.trim());
+
+      toast.success('Account created! Check your email to verify.');
+      navigate('/verify-email', {
+        replace: true,
+        state: {
+          email: formData.email.trim(),
+          name: formData.u_name.trim()
+        }
+      });
+    } catch (err) {
+      console.error('🔴 Registration error:', err);
+
+      const errorData = err?.response?.data;
+      console.log('📋 Error data:', errorData);
+
+      setServerErrors({});
+
+      const { fieldMap, generalError } = extractFieldErrors(errorData);
+
+      if (Object.keys(fieldMap).length > 0) {
+        setServerErrors(fieldMap);
+        setTouched((prev) => {
+          const next = { ...prev };
+          Object.keys(fieldMap).forEach((f) => { next[f] = true; });
+          return next;
+        });
+        toast.error(Object.values(fieldMap)[0]);
+      } else if (generalError) {
+        toast.error(generalError);
+      } else {
+        toast.error('Registration failed. Please try again.');
+      }
+      return;
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const passwordValue = formData.password;
 
   return (
     <div className="register-screen">
-      {/* Background effects */}
       <div className="bg-fx" aria-hidden="true">
         <div className="bg-orb bg-orb--a" />
         <div className="bg-orb bg-orb--b" />
@@ -361,7 +463,7 @@ export default function Register() {
           <p className="subhead">Choose your role and get started with AEEL-PMS.</p>
 
           <form onSubmit={handleSubmit} className="form" noValidate>
-            {/* Username Field */}
+            {/* Username */}
             <div className="input-group">
               <label htmlFor="u_name">
                 Username <span className="required-star">*</span>
@@ -401,7 +503,7 @@ export default function Register() {
               )}
             </div>
 
-            {/* Email Field */}
+            {/* Email */}
             <div className="input-group">
               <label htmlFor="email">
                 Email address <span className="required-star">*</span>
@@ -440,7 +542,7 @@ export default function Register() {
               )}
             </div>
 
-            {/* Role Selection */}
+            {/* Role */}
             <div className="input-group">
               <label>
                 Select your role <span className="required-star">*</span>
@@ -478,7 +580,7 @@ export default function Register() {
               )}
             </div>
 
-            {/* Password Field */}
+            {/* Password */}
             <div className="input-group">
               <label htmlFor="password">
                 Password <span className="required-star">*</span>
@@ -557,7 +659,7 @@ export default function Register() {
               </div>
             </div>
 
-            {/* Confirm Password Field */}
+            {/* Confirm Password */}
             <div className="input-group">
               <label htmlFor="confirmPassword">
                 Confirm Password <span className="required-star">*</span>
@@ -826,9 +928,7 @@ export default function Register() {
           margin-left: 2px;
         }
 
-        .field-wrapper {
-          position: relative;
-        }
+        .field-wrapper { position: relative; }
 
         .field-icon {
           position: absolute;

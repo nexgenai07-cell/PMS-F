@@ -1,78 +1,80 @@
 // src/utils/api.js
 import axios from 'axios';
 
-// API Base URL - use from environment or fallback.
-// In dev, VITE_API_BASE_URL is empty -> relative paths go through the Vite proxy.
-// In prod, VITE_API_BASE_URL = https://pmsbackend.nxgenai.pro/api
-// Endpoint paths below are RELATIVE to this base (no leading /api).
-//
-// IMPORTANT: Django urlpatterns use NO trailing slash, so every path below
-// must NOT end with "/".
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
 console.log('🔵 Environment:', import.meta.env.MODE);
 console.log('🔵 API Base URL:', API_BASE_URL || 'Using proxy (relative path)');
 
-// Paths that should NOT trigger the auth-refresh-and-redirect behavior.
-// A 401 from these is a legitimate credential failure, not a stale token.
-const AUTH_ENDPOINTS = ['/auth/login', '/auth/register', '/auth/refresh'];
+// 🆕 Added verify-email and resend-verification — they should NOT trigger
+// the token-refresh interceptor. A 4xx from them is legitimate.
+const AUTH_ENDPOINTS = [
+  '/auth/login',
+  '/auth/register',
+  '/auth/refresh',
+  '/auth/verify-email',
+  '/auth/resend-verification',
+];
 
-// Pages where we should NOT clear localStorage or redirect to /login.
-// These are the pages a user can legitimately be on without being logged in.
 const PUBLIC_PATHS = ['/login', '/register', '/verify-email', '/'];
+
+// ---------------------------------------------------------------------------
+// Storage helpers — sessionStorage only
+// ---------------------------------------------------------------------------
+const AUTH_KEYS = [
+  'access_token',
+  'refresh_token',
+  'token',
+  'pms_user',
+  'user',
+  'user_data',
+  'user_role',
+];
+
+const getAccessToken = () =>
+  sessionStorage.getItem('access_token') || sessionStorage.getItem('token');
+
+const getRefreshToken = () => sessionStorage.getItem('refresh_token');
+
+const clearAuthStorage = () => {
+  AUTH_KEYS.forEach((k) => sessionStorage.removeItem(k));
+};
 
 const api = axios.create({
   baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
-    'Accept': 'application/json',
+    Accept: 'application/json',
   },
   withCredentials: true,
 });
 
-// Request interceptor - Attach token
+// Request interceptor — attach token
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('access_token') ||
-                  localStorage.getItem('token');
-
+    const token = getAccessToken();
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
-      console.log('🟢 Token attached to request');
-    } else {
-      console.log('🟡 No token found for request');
     }
-
-    console.log('🟢 Request:', config.method?.toUpperCase(), config.url);
     return config;
   },
-  (error) => {
-    console.error('🔴 Request Error:', error);
-    return Promise.reject(error);
-  }
+  (error) => Promise.reject(error)
 );
 
-// Response interceptor - Handle token refresh
+// Response interceptor — refresh on 401
 api.interceptors.response.use(
-  (response) => {
-    console.log('🟢 Response:', response.status, response.config.url);
-    return response;
-  },
+  (response) => response,
   async (error) => {
     const originalRequest = error.config || {};
     const status = error.response?.status;
     const url = originalRequest.url || '';
 
-    console.error('🔴 Response Error:', status, url, error.response?.data);
-
-    // Only run refresh logic for 401s on non-auth endpoints,
-    // and only once per request.
     const isAuthEndpoint = AUTH_ENDPOINTS.some((p) => url.includes(p));
 
     if (status === 401 && !originalRequest._retry && !isAuthEndpoint) {
       originalRequest._retry = true;
 
-      const refreshToken = localStorage.getItem('refresh_token');
+      const refreshToken = getRefreshToken();
 
       if (refreshToken) {
         try {
@@ -81,8 +83,8 @@ api.interceptors.response.use(
           });
 
           if (response.data.access) {
-            localStorage.setItem('access_token', response.data.access);
-            localStorage.setItem('token', response.data.access);
+            sessionStorage.setItem('access_token', response.data.access);
+            sessionStorage.setItem('token', response.data.access);
             originalRequest.headers.Authorization = `Bearer ${response.data.access}`;
             return api(originalRequest);
           }
@@ -91,18 +93,15 @@ api.interceptors.response.use(
         }
       }
 
-      // Refresh failed or no refresh token.
-      // Only clear + redirect if we're NOT already on a public page.
       const onPublicPage = PUBLIC_PATHS.some((p) =>
-        p === '/' ? window.location.pathname === '/' : window.location.pathname.startsWith(p)
+        p === '/'
+          ? window.location.pathname === '/'
+          : window.location.pathname.startsWith(p)
       );
 
       if (!onPublicPage) {
-        console.warn('🚪 Clearing session and redirecting to /login');
-        localStorage.clear();
+        clearAuthStorage();
         window.location.href = '/login';
-      } else {
-        console.warn('⚠️ 401 on public page — not clearing session, not redirecting:', url);
       }
     }
 
@@ -110,8 +109,9 @@ api.interceptors.response.use(
   }
 );
 
-// All endpoint paths are RELATIVE to API_BASE_URL (which already includes /api).
-// No trailing slash — matches Django's urlpatterns exactly.
+// ---------------------------------------------------------------------------
+// Endpoint map
+// ---------------------------------------------------------------------------
 export const endpoints = {
   auth: {
     register: '/auth/register',
@@ -119,6 +119,8 @@ export const endpoints = {
     logout: '/auth/logout',
     me: '/auth/me',
     refresh: '/auth/refresh',
+    verifyEmail: '/auth/verify-email',                 // 🆕
+    resendVerification: '/auth/resend-verification',   // 🆕
   },
   users: {
     list: '/users',

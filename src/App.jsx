@@ -63,14 +63,16 @@ function ProtectedRoute({ children, role }) {
   }
 
   if (!user) {
-    console.log('🔵 ProtectedRoute: ❌ no user, redirecting to login');
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('token');
-    localStorage.removeItem('refresh_token');
-    localStorage.removeItem('user');
-    localStorage.removeItem('pms_user');
-    return <Navigate to="/login" replace />;
-  }
+  console.log('🔵 ProtectedRoute: ❌ no user, redirecting to login');
+  // Clear sessionStorage (not localStorage — tokens live in sessionStorage now)
+  sessionStorage.removeItem('access_token');
+  sessionStorage.removeItem('token');
+  sessionStorage.removeItem('refresh_token');
+  sessionStorage.removeItem('user');
+  sessionStorage.removeItem('pms_user');
+  sessionStorage.removeItem('user_role');
+  return <Navigate to="/login" replace />;
+}
 
   const userRole = user?.role?.toLowerCase() || 'member';
   const requiredRole = role?.toLowerCase() || 'member';
@@ -127,9 +129,9 @@ function PageLoader() {
 function AppRoutes() {
   const { user, loading } = useAuth();
   const location = useLocation();
-
-  // Read "verifying" flag set by Register when it navigates to /verify-email
-  const isVerifying = !!localStorage.getItem('verifying_email');
+// (Removed — we no longer need the `verifying_email` flag.
+//  The verification page can be reached by anyone via /verify-email.)
+const isVerifying = false;
 
   console.log('🔵 AppRoutes: user =', user);
   console.log('🔵 AppRoutes: loading =', loading);
@@ -151,25 +153,17 @@ function AppRoutes() {
   return (
     <Routes>
       <Route
-        path="/login"
-        element={
-          user && !isVerifying
-            ? <Navigate to={getRedirectPath()} replace />
-            : <Login />
-        }
-      />
+  path="/login"
+  element={user ? <Navigate to={getRedirectPath()} replace /> : <Login />}
+/>
 
-      <Route
-        path="/register"
-        element={
-          user && !isVerifying
-            ? <Navigate to={getRedirectPath()} replace />
-            : <Register />
-        }
-      />
+<Route
+  path="/register"
+  element={user ? <Navigate to={getRedirectPath()} replace /> : <Register />}
+/>
 
-      {/* Public — must be reachable without auth */}
-      <Route path="/verify-email" element={<EmailVerification />} />
+{/* Public — reachable without auth */}
+<Route path="/verify-email" element={<EmailVerification />} />
 
       {/* SUPERVISOR — handles 'manager', 'supervisor', and 'admin' roles */}
       <Route

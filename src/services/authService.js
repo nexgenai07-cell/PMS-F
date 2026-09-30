@@ -21,6 +21,10 @@ class AuthService {
     }
   }
 
+  /**
+   * Login — purely an API call.
+   * ⚠️ Does NOT write to storage. AuthContext owns persistence.
+   */
   async login(credentials) {
     try {
       console.log('AuthService: Logging in user:', credentials.email);
@@ -30,53 +34,7 @@ class AuthService {
         password: credentials.password,
       });
 
-      console.log('AuthService: Login response:', response.data);
-
-      const data = response.data;
-
-      // Get tokens - handle both nested and flat responses
-      const accessToken = data.data?.access || data.access || data.data?.access_token;
-      const refreshToken = data.data?.refresh || data.refresh || data.data?.refresh_token;
-
-      // Get user data - the API returns user_id, not u_id
-      const userData = {
-        id: data.data?.user_id || data.user_id || data.data?.id,
-        u_name: data.data?.u_name || data.u_name || data.data?.name || credentials.email?.split('@')[0] || 'User',
-        email: data.data?.email || data.email || credentials.email,
-        role: data.data?.role || data.role || 'member',
-      };
-
-      console.log('✅ Access Token:', accessToken?.substring(0, 20) + '...');
-      console.log('✅ Refresh Token:', refreshToken?.substring(0, 20) + '...');
-      console.log('✅ User Data:', userData);
-
-      // Store tokens in localStorage
-      if (accessToken) {
-        localStorage.setItem('access_token', accessToken);
-        localStorage.setItem('token', accessToken);
-        console.log('✅ Access token stored');
-      }
-
-      if (refreshToken) {
-        localStorage.setItem('refresh_token', refreshToken);
-        console.log('✅ Refresh token stored');
-      }
-
-      // Store user data
-      if (userData.id || userData.u_name) {
-        const userToStore = {
-          u_id: userData.id, // Store as u_id for backward compatibility
-          id: userData.id,
-          u_name: userData.u_name,
-          email: userData.email,
-          role: userData.role,
-        };
-        localStorage.setItem('user', JSON.stringify(userToStore));
-        localStorage.setItem('pms_user', JSON.stringify(userToStore));
-        localStorage.setItem('user_role', userData.role || 'member');
-        console.log('✅ User data stored');
-      }
-
+      console.log('AuthService: Login response received');
       return response.data;
     } catch (error) {
       console.error('AuthService: Login error:', error);
@@ -84,18 +42,41 @@ class AuthService {
     }
   }
 
+  /**
+   * Logout — API call only.
+   * ⚠️ Does NOT touch storage. AuthContext owns cleanup.
+   */
   async logout() {
     try {
       await api.post(endpoints.auth.logout);
     } catch (error) {
       console.error('AuthService: Logout API error:', error);
-    } finally {
-      localStorage.removeItem('access_token');
-      localStorage.removeItem('token');
-      localStorage.removeItem('refresh_token');
-      localStorage.removeItem('user');
-      localStorage.removeItem('pms_user');
-      localStorage.removeItem('user_role');
+    }
+  }
+
+  /**
+   * Verify email with uid + token from the link.
+   * POST /api/auth/verify-email
+   */
+  async verifyEmail(uid, token) {
+    try {
+      const response = await api.post(endpoints.auth.verifyEmail, { uid, token });
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error);
+    }
+  }
+
+  /**
+   * Resend verification email.
+   * POST /api/auth/resend-verification
+   */
+  async resendVerification(email) {
+    try {
+      const response = await api.post(endpoints.auth.resendVerification, { email });
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error);
     }
   }
 
@@ -120,21 +101,6 @@ class AuthService {
       console.log('📤 Updating profile with payload:', payload);
 
       const response = await api.patch(endpoints.auth.me, payload);
-
-      // ✅ Update stored user data after successful update
-      if (response.data) {
-        const updatedUser = {
-          id: response.data.id || response.data.user_id,
-          u_id: response.data.u_id || response.data.id || response.data.user_id,
-          u_name: response.data.u_name || response.data.name,
-          email: response.data.email,
-          role: response.data.role,
-        };
-        localStorage.setItem('user', JSON.stringify(updatedUser));
-        localStorage.setItem('pms_user', JSON.stringify(updatedUser));
-        localStorage.setItem('user_role', updatedUser.role || 'member');
-      }
-
       return response.data;
     } catch (error) {
       console.error('AuthService: Error updating profile:', error);
@@ -142,7 +108,7 @@ class AuthService {
     }
   }
 
-  // ✅ Change password — path relative to baseURL (no /api prefix)
+  // ✅ Change password
   async changePassword(passwordData) {
     try {
       const response = await api.post('/auth/change-password', {
@@ -156,7 +122,7 @@ class AuthService {
     }
   }
 
-  // ✅ Request password reset — path relative to baseURL
+  // ✅ Request password reset
   async requestPasswordReset(email) {
     try {
       const response = await api.post('/auth/password-reset-request', { email });
@@ -167,7 +133,7 @@ class AuthService {
     }
   }
 
-  // ✅ Reset password with token — path relative to baseURL
+  // ✅ Reset password with token
   async resetPassword(token, newPassword) {
     try {
       const response = await api.post('/auth/password-reset', {
@@ -181,30 +147,52 @@ class AuthService {
     }
   }
 
+  // ⚠️ Reads from sessionStorage
   isAuthenticated() {
-    return !!localStorage.getItem('access_token') || !!localStorage.getItem('token');
+    return !!(
+      sessionStorage.getItem('access_token') || sessionStorage.getItem('token')
+    );
   }
 
+  // ⚠️ Reads from sessionStorage
   getStoredUser() {
-    const user = localStorage.getItem('user') || localStorage.getItem('pms_user');
+    const user =
+      sessionStorage.getItem('user') || sessionStorage.getItem('pms_user');
     return user ? JSON.parse(user) : null;
   }
 
+  /**
+   * Normalize backend error shapes into a consistent object.
+   * Handles:
+   *   { success:false, error:{ detail, code } }
+   *   { detail: "...", code: "..." }
+   *   { non_field_errors: ["..."] }
+   *   { email: ["..."] }
+   *   plain strings
+   */
   handleError(error) {
     if (error.response) {
+      const d = error.response.data || {};
+      const nested = d.error && typeof d.error === 'object' ? d.error : d;
+
+      const detail =
+        nested.detail ||
+        (Array.isArray(nested.non_field_errors) && nested.non_field_errors[0]) ||
+        nested.message ||
+        (typeof nested === 'string' ? nested : null) ||
+        'An error occurred';
+
       return {
         status: error.response.status,
-        message:
-          error.response.data.message ||
-          error.response.data.detail ||
-          error.response.data.error ||
-          'An error occurred',
-        data: error.response.data,
+        message: typeof detail === 'string' ? detail : 'An error occurred',
+        code: nested.code || d.code || null,
+        data: d,
       };
     }
     if (error.request) {
       return {
-        message: 'No response from server. Please check if the backend server is running.',
+        message:
+          'No response from server. Please check if the backend server is running.',
       };
     }
     return {

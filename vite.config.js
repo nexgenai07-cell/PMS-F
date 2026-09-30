@@ -1,4 +1,3 @@
-// vite.config.js
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -8,7 +7,7 @@ export default defineConfig({
     port: 5174,
     proxy: {
       '/api': {
-        target: 'https://pmsbackend.nxgenai.pro',
+        target: 'https://pms-backend-fawn-pi.vercel.app',
         changeOrigin: true,
         secure: false,
         // Add this to handle CORS
