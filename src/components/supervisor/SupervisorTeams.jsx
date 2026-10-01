@@ -18,8 +18,6 @@ import projectTeamService from '../../services/projectTeamService';
 import { useAuth } from '../../context/AuthContext';
 
 /* ─────────── Roles that are NOT team members ─────────── */
-// Leads & supervisors have their own dedicated pages — they should NOT
-// appear in the Team Members grid even if they have a TeamMember row.
 const NON_MEMBER_ROLES = ['lead', 'member', 'manager', 'admin', 'supervisor'];
 
 /* ─────────── Validation constants ─────────── */
@@ -123,8 +121,6 @@ const defaultForm = {
 };
 
 /* ─────────── Compute per-member task stats locally ─────────── */
-// Source-of-truth fallback so we never show 0 when the backend
-// /stats endpoint is missing or incomplete.
 function computeTaskStatsForMember(memberId, allTasks) {
   const numId = Number(memberId);
   const memberTasks = (allTasks || []).filter(t => {
@@ -150,7 +146,6 @@ function computeTaskStatsForMember(memberId, allTasks) {
     ? Math.round((completedTasks / totalTasks) * 100)
     : 0;
 
-  // Average per-task progress (0-100)
   const avgProgress = totalTasks > 0
     ? Math.round(
         memberTasks.reduce((sum, t) => {
@@ -165,14 +160,15 @@ function computeTaskStatsForMember(memberId, allTasks) {
       )
     : 0;
 
-  // On-time rate: completed tasks that had a due_date and were completed by it
   const completedWithDue = memberTasks.filter(t => {
     const s = (t.status || '').toLowerCase();
     return (s === 'done' || s === 'completed') && (t.due_date || t.deadline);
   });
   const onTimeTasks = completedWithDue.filter(t => {
     const due = new Date(t.due_date || t.deadline);
-    const updated = new Date(t.updated_at || t.update_last || t.created_at || Date.now());
+    const updated = new Date(
+      t.updated_at || t.update_last || t.created_at || Date.now()
+    );
     return updated <= due;
   }).length;
   const onTimeRate = completedWithDue.length > 0
@@ -196,7 +192,6 @@ export default function SupervisorTeams() {
   const { user } = useAuth();
   const { onMenuClick } = useOutletContext();
 
-  // Data state
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [members, setMembers] = useState([]);
@@ -204,7 +199,6 @@ export default function SupervisorTeams() {
   const [users, setUsers] = useState([]);
   const [memberStatsMap, setMemberStatsMap] = useState({});
 
-  // Filter / sort / pagination
   const [search, setSearch] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [filterRole, setFilterRole] = useState('all');
@@ -212,19 +206,16 @@ export default function SupervisorTeams() {
   const [sortBy, setSortBy] = useState('name');
   const itemsPerPage = 6;
 
-  // Modals
   const [showAdd, setShowAdd] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [selected, setSelected] = useState(null);
   const [drawer, setDrawer] = useState(null);
 
-  // Form state
   const [form, setForm] = useState(defaultForm);
   const [formTouched, setFormTouched] = useState({});
   const [formSubmitAttempted, setFormSubmitAttempted] = useState(false);
   const [savingForm, setSavingForm] = useState(false);
 
-  // Delete/reassign state
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
   const [memberToDelete, setMemberToDelete] = useState(null);
   const [assignedTasks, setAssignedTasks] = useState([]);
@@ -232,7 +223,6 @@ export default function SupervisorTeams() {
   const [deleteOption, setDeleteOption] = useState('reassign');
   const [isDeleting, setIsDeleting] = useState(false);
 
-  // Auto-focus
   const addNameRef = useRef(null);
   const editNameRef = useRef(null);
 
@@ -257,23 +247,7 @@ export default function SupervisorTeams() {
       if (!Array.isArray(rawMembers)) rawMembers = [];
 
       // ═══════════════════════════════════════════════════════════
-      // DIAGNOSTIC LOGS (remove once stable)
-      // ═══════════════════════════════════════════════════════════
-      console.log('🔍 [SupervisorTeams] rawMembers:', rawMembers.length);
-      console.log('🔍 [SupervisorTeams] users:', usersList.length);
-      console.log('🔍 [SupervisorTeams] tasks:', tasksList.length);
-      console.log('🔍 [SupervisorTeams] task assign_to values:',
-        tasksList.map(t => ({
-          t_id: t.t_id || t.id,
-          title: t.title,
-          assign_to: t.assign_to ?? t.assignedTo ?? null,
-        }))
-      );
-
-      // ═══════════════════════════════════════════════════════════
-      // FILTER: only show real team members.
-      // Exclude any TeamMember whose linked User has a role of
-      // lead/member/manager/admin/supervisor.
+      // FILTER: only show real team members (exclude lead/supervisor).
       // ═══════════════════════════════════════════════════════════
       const activeMembers = rawMembers.filter(m => m.is_deleted !== 1);
 
@@ -289,9 +263,9 @@ export default function SupervisorTeams() {
           return false;
         });
 
-        if (!linkedUser) return true;                 // pure team member → keep
+        if (!linkedUser) return true;
         const role = (linkedUser.role || '').toLowerCase();
-        return !NON_MEMBER_ROLES.includes(role);      // exclude lead/supervisor/etc
+        return !NON_MEMBER_ROLES.includes(role);
       });
 
       setMembers(filteredMembers);
@@ -299,8 +273,7 @@ export default function SupervisorTeams() {
       setUsers(usersList);
 
       // ═══════════════════════════════════════════════════════════
-      // Pre-compute local stats from the task list (source of truth),
-      // then try to enrich with backend stats.
+      // Precompute local stats + enrich with backend stats.
       // ═══════════════════════════════════════════════════════════
       const localStats = {};
       filteredMembers.forEach(m => {
@@ -336,7 +309,6 @@ export default function SupervisorTeams() {
 
       console.log('📊 Tasks loaded:', tasksList.length);
       console.log('📊 Active Members (after filter):', filteredMembers.length);
-      console.log('📊 First member stats:', mergedStats[filteredMembers[0]?.id]);
     } catch (error) {
       console.error('Error fetching data:', error);
       toast.error('Failed to load team members');
@@ -376,12 +348,10 @@ export default function SupervisorTeams() {
     }
   };
 
-  /* ─────────── Stats accessor (never returns 0 when data exists) ─────────── */
   const getMemberStats = (memberId) => {
     const numId = Number(memberId);
     const cached = memberStatsMap[numId] || memberStatsMap[memberId];
     if (cached) return cached;
-    // Fallback: compute fresh from the task list
     return computeTaskStatsForMember(numId, tasks);
   };
 
@@ -888,6 +858,10 @@ export default function SupervisorTeams() {
               const completedTasks = stats?.completedTasks || 0;
               const inProgressTasks = stats?.inProgressTasks || 0;
 
+              // ✅ Show "—" instead of a misleading 0% when there's nothing
+              // to measure (no completed tasks yet).
+              const hasCompletedWithDue = completedTasks > 0;
+
               return (
                 <motion.div
                   key={memberId || `member-${i}`}
@@ -983,9 +957,13 @@ export default function SupervisorTeams() {
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 10 }}>
                     <ProgressRing progress={onTimeRate} size={40} strokeWidth={4} />
                     <div>
-                      <p style={{ fontSize: 13, fontWeight: 600 }}>{onTimeRate}% On-time</p>
+                      <p style={{ fontSize: 13, fontWeight: 600 }}>
+                        {hasCompletedWithDue ? `${onTimeRate}% On-time` : '— On-time'}
+                      </p>
                       <p style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                        {totalTasks > 0 ? `${completionRate}% completion` : 'No tasks assigned'}
+                        {totalTasks > 0
+                          ? `${completionRate}% completion`
+                          : 'No tasks assigned'}
                       </p>
                     </div>
                   </div>
@@ -1136,7 +1114,14 @@ export default function SupervisorTeams() {
                       <span className="mm-stat-label">Active</span>
                     </div>
                     <div className="mm-stat-item">
-                      <span className="mm-stat-value" style={{ color: onTimeRate >= 70 ? '#34d399' : '#f59e0b' }}>{onTimeRate}%</span>
+                      <span
+                        className="mm-stat-value"
+                        style={{
+                          color: completedTasks > 0 && onTimeRate >= 70 ? '#34d399' : '#f59e0b'
+                        }}
+                      >
+                        {completedTasks > 0 ? `${onTimeRate}%` : '—'}
+                      </span>
                       <span className="mm-stat-label">On-Time</span>
                     </div>
                   </div>
