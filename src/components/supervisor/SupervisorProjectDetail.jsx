@@ -527,6 +527,7 @@ export default function SupervisorProjectDetail() {
       }));
       setTasks(mappedTasks);
       console.log('✅ [Supervisor] mappedTasks:', mappedTasks.length);
+      
 
       loadCommentsForTasks(mappedTasks);
 
@@ -542,6 +543,49 @@ export default function SupervisorProjectDetail() {
       console.log('✅ [Supervisor] fetchProjectData COMPLETE');
     }
   };
+        const mappedTasks = projectTasks.map(t => ({
+        ...t,
+        progress: computeTaskProgress(t),
+        milestones: asArray(t.milestones),
+        assigneeId: t.assign_to ?? null,
+      }));
+      setTasks(mappedTasks);
+      console.log('✅ [Supervisor] mappedTasks:', mappedTasks.length);
+
+      // ═══════════════════════════════════════════════════════════
+      // 🔍 TEMP DIAGNOSTIC — DELETE THIS BLOCK AFTER DEBUGGING
+      // ═══════════════════════════════════════════════════════════
+      console.log('🔍 ===== TASK / ASSIGNEE DIAGNOSTIC =====');
+      console.log('🔍 TeamMembers:', membersList.map(m => ({ id: m.id, name: m.name })));
+      console.log('🔍 Users:', usersList.map(u => ({ id: u.id, name: u.u_name || u.name })));
+      console.log('🔍 Tasks with assignee resolution:',
+        mappedTasks.map(t => {
+          const id = Number(t.assign_to);
+          let resolvesTo = 'no valid id';
+          if (Number.isFinite(id)) {
+            const tm = membersList.find(m => Number(m.id) === id);
+            if (tm) {
+              resolvesTo = `TeamMember #${tm.id} = "${tm.name}"`;
+            } else {
+              const u = usersList.find(x => Number(x.id) === id);
+              if (u) {
+                resolvesTo = `User #${u.id} = "${u.u_name || u.name}"`;
+              } else {
+                resolvesTo = `id ${id} NOT FOUND`;
+              }
+            }
+          }
+          return {
+            t_id: t.t_id,
+            title: t.title,
+            assign_to: t.assign_to,
+            assign_to_name: t.assign_to_name,
+            resolves_to: resolvesTo,
+          };
+        })
+      );
+      console.log('🔍 =========================================');
+      // ═══════════════════════════════════════════════════════════
 
   const loadCommentsForTasks = async (taskList) => {
     if (!Array.isArray(taskList) || taskList.length === 0) {
