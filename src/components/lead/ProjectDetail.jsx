@@ -378,23 +378,31 @@ export default function LeadProjectDetail() {
     (b.pin || b.pinned) === (a.pin || a.pinned) ? 0 : (b.pin || b.pinned) ? 1 : -1
   );
 
+
   useEffect(() => {
     fetchProjectData();
   }, [projectId]);
+const fetchProjectData = async () => {
+  console.log('🚀 fetchProjectData STARTED for projectId:', projectId);
+  try {
+    setLoading(true);
+    console.log('📡 Fetching: project, tasks, members, users, pteam, stats...');
+  
 
-  const fetchProjectData = async () => {
-    try {
-      setLoading(true);
+      const safe = (promise, label) =>
+  promise.then(
+    (res) => { console.log(`✅ ${label}`); return res; },
+    (err) => { console.error(`❌ ${label} FAILED:`, err); throw err; },
+  );
 
-      const [projectData, tasksData, membersData, usersData, pteamData, statsData] = await Promise.all([
-        projectService.getProject(projectId),
-        taskService.getTasks(),
-        teamService.getTeamMembers(),
-        userService.getUsers(),
-        projectTeamService.getProjectTeams(),
-        projectService.getProjectStats(projectId),
-      ]);
-
+const [projectData, tasksData, membersData, usersData, pteamData, statsData] = await Promise.all([
+  safe(projectService.getProject(projectId), 'getProject'),
+  safe(taskService.getTasks(), 'getTasks'),
+  safe(teamService.getTeamMembers(), 'getTeamMembers'),
+  safe(userService.getUsers(), 'getUsers'),
+  safe(projectTeamService.getProjectTeams(), 'getPTeam'),
+  safe(projectService.getProjectStats(projectId), 'getProjectStats'),
+]);
       const projectItem = projectData?.data || projectData;
       const allTasks = tasksData?.data || tasksData || [];
       const membersList = membersData?.data || membersData || [];
