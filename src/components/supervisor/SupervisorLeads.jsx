@@ -62,23 +62,23 @@ function getPteamTmId(entry) {
  *   - lead's TeamMember profile appears in a PTeam entry for that project
  *
  * A lead's TASKS = ONLY tasks directly assigned to the lead's TeamMember
- * profile (via Task.assign_to). We do NOT count every task inside the
- * project — that would wrongly credit leads for their team's work.
+ * profile (via Task.assign_to). This makes sure a lead is never credited
+ * for work done by other members in the same project — only their own.
  *
  * A lead's TEAM SIZE = other TeamMembers who share at least one project
- * with this lead (via PTeam).
+ * with this lead (via PTeam), excluding the lead themselves.
  */
 function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntries) {
   const leadUser = users.find(u => Number(u.id ?? u.u_id) === Number(leadId));
 
-  // ─── 1. Find this lead's TeamMember profile (by name match) ───
+  // 1. Find this lead's TeamMember profile by name match
   const leadName = norm(leadUser?.u_name);
   const leadMember = leadName
     ? asArray(teamMembers).find(m => norm(m.name) === leadName)
     : null;
   const teamMemberId = leadMember ? Number(leadMember.id) : null;
 
-  // ─── 2. Project IDs from PTeam where this lead's TeamMember appears ───
+  // 2. Project IDs from PTeam where this lead's TeamMember appears
   const pteamProjectIds = new Set();
   if (teamMemberId != null) {
     asArray(pteamEntries).forEach(entry => {
@@ -89,14 +89,15 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntri
     });
   }
 
-  // ─── 3. Build the lead's project set (creator OR supervisor OR PTeam) ───
+  // 3. Build the lead's project set:
+  //    created_by OR supervised OR PTeam membership
   const projectMap = new Map();
   asArray(projects).forEach(p => {
     const id = Number(p.p_id ?? p.id);
     if (!Number.isFinite(id)) return;
 
-    const isCreator    = Number(p.created_by) === Number(leadId);
-    const isSupervisor = asArray(p.supervisors).map(Number).includes(Number(leadId));
+    const isCreator     = Number(p.created_by) === Number(leadId);
+    const isSupervisor  = asArray(p.supervisors).map(Number).includes(Number(leadId));
     const isPteamMember = pteamProjectIds.has(id);
 
     if (isCreator || isSupervisor || isPteamMember) {
@@ -106,8 +107,11 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntri
   const leadProjects = Array.from(projectMap.values());
   const leadProjectIds = leadProjects.map(p => Number(p.p_id ?? p.id));
 
-  // ─── 4. ⭐ TASKS = ONLY tasks assigned directly to this lead ───
-  // This is the key fix. We do NOT count other members' tasks.
+  // ═══════════════════════════════════════════════════════════════════
+  // 4. TASKS = ONLY tasks assigned directly to this lead's TeamMember.
+  //    We deliberately do NOT count other members' tasks — this is the
+  //    fix for leads being credited with their teammates' work.
+  // ═══════════════════════════════════════════════════════════════════
   const ownTasks = teamMemberId != null
     ? asArray(tasks).filter(t => Number(t.assign_to ?? t.assignedTo) === teamMemberId)
     : [];
@@ -159,24 +163,25 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntri
     ? Math.round((onTimeCount / completedWithDue.length) * 100)
     : 0;
 
-  // ─── 5. Team size = OTHER TeamMembers sharing a project with this lead ───
-  // Look at every PTeam entry for the lead's projects; collect unique tm IDs,
-  // then exclude the lead themselves.
+  // ═══════════════════════════════════════════════════════════════════
+  // 5. Team size = OTHER TeamMembers sharing a project with this lead
+  //    (does NOT include the lead themselves)
+  // ═══════════════════════════════════════════════════════════════════
   const otherMembersOnLeadProjects = new Set();
   if (leadProjectIds.length > 0) {
     const leadProjectSet = new Set(leadProjectIds);
     asArray(pteamEntries).forEach(entry => {
-      const pid = getPteamProjectId(entry);
+      const pid  = getPteamProjectId(entry);
       const tmId = getPteamTmId(entry);
       if (!leadProjectSet.has(pid)) return;
       if (!Number.isFinite(tmId)) return;
-      if (tmId === teamMemberId) return;   // skip self
+      if (tmId === teamMemberId) return;  // skip self
       otherMembersOnLeadProjects.add(tmId);
     });
   }
   const teamSize = otherMembersOnLeadProjects.size;
 
-  // ─── 6. Performance band — keyed off the lead's own completionRate ───
+  // 6. Performance band — keyed off the lead's own completionRate
   const performance =
     totalTasks === 0 ? 'New' :
     completionRate >= 80 ? 'Excellent' :
@@ -194,7 +199,7 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntri
   return {
     user: leadUser,
     projects: leadProjects,
-    tasks: ownTasks,                    // only the lead's own tasks
+    tasks: ownTasks,
     completed: completedTasks,
     inProgress: inProgressTasks,
     todo: todoTasks,
@@ -203,7 +208,7 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntri
     avgProgress,
     onTimeRate,
     hasCompletedWithDue: completedWithDue.length > 0,
-    teamSize,                           // other members, not including self
+    teamSize,
     performance,
     perfColor,
     teamMemberId,
@@ -243,10 +248,10 @@ export default function SupervisorLeads() {
       ]);
 
       const projectsList = asArray(projectsData?.data || projectsData);
-      const tasksList = asArray(tasksData?.data || tasksData);
-      const membersList = asArray(membersData?.data || membersData);
-      const usersList = asArray(usersData?.data || usersData);
-      const pteamList = asArray(pteamData?.data || pteamData);
+      const tasksList    = asArray(tasksData?.data || tasksData);
+      const membersList  = asArray(membersData?.data || membersData);
+      const usersList    = asArray(usersData?.data || usersData);
+      const pteamList    = asArray(pteamData?.data || pteamData);
 
       setProjects(projectsList);
       setTasks(tasksList);
@@ -270,22 +275,6 @@ export default function SupervisorLeads() {
       console.log('📊 [SupervisorLeads] projects:', projectsList.length);
       console.log('📊 [SupervisorLeads] tasks:', tasksList.length);
       console.log('📊 [SupervisorLeads] pteam entries:', pteamList.length);
-      console.log(
-        '📊 [SupervisorLeads] pteam sample:',
-        pteamList.slice(0, 5).map(e => ({
-          pt_id: e.pt_id,
-          p: getPteamProjectId(e),
-          tm: getPteamTmId(e),
-        }))
-      );
-      console.log(
-        '📊 [SupervisorLeads] project.created_by values:',
-        projectsList.map(p => ({ id: p.p_id ?? p.id, created_by: p.created_by, supervisors: p.supervisors }))
-      );
-      console.log(
-        '📊 [SupervisorLeads] task assign_to values:',
-        tasksList.map(t => ({ id: t.t_id ?? t.id, assign_to: t.assign_to, p: t.p_id ?? t.p }))
-      );
     } catch (error) {
       console.error('Error fetching leads data:', error);
       toast.error('Failed to load leads data');
@@ -350,7 +339,7 @@ export default function SupervisorLeads() {
     );
   }
 
-  const leadsWithProfile = leadsData.filter(x => x.data.hasTeamMember).length;
+  const leadsWithProfile    = leadsData.filter(x => x.data.hasTeamMember).length;
   const leadsWithoutProfile = leadsData.length - leadsWithProfile;
 
   return (
@@ -643,8 +632,8 @@ export default function SupervisorLeads() {
                     <div className="modal-kpi">
                       <MessageSquare size={14} />
                       <div>
-                        <span className="modal-kpi-value">{d.directAssignedTasks.length}</span>
-                        <span className="modal-kpi-label">Assigned to lead</span>
+                        <span className="modal-kpi-value">{d.totalTasks}</span>
+                        <span className="modal-kpi-label">Assigned tasks</span>
                       </div>
                     </div>
                   </div>
