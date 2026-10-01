@@ -48,8 +48,8 @@ function resolveTeamMemberId(tmId, usersList, membersList) {
       return uName && mName && uName === mName;
     });
     return {
-      id: tm.id,
-      userId: userObj?.id ?? tm.id,
+      id: tm.id,                                 // ← TeamMember.id
+      userId: userObj?.id ?? tm.id,              // ← User.id (or tm.id fallback)
       name: tm.name || userObj?.u_name || `User ${tm.id}`,
       email: tm.email || userObj?.email || '',
       role: ((userObj?.role) || tm.role || '').toLowerCase(),
@@ -90,11 +90,26 @@ function computeTaskProgress(task) {
   return 0;
 }
 
-/* ─────────── Find real TeamMember id ─────────── */
+/* ═══════════════════════════════════════════════════════════════
+   🔧 FIX: findRealTeamMemberId
+
+   The original preferred `userIdOrObj.userId` (User.id) over
+   `userIdOrObj.id` (TeamMember.id). But Task.assign_to is a
+   TeamMember FK — so given { id: 8, userId: 11 } for Alii, the old
+   code looked up TeamMember #11 = "Admin" instead of TeamMember #8 = "alii".
+   That's why picking Alii showed "Admin" on the task card.
+
+   Fix: prefer `id` (TeamMember.id) when the input is an object.
+   ═══════════════════════════════════════════════════════════════ */
 function findRealTeamMemberId(userIdOrObj, teamMembersList, usersList) {
   if (!userIdOrObj) return null;
+
+  // Task.assign_to is a TeamMember FK. Given an object:
+  //   - `id`     = TeamMember.id   ← the one the backend wants
+  //   - `userId` = User.id
+  // Prefer `id` when present.
   const id = typeof userIdOrObj === 'object'
-    ? (userIdOrObj.userId ?? userIdOrObj.id)
+    ? (userIdOrObj.id ?? userIdOrObj.userId)     // 🔧 FIX: was (userId ?? id)
     : userIdOrObj;
   const numId = Number(id);
   if (!Number.isFinite(numId)) return null;
@@ -102,9 +117,12 @@ function findRealTeamMemberId(userIdOrObj, teamMembersList, usersList) {
   const safeMembers = asArray(teamMembersList);
   const safeUsers = asArray(usersList);
 
+  // 1. Direct TeamMember.id match
   const direct = safeMembers.find(m => !m._placeholder && Number(m.id) === numId);
   if (direct) return Number(direct.id);
 
+  // 2. Fall back to matching by name/email (only useful when the caller
+  //    handed us a plain User id).
   const userObj = safeUsers.find(u => Number(u.id) === numId);
   if (userObj) {
     const name = (userObj.u_name || userObj.name || '').toLowerCase().trim();
@@ -280,19 +298,14 @@ export default function LeadProjectDetail() {
   const isEditTaskValid = Object.values(editTaskErrors).every(e => e === '');
 
   /* ═══════════════════════════════════════════════════════════
-     DERIVED DATA (all computed from state — no missing variables)
+     DERIVED DATA
      ═══════════════════════════════════════════════════════════ */
 
-  // Set of User.ids for supervisors.
   const supervisorIdSet = useMemo(
     () => new Set(asArray(projectSupervisors).map(s => Number(s.userId))),
     [projectSupervisors]
   );
 
-  // Leads = project members whose role is lead/member, excluding the
-  // creator and any supervisors. Uses userId (User.id) for comparison
-  // because supervisors come from a User M2M while members come from
-  // PTeam rows (TeamMember.id).
   const projectLeadsDerived = useMemo(() => {
     if (!project) return [];
     const creatorId = Number(project.created_by);
@@ -305,13 +318,10 @@ export default function LeadProjectDetail() {
     });
   }, [projectMembers, project, supervisorIdSet]);
 
-  // If the state `projectLeads` was populated by fetchProjectData, use it.
-  // Otherwise fall back to the derived list so we never render nothing.
   const projectLeadsFinal = asArray(projectLeads).length > 0
     ? asArray(projectLeads)
     : projectLeadsDerived;
 
-  // Regular members = project members that are neither supervisors nor leads.
   const regularMembers = useMemo(
     () => asArray(projectMembers).filter(m => {
       const role = (m.role || '').toLowerCase();
@@ -323,13 +333,11 @@ export default function LeadProjectDetail() {
     [projectMembers, supervisorIdSet]
   );
 
-  // Members that have a resolved TeamMember id (assignable to tasks).
   const assignableMembers = useMemo(
     () => asArray(projectMembers).filter(m => m.tmId != null),
     [projectMembers]
   );
 
-  /* ─── Project progress ─── */
   const projectProgress = useMemo(() => {
     const backendProgress = Number(stats?.avgProgress);
     if (Number.isFinite(backendProgress) && backendProgress > 0) return Math.round(backendProgress);
@@ -403,7 +411,7 @@ export default function LeadProjectDetail() {
   }, [projectId]);
 
   /* ═══════════════════════════════════════════════════════════
-     FETCH PROJECT DATA (defensive, verbose, step-by-step)
+     FETCH PROJECT DATA
      ═══════════════════════════════════════════════════════════ */
   const fetchProjectData = async () => {
     console.log('🚀 fetchProjectData STARTED for projectId:', projectId);
@@ -443,7 +451,6 @@ export default function LeadProjectDetail() {
         stats: statsResponse,
       });
 
-      // ─── Store raw data ───
       setProject(projectItem);
       setAllTeamMembers(membersList);
       setUsers(usersList);
@@ -460,14 +467,12 @@ export default function LeadProjectDetail() {
         avgProgress:     Number(statsResponse.avgProgress) || 0,
       });
 
-      // ─── Filter tasks for this project ───
       const projectTasks = allTasks.filter(t => {
         const taskProjectId = t.p_id ?? t.p ?? t.project ?? t.project_id;
         return Number(taskProjectId) === Number(projectId);
       });
       console.log('✅ projectTasks filtered:', projectTasks.length);
 
-      // ─── Build PTeam member map ───
       const memberMap = new Map();
       const projectPteamEntries = pteamList.filter(
         entry => getPteamProjectId(entry) === Number(projectId)
@@ -489,13 +494,18 @@ export default function LeadProjectDetail() {
         }
       });
 
-      const memberEntries = Array.from(memberMap.values()).map(m => {
-        const realTmId = findRealTeamMemberId(m, membersList, usersList);
-        return { ...m, tmId: realTmId ?? null };
-      });
+      /* ═══════════════════════════════════════════════════════════
+         🔧 FIX: resolveTeamMemberId already put the real TeamMember.id
+         into `m.id`. Don't call findRealTeamMemberId again — that
+         second lookup used to prefer User.id and could return the
+         wrong TeamMember. We just take `m.id` directly.
+         ═══════════════════════════════════════════════════════════ */
+      const memberEntries = Array.from(memberMap.values()).map(m => ({
+        ...m,
+        tmId: Number.isFinite(Number(m.id)) ? Number(m.id) : null,
+      }));
       console.log('✅ memberEntries:', memberEntries.length, memberEntries);
 
-      // ─── Parse supervisors (User IDs from M2M) ───
       const supervisorIds = asArray(projectItem?.supervisors).map(Number);
       const supervisorNames = asArray(projectItem?.supervisor_names);
 
@@ -516,7 +526,6 @@ export default function LeadProjectDetail() {
       console.log('✅ supervisorEntries:', supervisorEntries);
       setProjectSupervisors(supervisorEntries);
 
-      // ─── Build projectMembers (supervisors + non-supervisor members) ───
       const supUserIdSet = new Set(supervisorEntries.map(s => Number(s.userId)));
       const membersWithoutSupervisors = memberEntries.filter(
         m => !supUserIdSet.has(Number(m.userId))
@@ -525,7 +534,6 @@ export default function LeadProjectDetail() {
       setProjectMembers(allMembers);
       console.log('✅ projectMembers:', allMembers.length);
 
-      // ─── Extract leads (excludes creator and supervisors) ───
       const creatorId = Number(projectItem?.created_by);
       const leadEntries = memberEntries.filter(m => {
         const role = (m.role || '').toLowerCase();
@@ -537,7 +545,6 @@ export default function LeadProjectDetail() {
       setProjectLeads(leadEntries);
       console.log('✅ projectLeads:', leadEntries);
 
-      // ─── Map tasks with computed progress ───
       const mappedTasks = projectTasks.map(t => ({
         ...t,
         progress: computeTaskProgress(t),
@@ -547,7 +554,6 @@ export default function LeadProjectDetail() {
       setTasks(mappedTasks);
       console.log('✅ mappedTasks:', mappedTasks.length);
 
-      // ─── Load comments (non-blocking) ───
       loadCommentsForTasks(mappedTasks);
 
     } catch (error) {
@@ -697,11 +703,27 @@ export default function LeadProjectDetail() {
         try { await NotificationHelper.taskCompleted(updatedTask, user); } catch (e) { /* silent */ }
       }
 
-      setTasks(prev => prev.map(t =>
-        (t.t_id || t.id) === (updated.t_id || updated.id)
-          ? { ...t, ...updatedTask, progress: computeTaskProgress({ ...t, ...updatedTask }), assign_to: updatedTask.assign_to ?? assignTo }
-          : t
-      ));
+      // 🔧 FIX: If the assignee changed, DO NOT carry over the old
+      // `assign_to_name`. The cached name is stale.
+      setTasks(prev => prev.map(t => {
+        if ((t.t_id || t.id) !== (updated.t_id || updated.id)) return t;
+
+        const prevAssignee = t.assign_to != null ? Number(t.assign_to) : null;
+        const nextAssignee = updatedTask.assign_to != null
+          ? Number(updatedTask.assign_to)
+          : (assignTo != null ? Number(assignTo) : null);
+        const assigneeChanged = prevAssignee !== nextAssignee;
+
+        return {
+          ...t,
+          ...updatedTask,
+          progress: computeTaskProgress({ ...t, ...updatedTask }),
+          assign_to: nextAssignee,
+          assign_to_name: assigneeChanged
+            ? null
+            : (updatedTask.assign_to_name ?? t.assign_to_name ?? null),
+        };
+      }));
 
       setEditTask(null);
       resetEditTaskTouched();
@@ -863,18 +885,31 @@ export default function LeadProjectDetail() {
 
   const progress = projectProgress;
 
+  /* ═══════════════════════════════════════════════════════════
+     🔧 FIX: getMemberName — resolves from the FK id first.
+     NEVER trusts a stale cached name when an id is present.
+     ═══════════════════════════════════════════════════════════ */
   const getMemberName = (memberId, taskRef = null) => {
+    // 1. Try to resolve by id — this is always the freshest source.
+    if (memberId != null) {
+      const numId = Number(memberId);
+      if (Number.isFinite(numId)) {
+        const tm = asArray(allTeamMembers).find(m => Number(m.id) === numId);
+        if (tm) return tm.name;
+
+        const u = asArray(users).find(x => Number(x.id) === numId);
+        if (u) return u.u_name || u.name || "Unassigned";
+
+        // We HAD an id but couldn't resolve it. Never lie about it —
+        // show a placeholder instead of a stale cached name.
+        return `Member #${numId}`;
+      }
+    }
+
+    // 2. Only when we have NO id at all do we trust the cached name.
     if (taskRef?.assign_to_name) return taskRef.assign_to_name;
-    if (!memberId) return "Unassigned";
-    const numId = Number(memberId);
-    if (!Number.isFinite(numId)) return "Unassigned";
 
-    const tm = asArray(allTeamMembers).find(m => Number(m.id) === numId);
-    if (tm) return tm.name;
-
-    const u = asArray(users).find(x => Number(x.id) === numId);
-    if (u) return u.u_name || u.name || "Unassigned";
-
+    // 3. Nothing to go on.
     return "Unassigned";
   };
 
@@ -979,7 +1014,6 @@ export default function LeadProjectDetail() {
   }
 
   const creatorName = project.created_by_name || 'Project Lead';
-  // Count = 1 (creator) + additional leads (deduplicated against creator).
   const additionalLeads = asArray(projectLeadsFinal).filter(
     m => Number(m.userId) !== Number(project.created_by)
   );
@@ -1028,6 +1062,17 @@ export default function LeadProjectDetail() {
                 <div className="modal-meta-row">
                   <StatusBadge status={selectedTask.status} />
                   <PriorityBadge priority={selectedTask.priority} />
+                </div>
+
+                {/* 🔧 FIX: show the assignee using the id-resolving helper */}
+                <div style={{ marginBottom: 12 }}>
+                  <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 4 }}>
+                    Assigned To
+                  </p>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-primary)' }}>
+                    <User size={13} />
+                    {getMemberName(selectedTask.assign_to, selectedTask)}
+                  </div>
                 </div>
 
                 {asArray(selectedTask.milestones).length > 0 && (
@@ -1189,6 +1234,7 @@ export default function LeadProjectDetail() {
                   </div>
                 </div>
 
+                {/* 🔧 FIX: prefer m.id (TeamMember.id) as the option value */}
                 <div className="form-group">
                   <label className="form-label">Assign To</label>
                   <select
@@ -1197,11 +1243,14 @@ export default function LeadProjectDetail() {
                     onChange={(e) => setEditTask({ ...editTask, assign_to: e.target.value ? parseInt(e.target.value) : null })}
                   >
                     <option value="">Unassigned</option>
-                    {assignableMembers.map((m) => (
-                      <option key={m.id} value={m.tmId}>
-                        {m.name} {supervisorIdSet.has(Number(m.userId)) ? '👑' : ''}
-                      </option>
-                    ))}
+                    {assignableMembers.map((m) => {
+                      const value = Number.isFinite(Number(m.id)) ? Number(m.id) : m.tmId;
+                      return (
+                        <option key={m.id} value={value}>
+                          {m.name} {supervisorIdSet.has(Number(m.userId)) ? '👑' : ''}
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
 
@@ -1281,6 +1330,7 @@ export default function LeadProjectDetail() {
                   </div>
                 </div>
 
+                {/* 🔧 FIX: prefer m.id (TeamMember.id) as the option value */}
                 <div className="form-group">
                   <label className="form-label">Assign Team Member</label>
                   <select
@@ -1289,11 +1339,14 @@ export default function LeadProjectDetail() {
                     onChange={(e) => setNewTask({ ...newTask, assignedTo: e.target.value ? parseInt(e.target.value) : null })}
                   >
                     <option value="">Select Member</option>
-                    {assignableMembers.map((mem) => (
-                      <option key={mem.id} value={mem.tmId}>
-                        {mem.name} {supervisorIdSet.has(Number(mem.userId)) ? '👑' : ''}
-                      </option>
-                    ))}
+                    {assignableMembers.map((mem) => {
+                      const value = Number.isFinite(Number(mem.id)) ? Number(mem.id) : mem.tmId;
+                      return (
+                        <option key={mem.id} value={value}>
+                          {mem.name} {supervisorIdSet.has(Number(mem.userId)) ? '👑' : ''}
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
 
@@ -1368,7 +1421,10 @@ export default function LeadProjectDetail() {
                       <option value="">— Leave unassigned —</option>
                       {assignableMembers
                         .filter(m => Number(m.id) !== Number(removeMemberInfo.member.id))
-                        .map(m => <option key={m.id} value={m.tmId}>{m.name}</option>)}
+                        .map(m => {
+                          const value = Number.isFinite(Number(m.id)) ? Number(m.id) : m.tmId;
+                          return <option key={m.id} value={value}>{m.name}</option>;
+                        })}
                     </select>
                   </>
                 ) : (
@@ -1486,6 +1542,8 @@ export default function LeadProjectDetail() {
                         {t.desc && <p className="task-item-desc">{t.desc}</p>}
                         <div className="task-item-footer">
                           <StatusBadge status={t.status} />
+                          {/* 🔧 FIX: getMemberName resolves by id, so the card
+                              always shows the CURRENT assignee. */}
                           <div className="task-item-assignee"><User size={12} />{getMemberName(t.assign_to, t)}</div>
                           <div className="task-item-actions">
                             <button
@@ -1575,7 +1633,6 @@ export default function LeadProjectDetail() {
                 </div>
 
                 <div className="team-section-list">
-                  {/* Creator is always the primary Project Lead */}
                   <div className="team-member-item lead-item">
                     <Avatar name={creatorName} size="sm" />
                     <div className="team-member-info">
@@ -1589,7 +1646,6 @@ export default function LeadProjectDetail() {
                     </div>
                   </div>
 
-                  {/* Additional leads (filtered to exclude the creator again, just in case) */}
                   {additionalLeads.map((m, idx) => (
                     <div key={m.id || `lead-${idx}`} className="team-member-item lead-item">
                       <Avatar name={m.name || 'Lead'} size="sm" />
