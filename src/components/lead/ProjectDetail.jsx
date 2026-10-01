@@ -7,7 +7,7 @@ import {
   FolderKanban, Calendar, Flag, AlertCircle, Sparkles, TrendingUp, Award,
   User, Send, Target, Zap, FileText, Clock, Activity, Briefcase, Crown,
   UserMinus,
-  Shield,   
+  Shield,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import toast from "react-hot-toast";
@@ -26,6 +26,7 @@ import NotificationHelper from '../../services/notificationHelper';
 const PRIORITY_OPTIONS = ["low", "medium", "high", "critical"];
 const STATUS_OPTIONS = ["todo", "in_progress", "review", "done", "cancelled"];
 const SUPERVISOR_ROLES = ['manager', 'admin', 'supervisor'];
+const LEAD_ROLES = ['member', 'lead'];
 
 /* ─────────── Resolve TeamMember id → user-like object ─────────── */
 function resolveTeamMemberId(tmId, usersList, membersList) {
@@ -98,14 +99,12 @@ function getPteamTmId(entry) {
   return Number(entry.tm ?? entry.tm_id ?? entry.team_member ?? entry.member ?? entry.member_id ?? entry.teamMember);
 }
 
-/* ─────────── Compute task progress from status ─────────── */
+/* ─────────── Compute task progress ─────────── */
 function computeTaskProgress(task) {
-  // If the backend has a real progress value, always trust it — even 0.
   if (task.progress !== undefined && task.progress !== null) {
     const raw = Number(task.progress);
     if (Number.isFinite(raw)) return raw;
   }
-  // Fallback only when the backend doesn't send progress at all.
   const status = (task.status || '').toLowerCase();
   if (status === 'done' || status === 'completed') return 100;
   if (status === 'review') return 75;
@@ -232,6 +231,7 @@ export default function LeadProjectDetail() {
   const [allTeamMembers, setAllTeamMembers] = useState([]);
   const [projectMembers, setProjectMembers] = useState([]);
   const [projectSupervisors, setProjectSupervisors] = useState([]);
+  const [projectLeads, setProjectLeads] = useState([]);
   const [users, setUsers] = useState([]);
   const [comments, setComments] = useState([]);
   const [pteamEntries, setPteamEntries] = useState([]);
@@ -242,9 +242,6 @@ export default function LeadProjectDetail() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [modalCommentText, setModalCommentText] = useState("");
   const [isModalCommenting, setIsModalCommenting] = useState(false);
-
-  const [addLeadOpen, setAddLeadOpen] = useState(false);
-const [addLeadSaving, setAddLeadSaving] = useState(false);
 
   const [addTaskTouched, setAddTaskTouched] = useState({});
   const [editTaskTouched, setEditTaskTouched] = useState({});
@@ -257,9 +254,11 @@ const [addLeadSaving, setAddLeadSaving] = useState(false);
   const [removeMemberSaving, setRemoveMemberSaving] = useState(false);
 
   const [addSupervisorOpen, setAddSupervisorOpen] = useState(false);
-const [addMemberOpen, setAddMemberOpen] = useState(false);
-const [addSupervisorSaving, setAddSupervisorSaving] = useState(false);
-const [addMemberSaving, setAddMemberSaving] = useState(false);
+  const [addMemberOpen, setAddMemberOpen] = useState(false);
+  const [addLeadOpen, setAddLeadOpen] = useState(false);
+  const [addSupervisorSaving, setAddSupervisorSaving] = useState(false);
+  const [addMemberSaving, setAddMemberSaving] = useState(false);
+  const [addLeadSaving, setAddLeadSaving] = useState(false);
 
   const addTaskTitleRef = useRef(null);
   const editTaskTitleRef = useRef(null);
@@ -298,48 +297,37 @@ const [addMemberSaving, setAddMemberSaving] = useState(false);
   const isAddTaskValid = Object.values(addTaskErrors).every(e => e === '');
   const isEditTaskValid = Object.values(editTaskErrors).every(e => e === '');
 
- /* ─── Add near the regularMembers useMemo ─── */
-const LEAD_ROLES = ['member', 'lead'];
-
-// Which members are Leads (role === 'member' or 'lead')?
-const projectLeads = useMemo(() => {
-  return projectMembers.filter(m => {
-    const role = (m.role || '').toLowerCase();
-    return LEAD_ROLES.includes(role);
-  });
-}, [projectMembers]);
-
-// Team members that are NOT leads and NOT supervisors
-const regularMembers = useMemo(
-  () => projectMembers.filter(m => {
-    const role = (m.role || '').toLowerCase();
-    if (SUPERVISOR_ROLES.includes(role)) return false;
-    if (LEAD_ROLES.includes(role)) return false;
-    return !projectSupervisors.some(s => Number(s.id) === Number(m.id));
-  }),
-  [projectMembers, projectSupervisors]
-);
+  /* ─── Team member categorization ─── */
+  // Regular members = everyone in the project who isn't a supervisor and isn't a Lead.
+  const regularMembers = useMemo(
+    () => projectMembers.filter(m => {
+      const role = (m.role || '').toLowerCase();
+      if (SUPERVISOR_ROLES.includes(role)) return false;
+      if (LEAD_ROLES.includes(role)) return false;
+      return !projectSupervisors.some(s => Number(s.id) === Number(m.id));
+    }),
+    [projectMembers, projectSupervisors]
+  );
 
   const assignableMembers = useMemo(
     () => projectMembers.filter(m => m.tmId != null),
     [projectMembers]
   );
 
-  /* ─── Replace the projectProgress useMemo ─── */
-const projectProgress = useMemo(() => {
-  // Prefer backend-computed avgProgress.
-  const backendProgress = Number(stats?.avgProgress);
-  if (Number.isFinite(backendProgress)) return backendProgress;
-  if (!tasks || tasks.length === 0) return 0;
-  const countable = tasks.filter(
-    t => (t.status || '').toLowerCase() !== 'cancelled'
-  );
-  if (countable.length === 0) return 0;
-  const total = countable.reduce(
-    (sum, t) => sum + (Number(t.progress) || 0), 0
-  );
-  return Math.round(total / countable.length);
-}, [tasks, stats?.avgProgress]);
+  /* ─── Project progress ─── */
+  const projectProgress = useMemo(() => {
+    const backendProgress = Number(stats?.avgProgress);
+    if (Number.isFinite(backendProgress) && backendProgress > 0) return backendProgress;
+    if (!tasks || tasks.length === 0) return 0;
+    const countable = tasks.filter(
+      t => (t.status || '').toLowerCase() !== 'cancelled'
+    );
+    if (countable.length === 0) return 0;
+    const total = countable.reduce(
+      (sum, t) => sum + (Number(t.progress) || 0), 0
+    );
+    return Math.round(total / countable.length);
+  }, [tasks, stats?.avgProgress]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -462,34 +450,46 @@ const projectProgress = useMemo(() => {
         return { ...m, tmId: realTmId ?? null };
       });
 
-      // ─── Supervisors from API (direct — no user lookup needed) ───
-const supervisorIds = Array.isArray(projectItem.supervisors)
-  ? projectItem.supervisors.map(Number)
-  : [];
-const supervisorNames = Array.isArray(projectItem.supervisor_names)
-  ? projectItem.supervisor_names
-  : [];
+      // ─── Supervisors from API ───
+      const supervisorIds = Array.isArray(projectItem.supervisors)
+        ? projectItem.supervisors.map(Number)
+        : [];
+      const supervisorNames = Array.isArray(projectItem.supervisor_names)
+        ? projectItem.supervisor_names
+        : [];
 
-const supervisorEntries = supervisorIds.map((sid, idx) => {
-  // Try to enrich with user data if available
-  const userObj = usersList.find(u => Number(u.id) === Number(sid));
-  return {
-    id: sid,
-    userId: sid,
-    name: supervisorNames[idx] || userObj?.u_name || userObj?.name || `User ${sid}`,
-    email: userObj?.email || '',
-    role: (userObj?.role || 'supervisor').toLowerCase(),
-  };
-});
+      const supervisorEntries = supervisorIds.map((sid, idx) => {
+        const userObj = usersList.find(u => Number(u.id) === Number(sid));
+        return {
+          id: sid,
+          userId: sid,
+          name: supervisorNames[idx] || userObj?.u_name || userObj?.name || `User ${sid}`,
+          email: userObj?.email || '',
+          role: (userObj?.role || 'supervisor').toLowerCase(),
+        };
+      });
 
-console.log('🎯 Supervisors parsed:', supervisorEntries);
-setProjectSupervisors(supervisorEntries);
+      setProjectSupervisors(supervisorEntries);
 
-      // Merge supervisors into member list (deduped)
+      // ─── Merge supervisors into member list (deduped) ───
       const supervisorIdSet = new Set(supervisorEntries.map(s => Number(s.id)));
       const membersWithoutSupervisors = memberEntries.filter(m => !supervisorIdSet.has(Number(m.id)));
       const allMembers = [...supervisorEntries, ...membersWithoutSupervisors];
       setProjectMembers(allMembers);
+
+      // ─── Project Leads ───
+      // A Lead is a project member (via PTeam) whose role is 'member' or 'lead',
+      // and who is NOT the creator (the creator is shown separately) and NOT a supervisor.
+      const creatorId = Number(projectItem.created_by);
+      const leadEntries = memberEntries.filter(m => {
+        const role = (m.role || '').toLowerCase();
+        if (!LEAD_ROLES.includes(role)) return false;
+        if (Number(m.id) === creatorId) return false; // creator is already Project Lead
+        if (supervisorIdSet.has(Number(m.id))) return false;
+        return true;
+      });
+
+      setProjectLeads(leadEntries);
 
       // ─── Map tasks ───
       const mappedTasks = projectTasks.map(t => ({
@@ -533,22 +533,7 @@ setProjectSupervisors(supervisorEntries);
     await fetchProjectData();
     toast.success('Project refreshed');
   };
-const handleAddLead = async (teamMemberId) => {
-  if (!teamMemberId) return;
-  setAddLeadSaving(true);
-  try {
-    await projectTeamService.addMemberToProject(projectId, Number(teamMemberId));
-    toast.success('Lead added');
-    setAddLeadOpen(false);
-    await fetchProjectData();
-  } catch (error) {
-    console.error('Error adding lead:', error);
-    const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
-    toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to add lead');
-  } finally {
-    setAddLeadSaving(false);
-  }
-};
+
   const getAssigneeEmail = (assignee) => {
     if (!assignee) return null;
     if (assignee.email) return assignee.email;
@@ -583,7 +568,6 @@ const handleAddLead = async (teamMemberId) => {
         dueDate: null,
         startDate: null,
         progress: newTask.progress,
-         progress: editTask.progress,
       });
 
       const createdTask = response?.data || response;
@@ -817,33 +801,53 @@ const handleAddLead = async (teamMemberId) => {
 
   const progress = projectProgress;
 
-  /* ─── Replace getMemberName ─── */
-const getMemberName = (memberId, taskRef = null) => {
-  // 1. Prefer the API-provided name (most reliable)
-  if (taskRef?.assign_to_name) return taskRef.assign_to_name;
+  const getMemberName = (memberId, taskRef = null) => {
+    if (taskRef?.assign_to_name) return taskRef.assign_to_name;
+    if (!memberId) return "Unassigned";
+    const numId = Number(memberId);
+    const tm = allTeamMembers.find(m => Number(m.id) === numId);
+    if (tm) return tm.name;
+    const u = users.find(x => Number(x.id) === numId);
+    if (u) return u.u_name || u.name || "Unassigned";
+    return "Unassigned";
+  };
 
-  if (!memberId) return "Unassigned";
-  const numId = Number(memberId);
+  /* ═══════════════ ADD SUPERVISOR / LEAD / MEMBER ═══════════════ */
 
-  // 2. Look up TeamMember directly by id — this is what `assign_to` refers to
-  const tm = allTeamMembers.find(m => Number(m.id) === numId);
-  if (tm) return tm.name;
+  const handleAddSupervisor = async (userId) => {
+    if (!userId) return;
+    setAddSupervisorSaving(true);
+    try {
+      const currentIds = Array.isArray(project?.supervisors) ? project.supervisors.map(Number) : [];
+      const nextIds = Array.from(new Set([...currentIds, Number(userId)]));
 
-  // 3. Legacy fallback: user lookup
-  const u = users.find(x => Number(x.id) === numId);
-  if (u) return u.u_name || u.name || "Unassigned";
+      await projectService.updateProject(projectId, {
+        name: project.p_name || project.name,
+        description: project.desc || '',
+        priority: project.priority,
+        status: project.status,
+        startDate: project.start_at || null,
+        deadline: project.deadline || null,
+        supervisors: nextIds,
+      });
 
-  return "Unassigned";
-};
+      toast.success('Supervisor added');
+      setAddSupervisorOpen(false);
+      await fetchProjectData();
+    } catch (error) {
+      console.error('Error adding supervisor:', error);
+      const rawMsg = error?.response?.data?.message ||
+                     error?.response?.data?.detail ||
+                     error?.response?.data?.supervisors?.[0];
+      toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to add supervisor');
+    } finally {
+      setAddSupervisorSaving(false);
+    }
+  };
 
-  /* ═══════════════ ADD SUPERVISOR / MEMBER ═══════════════ */
-
-const handleAddSupervisor = async (userId) => {
-  if (!userId) return;
-  setAddSupervisorSaving(true);
-  try {
+  const handleRemoveSupervisor = async (userId) => {
     const currentIds = Array.isArray(project?.supervisors) ? project.supervisors.map(Number) : [];
-    const nextIds = Array.from(new Set([...currentIds, Number(userId)]));
+    const nextIds = currentIds.filter(id => Number(id) !== Number(userId));
 
     await projectService.updateProject(projectId, {
       name: project.p_name || project.name,
@@ -855,53 +859,42 @@ const handleAddSupervisor = async (userId) => {
       supervisors: nextIds,
     });
 
-    toast.success('Supervisor added');
-    setAddSupervisorOpen(false);
     await fetchProjectData();
-  } catch (error) {
-    console.error('Error adding supervisor:', error);
-    const rawMsg = error?.response?.data?.message ||
-                   error?.response?.data?.detail ||
-                   error?.response?.data?.supervisors?.[0];
-    toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to add supervisor');
-  } finally {
-    setAddSupervisorSaving(false);
-  }
-};
+  };
 
-const handleRemoveSupervisor = async (userId) => {
-  const currentIds = Array.isArray(project?.supervisors) ? project.supervisors.map(Number) : [];
-  const nextIds = currentIds.filter(id => Number(id) !== Number(userId));
+  const handleAddLead = async (teamMemberId) => {
+    if (!teamMemberId) return;
+    setAddLeadSaving(true);
+    try {
+      await projectTeamService.addMemberToProject(projectId, Number(teamMemberId));
+      toast.success('Project Lead added');
+      setAddLeadOpen(false);
+      await fetchProjectData();
+    } catch (error) {
+      console.error('Error adding lead:', error);
+      const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
+      toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to add project lead');
+    } finally {
+      setAddLeadSaving(false);
+    }
+  };
 
-  await projectService.updateProject(projectId, {
-    name: project.p_name || project.name,
-    description: project.desc || '',
-    priority: project.priority,
-    status: project.status,
-    startDate: project.start_at || null,
-    deadline: project.deadline || null,
-    supervisors: nextIds,
-  });
-
-  await fetchProjectData();
-};
-
-const handleAddTeamMember = async (teamMemberId) => {
-  if (!teamMemberId) return;
-  setAddMemberSaving(true);
-  try {
-    await projectTeamService.addMemberToProject(projectId, Number(teamMemberId));
-    toast.success('Team member added');
-    setAddMemberOpen(false);
-    await fetchProjectData();
-  } catch (error) {
-    console.error('Error adding team member:', error);
-    const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
-    toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to add team member');
-  } finally {
-    setAddMemberSaving(false);
-  }
-};
+  const handleAddTeamMember = async (teamMemberId) => {
+    if (!teamMemberId) return;
+    setAddMemberSaving(true);
+    try {
+      await projectTeamService.addMemberToProject(projectId, Number(teamMemberId));
+      toast.success('Team member added');
+      setAddMemberOpen(false);
+      await fetchProjectData();
+    } catch (error) {
+      console.error('Error adding team member:', error);
+      const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
+      toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to add team member');
+    } finally {
+      setAddMemberSaving(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -1435,28 +1428,28 @@ const handleAddTeamMember = async (teamMemberId) => {
                           <StatusBadge status={t.status} />
                           <div className="task-item-assignee"><User size={12} />{getMemberName(t.assign_to, t)}</div>
                           <div className="task-item-actions">
-  <button
-    className="task-action-btn"
-    title="Open comments"
-    onClick={(e) => { e.stopPropagation(); setSelectedTask(t); }}
-  >
-    <MessageSquare size={12} />
-  </button>
-  <button
-    className="task-action-btn"
-    title="Edit Task"
-    onClick={(e) => { e.stopPropagation(); setEditTask({ ...t, assignedTo: t.assign_to }); resetEditTaskTouched(); }}
-  >
-    <Pencil size={12} />
-  </button>
-  <button
-    className="task-action-btn danger"
-    title="Delete Task"
-    onClick={(e) => { e.stopPropagation(); setShowDeleteConfirm(t.t_id || t.id); }}
-  >
-    <Trash2 size={12} />
-  </button>
-</div>
+                            <button
+                              className="task-action-btn"
+                              title="Open comments"
+                              onClick={(e) => { e.stopPropagation(); setSelectedTask(t); }}
+                            >
+                              <MessageSquare size={12} />
+                            </button>
+                            <button
+                              className="task-action-btn"
+                              title="Edit Task"
+                              onClick={(e) => { e.stopPropagation(); setEditTask({ ...t, assignedTo: t.assign_to }); resetEditTaskTouched(); }}
+                            >
+                              <Pencil size={12} />
+                            </button>
+                            <button
+                              className="task-action-btn danger"
+                              title="Delete Task"
+                              onClick={(e) => { e.stopPropagation(); setShowDeleteConfirm(t.t_id || t.id); }}
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
                         </div>
                       </motion.div>
                     );
@@ -1496,179 +1489,169 @@ const handleAddTeamMember = async (teamMemberId) => {
           </div>
 
           <div className="info-card">
-  <h4 className="info-card-title">
-    <Users size={14} /> Team
-    <span className="info-badge">{projectMembers.length}</span>
-  </h4>
+            <h4 className="info-card-title">
+              <Users size={14} /> Team
+              <span className="info-badge">{projectMembers.length}</span>
+            </h4>
 
-  <div className="team-sections">
-    {/* ─── PROJECT LEAD (Creator) ─── */}
-    {project?.created_by && (
-      <div className="team-section team-section-lead">
-        <div className="team-section-header">
-          <div className="team-section-title">
-            <Shield size={13} style={{ color: '#6366f1' }} />
-            <span>Project Lead</span>
+            <div className="team-sections">
+              {/* ─── PROJECT LEAD ─── */}
+              <div className="team-section team-section-lead">
+                <div className="team-section-header">
+                  <div className="team-section-title">
+                    <Shield size={13} style={{ color: '#6366f1' }} />
+                    <span>Project Lead</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span className="team-section-count">{1 + projectLeads.length}</span>
+                    <button
+                      className="team-add-btn"
+                      title="Add project lead"
+                      onClick={() => setAddLeadOpen(true)}
+                    >
+                      <Plus size={11} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="team-section-list">
+                  {/* Creator is always the primary Project Lead */}
+                  {project?.created_by && (
+                    <div className="team-member-item lead-item">
+                      <Avatar name={project.created_by_name || 'Lead'} size="sm" />
+                      <div className="team-member-info">
+                        <span className="team-member-name">
+                          {project.created_by_name || 'Lead'}
+                          <span className="lead-badge" title="Project Lead (Creator)">
+                            <Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} />
+                          </span>
+                        </span>
+                        <span className="team-member-role">Team Lead (Creator)</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Additional leads added via the + button */}
+                  {projectLeads.map((m) => (
+                    <div key={m.id} className="team-member-item lead-item">
+                      <Avatar name={m.name} size="sm" />
+                      <div className="team-member-info">
+                        <span className="team-member-name">
+                          {m.name}
+                          <span className="lead-badge" title="Project Lead">
+                            <Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} />
+                          </span>
+                        </span>
+                        <span className="team-member-role">Project Lead</span>
+                      </div>
+                      <button
+                        className="task-action-btn danger"
+                        title={`Remove ${m.name}`}
+                        onClick={() => promptRemoveMember(m)}
+                      >
+                        <UserMinus size={11} />
+                      </button>
+                    </div>
+                  ))}
+
+                  {!project?.created_by && projectLeads.length === 0 && (
+                    <div className="team-section-empty">No project lead assigned</div>
+                  )}
+                </div>
+              </div>
+
+              {/* ─── SUPERVISORS ─── */}
+              <div className="team-section team-section-supervisors">
+                <div className="team-section-header">
+                  <div className="team-section-title">
+                    <Crown size={13} style={{ color: '#f59e0b' }} />
+                    <span>Supervisors</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span className="team-section-count">{projectSupervisors.length}</span>
+                    <button
+                      className="team-add-btn"
+                      title="Add supervisor"
+                      onClick={() => setAddSupervisorOpen(true)}
+                    >
+                      <Plus size={11} />
+                    </button>
+                  </div>
+                </div>
+
+                {projectSupervisors.length === 0 ? (
+                  <div className="team-section-empty">No supervisors assigned</div>
+                ) : (
+                  <div className="team-section-list">
+                    {projectSupervisors.map((m) => (
+                      <div key={m.id} className="team-member-item supervisor-item">
+                        <Avatar name={m.name} size="sm" />
+                        <div className="team-member-info">
+                          <span className="team-member-name">
+                            {m.name}
+                            <span className="supervisor-badge" title="Supervisor">
+                              <Crown size={12} style={{ color: '#f59e0b', marginLeft: 4 }} />
+                            </span>
+                          </span>
+                          <span className="team-member-role">Supervisor</span>
+                        </div>
+                        <button
+                          className="task-action-btn danger"
+                          title={`Remove ${m.name}`}
+                          onClick={() => promptRemoveMember(m)}
+                        >
+                          <UserMinus size={11} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* ─── TEAM MEMBERS ─── */}
+              <div className="team-section team-section-members">
+                <div className="team-section-header">
+                  <div className="team-section-title">
+                    <Users size={13} style={{ color: 'var(--accent-primary)' }} />
+                    <span>Team Members</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span className="team-section-count">{regularMembers.length}</span>
+                    <button
+                      className="team-add-btn"
+                      title="Add team member"
+                      onClick={() => setAddMemberOpen(true)}
+                    >
+                      <Plus size={11} />
+                    </button>
+                  </div>
+                </div>
+
+                {regularMembers.length === 0 ? (
+                  <div className="team-section-empty">No team members assigned</div>
+                ) : (
+                  <div className="team-section-list">
+                    {regularMembers.map((m) => (
+                      <div key={m.id} className="team-member-item">
+                        <Avatar name={m.name} size="sm" />
+                        <div className="team-member-info">
+                          <span className="team-member-name">{m.name}</span>
+                          <span className="team-member-role">{m.role || 'Member'}</span>
+                        </div>
+                        <button
+                          className="task-action-btn danger"
+                          title={`Remove ${m.name}`}
+                          onClick={() => promptRemoveMember(m)}
+                        >
+                          <UserMinus size={11} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
-          <span className="team-section-count">1</span>
-        </div>
-        <div className="team-section-list">
-          <div className="team-member-item lead-item">
-            <Avatar name={project.created_by_name || 'Lead'} size="sm" />
-            <div className="team-member-info">
-              <span className="team-member-name">
-                {project.created_by_name || 'Lead'}
-                <span className="lead-badge" title="Project Lead">
-                  <Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} />
-                </span>
-              </span>
-              <span className="team-member-role">Team Lead</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    )}
-
-    {/* ─── SUPERVISORS ─── */}
-    <div className="team-section team-section-supervisors">
-      <div className="team-section-header">
-        <div className="team-section-title">
-          <Crown size={13} style={{ color: '#f59e0b' }} />
-          <span>Supervisors</span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span className="team-section-count">{projectSupervisors.length}</span>
-          <button
-            className="team-add-btn"
-            title="Add supervisor"
-            onClick={() => setAddSupervisorOpen(true)}
-          >
-            <Plus size={11} />
-          </button>
-        </div>
-      </div>
-
-      {projectSupervisors.length === 0 ? (
-        <div className="team-section-empty">No supervisors assigned</div>
-      ) : (
-        <div className="team-section-list">
-          {projectSupervisors.map((m) => (
-            <div key={m.id} className="team-member-item supervisor-item">
-              <Avatar name={m.name} size="sm" />
-              <div className="team-member-info">
-                <span className="team-member-name">
-                  {m.name}
-                  <span className="supervisor-badge" title="Supervisor">
-                    <Crown size={12} style={{ color: '#f59e0b', marginLeft: 4 }} />
-                  </span>
-                </span>
-                <span className="team-member-role">Supervisor</span>
-              </div>
-              <button
-                className="task-action-btn danger"
-                title={`Remove ${m.name}`}
-                onClick={() => promptRemoveMember(m)}
-              >
-                <UserMinus size={11} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-
-    {/* 🆕 ─── LEADS ─── */}
-    <div className="team-section team-section-leads">
-      <div className="team-section-header">
-        <div className="team-section-title">
-          <Briefcase size={13} style={{ color: '#a855f7' }} />
-          <span>Leads</span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span className="team-section-count">{projectLeads.length}</span>
-          <button
-            className="team-add-btn"
-            title="Add lead"
-            onClick={() => setAddLeadOpen(true)}
-          >
-            <Plus size={11} />
-          </button>
-        </div>
-      </div>
-
-      {projectLeads.length === 0 ? (
-        <div className="team-section-empty">No leads assigned</div>
-      ) : (
-        <div className="team-section-list">
-          {projectLeads.map((m) => (
-            <div key={m.id} className="team-member-item lead-item">
-              <Avatar name={m.name} size="sm" />
-              <div className="team-member-info">
-                <span className="team-member-name">
-                  {m.name}
-                  <span className="lead-badge" title="Lead">
-                    <Briefcase size={12} style={{ color: '#a855f7', marginLeft: 4 }} />
-                  </span>
-                </span>
-                <span className="team-member-role">Lead</span>
-              </div>
-              <button
-                className="task-action-btn danger"
-                title={`Remove ${m.name}`}
-                onClick={() => promptRemoveMember(m)}
-              >
-                <UserMinus size={11} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-
-    {/* ─── TEAM MEMBERS ─── */}
-    <div className="team-section team-section-members">
-      <div className="team-section-header">
-        <div className="team-section-title">
-          <Users size={13} style={{ color: 'var(--accent-primary)' }} />
-          <span>Team Members</span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span className="team-section-count">{regularMembers.length}</span>
-          <button
-            className="team-add-btn"
-            title="Add team member"
-            onClick={() => setAddMemberOpen(true)}
-          >
-            <Plus size={11} />
-          </button>
-        </div>
-      </div>
-
-      {regularMembers.length === 0 ? (
-        <div className="team-section-empty">No team members assigned</div>
-      ) : (
-        <div className="team-section-list">
-          {regularMembers.map((m) => (
-            <div key={m.id} className="team-member-item">
-              <Avatar name={m.name} size="sm" />
-              <div className="team-member-info">
-                <span className="team-member-name">{m.name}</span>
-                <span className="team-member-role">{m.role || 'Member'}</span>
-              </div>
-              <button
-                className="task-action-btn danger"
-                title={`Remove ${m.name}`}
-                onClick={() => promptRemoveMember(m)}
-              >
-                <UserMinus size={11} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  </div>
-</div>
 
           <div className="info-card comments-card">
             <h4 className="info-card-title">
@@ -1717,207 +1700,212 @@ const handleAddTeamMember = async (teamMemberId) => {
           </div>
         </div>
       </div>
+
       {/* ─── ADD SUPERVISOR MODAL ─── */}
-<AnimatePresence>
-  {addSupervisorOpen && (
-    <motion.div
-      className="modal-overlay"
-      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      onClick={() => !addSupervisorSaving && setAddSupervisorOpen(false)}
-    >
-      <motion.div
-        className="modal-box"
-        initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
-        onClick={e => e.stopPropagation()}
-        style={{ maxWidth: 420 }}
-      >
-        <div className="modal-header">
-          <h2 className="modal-title"><Crown size={16} /> Add Supervisor</h2>
-          <button className="modal-close-btn" onClick={() => setAddSupervisorOpen(false)} disabled={addSupervisorSaving}>
-            <X size={16} />
-          </button>
-        </div>
-        <div className="modal-body">
-          <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 0, marginBottom: 12 }}>
-            Select a user to add as a supervisor for this project.
-          </p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
-            {users
-              .filter(u => SUPERVISOR_ROLES.includes((u.role || '').toLowerCase()))
-              .filter(u => !projectSupervisors.some(s => Number(s.id) === Number(u.id)))
-              .map(u => (
-                <button
-                  key={u.id}
-                  className="add-picker-row"
-                  onClick={() => handleAddSupervisor(u.id)}
-                  disabled={addSupervisorSaving}
-                >
-                  <Avatar name={u.u_name || u.name} size="sm" />
-                  <div style={{ flex: 1, textAlign: 'left' }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
-                      {u.u_name || u.name}
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                      {u.email}
-                    </div>
-                  </div>
-                  <Plus size={14} style={{ color: 'var(--accent-primary)' }} />
+      <AnimatePresence>
+        {addSupervisorOpen && (
+          <motion.div
+            className="modal-overlay"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => !addSupervisorSaving && setAddSupervisorOpen(false)}
+          >
+            <motion.div
+              className="modal-box"
+              initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
+              onClick={e => e.stopPropagation()}
+              style={{ maxWidth: 420 }}
+            >
+              <div className="modal-header">
+                <h2 className="modal-title"><Crown size={16} /> Add Supervisor</h2>
+                <button className="modal-close-btn" onClick={() => setAddSupervisorOpen(false)} disabled={addSupervisorSaving}>
+                  <X size={16} />
                 </button>
-              ))
-            }
-            {users.filter(u => SUPERVISOR_ROLES.includes((u.role || '').toLowerCase()))
-              .filter(u => !projectSupervisors.some(s => Number(s.id) === Number(u.id)))
-              .length === 0 && (
-              <div style={{
-                padding: '20px 16px', textAlign: 'center', fontSize: 13,
-                color: 'var(--text-muted)', background: 'var(--bg-secondary)',
-                borderRadius: 10, border: '1px dashed var(--border-subtle)',
-              }}>
-                All available supervisors are already on this project.
               </div>
-            )}
-          </div>
-        </div>
-      </motion.div>
-    </motion.div>
-  )}
-</AnimatePresence>
-{/* ─── ADD LEAD MODAL ─── */}
-<AnimatePresence>
-  {addLeadOpen && (
-    <motion.div
-      className="modal-overlay"
-      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      onClick={() => !addLeadSaving && setAddLeadOpen(false)}
-    >
-      <motion.div
-        className="modal-box"
-        initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
-        onClick={e => e.stopPropagation()}
-        style={{ maxWidth: 420 }}
-      >
-        <div className="modal-header">
-          <h2 className="modal-title"><Briefcase size={16} /> Add Lead</h2>
-          <button className="modal-close-btn" onClick={() => setAddLeadOpen(false)} disabled={addLeadSaving}>
-            <X size={16} />
-          </button>
-        </div>
-        <div className="modal-body">
-          <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 0, marginBottom: 12 }}>
-            Select a Lead to add to this project. Leads must already exist as a Team Member profile.
-          </p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
-            {allTeamMembers
-              .filter(m => m.is_deleted !== 1)
-              .filter(m => LEAD_ROLES.includes((m.role || '').toLowerCase()))
-              .filter(m => !projectMembers.some(pm => Number(pm.id) === Number(m.id)))
-              .map(m => (
-                <button
-                  key={m.id}
-                  className="add-picker-row"
-                  onClick={() => handleAddLead(m.id)}
-                  disabled={addLeadSaving}
-                >
-                  <Avatar name={m.name} size="sm" />
-                  <div style={{ flex: 1, textAlign: 'left' }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
-                      {m.name}
+              <div className="modal-body">
+                <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 0, marginBottom: 12 }}>
+                  Select a user to add as a supervisor for this project.
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
+                  {users
+                    .filter(u => SUPERVISOR_ROLES.includes((u.role || '').toLowerCase()))
+                    .filter(u => !projectSupervisors.some(s => Number(s.id) === Number(u.id)))
+                    .map(u => (
+                      <button
+                        key={u.id}
+                        className="add-picker-row"
+                        onClick={() => handleAddSupervisor(u.id)}
+                        disabled={addSupervisorSaving}
+                      >
+                        <Avatar name={u.u_name || u.name} size="sm" />
+                        <div style={{ flex: 1, textAlign: 'left' }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+                            {u.u_name || u.name}
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                            {u.email}
+                          </div>
+                        </div>
+                        <Plus size={14} style={{ color: 'var(--accent-primary)' }} />
+                      </button>
+                    ))
+                  }
+                  {users.filter(u => SUPERVISOR_ROLES.includes((u.role || '').toLowerCase()))
+                    .filter(u => !projectSupervisors.some(s => Number(s.id) === Number(u.id)))
+                    .length === 0 && (
+                    <div style={{
+                      padding: '20px 16px', textAlign: 'center', fontSize: 13,
+                      color: 'var(--text-muted)', background: 'var(--bg-secondary)',
+                      borderRadius: 10, border: '1px dashed var(--border-subtle)',
+                    }}>
+                      All available supervisors are already on this project.
                     </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                      {m.role || 'Lead'}
-                    </div>
-                  </div>
-                  <Plus size={14} style={{ color: '#a855f7' }} />
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ─── ADD LEAD MODAL ─── */}
+      <AnimatePresence>
+        {addLeadOpen && (
+          <motion.div
+            className="modal-overlay"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => !addLeadSaving && setAddLeadOpen(false)}
+          >
+            <motion.div
+              className="modal-box"
+              initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
+              onClick={e => e.stopPropagation()}
+              style={{ maxWidth: 420 }}
+            >
+              <div className="modal-header">
+                <h2 className="modal-title"><Shield size={16} /> Add Project Lead</h2>
+                <button className="modal-close-btn" onClick={() => setAddLeadOpen(false)} disabled={addLeadSaving}>
+                  <X size={16} />
                 </button>
-              ))
-            }
-            {allTeamMembers
-              .filter(m => m.is_deleted !== 1)
-              .filter(m => LEAD_ROLES.includes((m.role || '').toLowerCase()))
-              .filter(m => !projectMembers.some(pm => Number(pm.id) === Number(m.id)))
-              .length === 0 && (
-              <div style={{
-                padding: '20px 16px', textAlign: 'center', fontSize: 13,
-                color: 'var(--text-muted)', background: 'var(--bg-secondary)',
-                borderRadius: 10, border: '1px dashed var(--border-subtle)',
-              }}>
-                No additional leads available. Ask a supervisor to create Lead profiles first.
               </div>
-            )}
-          </div>
-        </div>
-      </motion.div>
-    </motion.div>
-  )}
-</AnimatePresence>
-{/* ─── ADD TEAM MEMBER MODAL ─── */}
-<AnimatePresence>
-  {addMemberOpen && (
-    <motion.div
-      className="modal-overlay"
-      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      onClick={() => !addMemberSaving && setAddMemberOpen(false)}
-    >
-      <motion.div
-        className="modal-box"
-        initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
-        onClick={e => e.stopPropagation()}
-        style={{ maxWidth: 420 }}
-      >
-        <div className="modal-header">
-          <h2 className="modal-title"><Users size={16} /> Add Team Member</h2>
-          <button className="modal-close-btn" onClick={() => setAddMemberOpen(false)} disabled={addMemberSaving}>
-            <X size={16} />
-          </button>
-        </div>
-        <div className="modal-body">
-          <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 0, marginBottom: 12 }}>
-            Select a team member to add to this project.
-          </p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
-            {allTeamMembers
-              .filter(m => m.is_deleted !== 1)
-              .filter(m => !projectMembers.some(pm => Number(pm.id) === Number(m.id)))
-              .filter(m => !projectSupervisors.some(s => Number(s.id) === Number(m.id)))
-              .map(m => (
-                <button
-                  key={m.id}
-                  className="add-picker-row"
-                  onClick={() => handleAddTeamMember(m.id)}
-                  disabled={addMemberSaving}
-                >
-                  <Avatar name={m.name} size="sm" />
-                  <div style={{ flex: 1, textAlign: 'left' }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
-                      {m.name}
+              <div className="modal-body">
+                <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 0, marginBottom: 12 }}>
+                  Select a Lead to add to this project. Leads must already exist as a Team Member profile.
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
+                  {allTeamMembers
+                    .filter(m => m.is_deleted !== 1)
+                    .filter(m => LEAD_ROLES.includes((m.role || '').toLowerCase()))
+                    .filter(m => !projectMembers.some(pm => Number(pm.id) === Number(m.id)))
+                    .map(m => (
+                      <button
+                        key={m.id}
+                        className="add-picker-row"
+                        onClick={() => handleAddLead(m.id)}
+                        disabled={addLeadSaving}
+                      >
+                        <Avatar name={m.name} size="sm" />
+                        <div style={{ flex: 1, textAlign: 'left' }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+                            {m.name}
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                            {m.role || 'Lead'}
+                          </div>
+                        </div>
+                        <Plus size={14} style={{ color: '#6366f1' }} />
+                      </button>
+                    ))
+                  }
+                  {allTeamMembers
+                    .filter(m => m.is_deleted !== 1)
+                    .filter(m => LEAD_ROLES.includes((m.role || '').toLowerCase()))
+                    .filter(m => !projectMembers.some(pm => Number(pm.id) === Number(m.id)))
+                    .length === 0 && (
+                    <div style={{
+                      padding: '20px 16px', textAlign: 'center', fontSize: 13,
+                      color: 'var(--text-muted)', background: 'var(--bg-secondary)',
+                      borderRadius: 10, border: '1px dashed var(--border-subtle)',
+                    }}>
+                      No additional leads available. Ask a supervisor to create Lead profiles first.
                     </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                      {m.role || 'Member'}
-                    </div>
-                  </div>
-                  <Plus size={14} style={{ color: 'var(--accent-primary)' }} />
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ─── ADD TEAM MEMBER MODAL ─── */}
+      <AnimatePresence>
+        {addMemberOpen && (
+          <motion.div
+            className="modal-overlay"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => !addMemberSaving && setAddMemberOpen(false)}
+          >
+            <motion.div
+              className="modal-box"
+              initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
+              onClick={e => e.stopPropagation()}
+              style={{ maxWidth: 420 }}
+            >
+              <div className="modal-header">
+                <h2 className="modal-title"><Users size={16} /> Add Team Member</h2>
+                <button className="modal-close-btn" onClick={() => setAddMemberOpen(false)} disabled={addMemberSaving}>
+                  <X size={16} />
                 </button>
-              ))
-            }
-            {allTeamMembers
-              .filter(m => m.is_deleted !== 1)
-              .filter(m => !projectMembers.some(pm => Number(pm.id) === Number(m.id)))
-              .filter(m => !projectSupervisors.some(s => Number(s.id) === Number(m.id)))
-              .length === 0 && (
-              <div style={{
-                padding: '20px 16px', textAlign: 'center', fontSize: 13,
-                color: 'var(--text-muted)', background: 'var(--bg-secondary)',
-                borderRadius: 10, border: '1px dashed var(--border-subtle)',
-              }}>
-                All available team members are already on this project.
               </div>
-            )}
-          </div>
-        </div>
-      </motion.div>
-    </motion.div>
-  )}
-</AnimatePresence>
+              <div className="modal-body">
+                <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 0, marginBottom: 12 }}>
+                  Select a team member to add to this project.
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
+                  {allTeamMembers
+                    .filter(m => m.is_deleted !== 1)
+                    .filter(m => !LEAD_ROLES.includes((m.role || '').toLowerCase()))
+                    .filter(m => !projectMembers.some(pm => Number(pm.id) === Number(m.id)))
+                    .filter(m => !projectSupervisors.some(s => Number(s.id) === Number(m.id)))
+                    .map(m => (
+                      <button
+                        key={m.id}
+                        className="add-picker-row"
+                        onClick={() => handleAddTeamMember(m.id)}
+                        disabled={addMemberSaving}
+                      >
+                        <Avatar name={m.name} size="sm" />
+                        <div style={{ flex: 1, textAlign: 'left' }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+                            {m.name}
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                            {m.role || 'Member'}
+                          </div>
+                        </div>
+                        <Plus size={14} style={{ color: 'var(--accent-primary)' }} />
+                      </button>
+                    ))
+                  }
+                  {allTeamMembers
+                    .filter(m => m.is_deleted !== 1)
+                    .filter(m => !LEAD_ROLES.includes((m.role || '').toLowerCase()))
+                    .filter(m => !projectMembers.some(pm => Number(pm.id) === Number(m.id)))
+                    .filter(m => !projectSupervisors.some(s => Number(s.id) === Number(m.id)))
+                    .length === 0 && (
+                    <div style={{
+                      padding: '20px 16px', textAlign: 'center', fontSize: 13,
+                      color: 'var(--text-muted)', background: 'var(--bg-secondary)',
+                      borderRadius: 10, border: '1px dashed var(--border-subtle)',
+                    }}>
+                      All available team members are already on this project.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
@@ -2101,77 +2089,68 @@ const handleAddTeamMember = async (teamMemberId) => {
           .modal-footer > div { width: 100%; }
           .modal-footer button { flex: 1; }
         }
-          .team-add-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-card);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all 0.14s;
-  padding: 0;
-}
-.team-add-btn:hover {
-  background: var(--accent-primary);
-  color: #fff;
-  border-color: var(--accent-primary);
-}
-.add-picker-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-  cursor: pointer;
-  transition: all 0.14s;
-  color: var(--text-primary);
-}
-.add-picker-row:hover:not(:disabled) {
-  border-color: var(--accent-primary);
-  background: var(--bg-card);
-}
-.add-picker-row:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-  .team-section-lead {
-  background: rgba(99, 102, 241, 0.05);
-  border-color: rgba(99, 102, 241, 0.18);
-}
-.team-section-lead .team-section-count {
-  background: rgba(99, 102, 241, 0.12);
-  color: var(--accent-primary);
-  border-color: rgba(99, 102, 241, 0.25);
-}
-.lead-item {
-  background: rgba(99, 102, 241, 0.05);
-  border: 1px solid rgba(99, 102, 241, 0.15);
-  border-radius: 8px;
-  padding: 6px 10px;
-}
-.lead-item:hover {
-  background: rgba(99, 102, 241, 0.1);
-}
-.lead-badge {
-  display: inline-flex;
-  align-items: center;
-  margin-left: 4px;
-}
-  .team-section-leads {
-  background: rgba(168, 85, 247, 0.05);
-  border-color: rgba(168, 85, 247, 0.18);
-}
-.team-section-leads .team-section-count {
-  background: rgba(168, 85, 247, 0.12);
-  color: #a855f7;
-  border-color: rgba(168, 85, 247, 0.25);
-}
+        .team-add-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 22px;
+          height: 22px;
+          border-radius: 6px;
+          border: 1px solid var(--border-subtle);
+          background: var(--bg-card);
+          color: var(--text-secondary);
+          cursor: pointer;
+          transition: all 0.14s;
+          padding: 0;
+        }
+        .team-add-btn:hover {
+          background: var(--accent-primary);
+          color: #fff;
+          border-color: var(--accent-primary);
+        }
+        .add-picker-row {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 10px 12px;
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-subtle);
+          border-radius: 10px;
+          cursor: pointer;
+          transition: all 0.14s;
+          color: var(--text-primary);
+        }
+        .add-picker-row:hover:not(:disabled) {
+          border-color: var(--accent-primary);
+          background: var(--bg-card);
+        }
+        .add-picker-row:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+        .team-section-lead {
+          background: rgba(99, 102, 241, 0.05);
+          border-color: rgba(99, 102, 241, 0.18);
+        }
+        .team-section-lead .team-section-count {
+          background: rgba(99, 102, 241, 0.12);
+          color: var(--accent-primary);
+          border-color: rgba(99, 102, 241, 0.25);
+        }
+        .lead-item {
+          background: rgba(99, 102, 241, 0.05);
+          border: 1px solid rgba(99, 102, 241, 0.15);
+          border-radius: 8px;
+          padding: 6px 10px;
+        }
+        .lead-item:hover {
+          background: rgba(99, 102, 241, 0.1);
+        }
+        .lead-badge {
+          display: inline-flex;
+          align-items: center;
+          margin-left: 4px;
+        }
         @media (max-width: 480px) {
           .project-body { padding: 10px 12px; gap: 12px; }
           .project-overview-card { padding: 16px; }
