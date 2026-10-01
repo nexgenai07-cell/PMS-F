@@ -6,7 +6,8 @@ import {
   Milestone, X, Pin, PinOff, BarChart2, RefreshCw, Plus, Loader2,
   FolderKanban, Calendar, Flag, AlertCircle, Sparkles, TrendingUp, Award,
   User, Send, Target, Zap, FileText, Clock, Activity, Briefcase, Crown,
-  UserMinus
+  UserMinus,
+  Shield,   
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import toast from "react-hot-toast";
@@ -1421,8 +1422,35 @@ const handleAddTeamMember = async (teamMemberId) => {
   </h4>
 
   <div className="team-sections">
-    {/* ─── SUPERVISORS ─── */}
-    <div className="team-section team-section-supervisors">
+  {/* ─── PROJECT LEAD (Creator) ─── */}
+  {project?.created_by && (
+    <div className="team-section team-section-lead">
+      <div className="team-section-header">
+        <div className="team-section-title">
+          <Shield size={13} style={{ color: '#6366f1' }} />
+          <span>Project Lead</span>
+        </div>
+        <span className="team-section-count">1</span>
+      </div>
+      <div className="team-section-list">
+        <div className="team-member-item lead-item">
+          <Avatar name={project.created_by_name || 'Lead'} size="sm" />
+          <div className="team-member-info">
+            <span className="team-member-name">
+              {project.created_by_name || 'Lead'}
+              <span className="lead-badge" title="Project Lead">
+                <Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} />
+              </span>
+            </span>
+            <span className="team-member-role">Team Lead</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  )}
+
+  {/* ─── SUPERVISORS ─── */}
+  <div className="team-section team-section-supervisors">
       <div className="team-section-header">
         <div className="team-section-title">
           <Crown size={13} style={{ color: '#f59e0b' }} />
@@ -1916,6 +1944,29 @@ const handleAddTeamMember = async (teamMemberId) => {
 .add-picker-row:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+  .team-section-lead {
+  background: rgba(99, 102, 241, 0.05);
+  border-color: rgba(99, 102, 241, 0.18);
+}
+.team-section-lead .team-section-count {
+  background: rgba(99, 102, 241, 0.12);
+  color: var(--accent-primary);
+  border-color: rgba(99, 102, 241, 0.25);
+}
+.lead-item {
+  background: rgba(99, 102, 241, 0.05);
+  border: 1px solid rgba(99, 102, 241, 0.15);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+.lead-item:hover {
+  background: rgba(99, 102, 241, 0.1);
+}
+.lead-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
 }
         @media (max-width: 480px) {
           .project-body { padding: 10px 12px; gap: 12px; }
