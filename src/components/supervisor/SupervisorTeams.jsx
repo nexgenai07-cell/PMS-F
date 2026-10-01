@@ -17,6 +17,11 @@ import userService from '../../services/userService';
 import projectTeamService from '../../services/projectTeamService';
 import { useAuth } from '../../context/AuthContext';
 
+/* ─────────── Roles that are NOT team members ─────────── */
+// Leads & supervisors have their own dedicated pages — they should NOT
+// appear in the Team Members grid even if they have a TeamMember row.
+const NON_MEMBER_ROLES = ['lead', 'member', 'manager', 'admin', 'supervisor'];
+
 /* ─────────── Validation constants ─────────── */
 const LIMITS = {
   name:          { min: 2,   max: 100 },
@@ -117,6 +122,76 @@ const defaultForm = {
   description: ''
 };
 
+/* ─────────── Compute per-member task stats locally ─────────── */
+// Source-of-truth fallback so we never show 0 when the backend
+// /stats endpoint is missing or incomplete.
+function computeTaskStatsForMember(memberId, allTasks) {
+  const numId = Number(memberId);
+  const memberTasks = (allTasks || []).filter(t => {
+    const assignTo = t.assign_to ?? t.assignedTo;
+    return Number(assignTo) === numId;
+  });
+
+  const totalTasks = memberTasks.length;
+  const completedTasks = memberTasks.filter(t => {
+    const s = (t.status || '').toLowerCase();
+    return s === 'done' || s === 'completed';
+  }).length;
+  const inProgressTasks = memberTasks.filter(t => {
+    const s = (t.status || '').toLowerCase();
+    return s === 'in_progress' || s === 'in-progress' || s === 'review';
+  }).length;
+  const todoTasks = memberTasks.filter(t => {
+    const s = (t.status || '').toLowerCase();
+    return s === 'todo' || s === 'pending';
+  }).length;
+
+  const completionRate = totalTasks > 0
+    ? Math.round((completedTasks / totalTasks) * 100)
+    : 0;
+
+  // Average per-task progress (0-100)
+  const avgProgress = totalTasks > 0
+    ? Math.round(
+        memberTasks.reduce((sum, t) => {
+          const p = Number(t.progress);
+          if (Number.isFinite(p)) return sum + p;
+          const s = (t.status || '').toLowerCase();
+          if (s === 'done' || s === 'completed') return sum + 100;
+          if (s === 'review') return sum + 75;
+          if (s === 'in_progress' || s === 'in-progress') return sum + 50;
+          return sum;
+        }, 0) / totalTasks
+      )
+    : 0;
+
+  // On-time rate: completed tasks that had a due_date and were completed by it
+  const completedWithDue = memberTasks.filter(t => {
+    const s = (t.status || '').toLowerCase();
+    return (s === 'done' || s === 'completed') && (t.due_date || t.deadline);
+  });
+  const onTimeTasks = completedWithDue.filter(t => {
+    const due = new Date(t.due_date || t.deadline);
+    const updated = new Date(t.updated_at || t.update_last || t.created_at || Date.now());
+    return updated <= due;
+  }).length;
+  const onTimeRate = completedWithDue.length > 0
+    ? Math.round((onTimeTasks / completedWithDue.length) * 100)
+    : 0;
+
+  return {
+    totalTasks,
+    completedTasks,
+    inProgressTasks,
+    todoTasks,
+    completionRate,
+    onTimeRate,
+    avgProgress,
+    projectsCount: new Set(memberTasks.map(t => Number(t.p_id || t.p)).filter(Boolean)).size,
+    tasks: memberTasks,
+  };
+}
+
 export default function SupervisorTeams() {
   const { user } = useAuth();
   const { onMenuClick } = useOutletContext();
@@ -166,10 +241,6 @@ export default function SupervisorTeams() {
   /* ─────────── Fetch data ─────────── */
   useEffect(() => { fetchData(); }, []);
 
-  useEffect(() => {
-    if (members.length > 0) fetchMemberStats();
-  }, [members]);
-
   const fetchData = async () => {
     try {
       setLoading(true);
@@ -179,48 +250,103 @@ export default function SupervisorTeams() {
         userService.getUsers(),
       ]);
 
-      let membersList = membersData?.data || membersData || [];
+      let rawMembers = membersData?.data || membersData || [];
       const tasksList = tasksData?.data || tasksData || [];
       const usersList = usersData?.data || usersData || [];
 
-      if (!Array.isArray(membersList)) membersList = [];
+      if (!Array.isArray(rawMembers)) rawMembers = [];
 
-      const activeMembers = membersList.filter(m => m.is_deleted !== 1);
+      // ═══════════════════════════════════════════════════════════
+      // DIAGNOSTIC LOGS (remove once stable)
+      // ═══════════════════════════════════════════════════════════
+      console.log('🔍 [SupervisorTeams] rawMembers:', rawMembers.length);
+      console.log('🔍 [SupervisorTeams] users:', usersList.length);
+      console.log('🔍 [SupervisorTeams] tasks:', tasksList.length);
+      console.log('🔍 [SupervisorTeams] task assign_to values:',
+        tasksList.map(t => ({
+          t_id: t.t_id || t.id,
+          title: t.title,
+          assign_to: t.assign_to ?? t.assignedTo ?? null,
+        }))
+      );
 
-      setMembers(activeMembers);
+      // ═══════════════════════════════════════════════════════════
+      // FILTER: only show real team members.
+      // Exclude any TeamMember whose linked User has a role of
+      // lead/member/manager/admin/supervisor.
+      // ═══════════════════════════════════════════════════════════
+      const activeMembers = rawMembers.filter(m => m.is_deleted !== 1);
+
+      const filteredMembers = activeMembers.filter(m => {
+        const memberName = (m.name || '').toLowerCase().trim();
+        const memberEmail = (m.email || '').toLowerCase().trim();
+
+        const linkedUser = usersList.find(u => {
+          const uEmail = (u.email || '').toLowerCase().trim();
+          const uName = (u.u_name || u.name || '').toLowerCase().trim();
+          if (memberEmail && uEmail && memberEmail === uEmail) return true;
+          if (memberName && uName && memberName === uName) return true;
+          return false;
+        });
+
+        if (!linkedUser) return true;                 // pure team member → keep
+        const role = (linkedUser.role || '').toLowerCase();
+        return !NON_MEMBER_ROLES.includes(role);      // exclude lead/supervisor/etc
+      });
+
+      setMembers(filteredMembers);
       setTasks(tasksList);
       setUsers(usersList);
 
+      // ═══════════════════════════════════════════════════════════
+      // Pre-compute local stats from the task list (source of truth),
+      // then try to enrich with backend stats.
+      // ═══════════════════════════════════════════════════════════
+      const localStats = {};
+      filteredMembers.forEach(m => {
+        localStats[m.id] = computeTaskStatsForMember(m.id, tasksList);
+      });
+
+      const mergedStats = { ...localStats };
+      await Promise.all(
+        filteredMembers.map(async (member) => {
+          try {
+            const response = await teamService.getTeamMemberStats(member.id);
+            const backend = response?.data || response || {};
+            const local = localStats[member.id];
+
+            mergedStats[member.id] = {
+              totalTasks:      Number(backend.totalTasks)      || local.totalTasks      || 0,
+              completedTasks:  Number(backend.completedTasks)  || local.completedTasks  || 0,
+              inProgressTasks: Number(backend.inProgressTasks) || local.inProgressTasks || 0,
+              todoTasks:       Number(backend.todoTasks)       || local.todoTasks       || 0,
+              completionRate:  Number(backend.completionRate)  || local.completionRate  || 0,
+              onTimeRate:      Number(backend.onTimeRate)      || local.onTimeRate      || 0,
+              avgProgress:     Number(backend.avgProgress)     || local.avgProgress     || 0,
+              projectsCount:   Number(backend.projectsCount)   || local.projectsCount   || 0,
+              tasks: local.tasks,
+            };
+          } catch (err) {
+            // keep local stats on error
+          }
+        })
+      );
+
+      setMemberStatsMap(mergedStats);
+
       console.log('📊 Tasks loaded:', tasksList.length);
-      console.log('📊 Active Members loaded:', activeMembers.length);
+      console.log('📊 Active Members (after filter):', filteredMembers.length);
+      console.log('📊 First member stats:', mergedStats[filteredMembers[0]?.id]);
     } catch (error) {
       console.error('Error fetching data:', error);
       toast.error('Failed to load team members');
       setMembers([]);
       setTasks([]);
       setUsers([]);
+      setMemberStatsMap({});
     } finally {
       setLoading(false);
       setRefreshing(false);
-    }
-  };
-
-  const fetchMemberStats = async () => {
-    try {
-      const statsMap = {};
-      for (const member of members) {
-        try {
-          const response = await teamService.getTeamMemberStats(member.id);
-          const statsData = response?.data || response || {};
-          statsMap[member.id] = statsData;
-        } catch (err) {
-          console.error(`Error fetching stats for member ${member.id}:`, err);
-          statsMap[member.id] = {};
-        }
-      }
-      setMemberStatsMap(statsMap);
-    } catch (error) {
-      console.error('Error fetching member stats:', error);
     }
   };
 
@@ -241,7 +367,6 @@ export default function SupervisorTeams() {
       for (const entry of memberEntries) {
         if (entry.pt_id) {
           await projectTeamService.removeMemberFromProject(entry.pt_id);
-          console.log(`✅ Removed PTeam entry ${entry.pt_id} for member ${memberId}`);
         }
       }
       return memberEntries.length;
@@ -251,31 +376,13 @@ export default function SupervisorTeams() {
     }
   };
 
+  /* ─────────── Stats accessor (never returns 0 when data exists) ─────────── */
   const getMemberStats = (memberId) => {
-    const cachedStats = memberStatsMap[memberId];
-    if (cachedStats && Object.keys(cachedStats).length > 0) return cachedStats;
-
-    const numericMemberId = Number(memberId);
-    const memberTasks = tasks.filter(t => {
-      const assignTo = t.assign_to || t.assignedTo;
-      return Number(assignTo) === numericMemberId;
-    });
-
-    const totalTasks = memberTasks.length;
-    const completedTasks = memberTasks.filter(t => t.status === 'done' || t.status === 'completed').length;
-    const inProgressTasks = memberTasks.filter(t => t.status === 'in_progress' || t.status === 'in-progress' || t.status === 'review').length;
-    const todoTasks = memberTasks.filter(t => t.status === 'todo' || t.status === 'pending').length;
-
-    return {
-      totalTasks,
-      completedTasks,
-      inProgressTasks,
-      todoTasks,
-      completionRate: totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0,
-      onTimeRate: 0,
-      avgProgress: 0,
-      tasks: memberTasks
-    };
+    const numId = Number(memberId);
+    const cached = memberStatsMap[numId] || memberStatsMap[memberId];
+    if (cached) return cached;
+    // Fallback: compute fresh from the task list
+    return computeTaskStatsForMember(numId, tasks);
   };
 
   const getTasksForMember = (memberId) => {
@@ -294,7 +401,6 @@ export default function SupervisorTeams() {
     if (!name) return '?';
     return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
   };
-
 
   /* ─────────── Form validation ─────────── */
   const formErrors = useMemo(() => ({
@@ -323,52 +429,54 @@ export default function SupervisorTeams() {
 
   /* ─────────── Add member ─────────── */
   const handleAdd = async () => {
-  setFormSubmitAttempted(true);
+    setFormSubmitAttempted(true);
 
-  if (!isFormValid) {
-    toast.error('Please fix the highlighted errors before saving');
-    return;
-  }
-
-  try {
-    setSavingForm(true);
-
-    const { name, role, email, qualification, experience, skills, description } = form;
-
-    // Just add a TeamMember record — no User creation, no temp password.
-    const response = await teamService.addTeamMember({
-      name: name.trim(),
-      role: role.trim(),
-      email: email.trim().toLowerCase(),
-      qualification: qualification.trim(),
-      experience: parseInt(experience) || 0,
-      skills: skills.trim(),
-      description: description.trim(),
-      added_by: user?.id || user?.u_id || 1,
-    });
-
-    const newMember = response?.data || response;
-
-    if (newMember && newMember.id) {
-      setMembers(prev => [newMember, ...prev]);
-      setShowAdd(false);
-      resetFormState();
-      toast.success(`Team member "${name.trim()}" added successfully`);
-      await fetchMemberStats();
-    } else {
-      toast.error('Failed to add team member');
+    if (!isFormValid) {
+      toast.error('Please fix the highlighted errors before saving');
+      return;
     }
-  } catch (error) {
-    console.error('Error adding member:', error);
-    const rawMsg = error?.response?.data?.message ||
-                   error?.response?.data?.detail ||
-                   error?.message;
-    const errorMsg = typeof rawMsg === 'string' ? rawMsg : 'Failed to add team member';
-    toast.error(errorMsg);
-  } finally {
-    setSavingForm(false);
-  }
-};
+
+    try {
+      setSavingForm(true);
+
+      const { name, role, email, qualification, experience, skills, description } = form;
+
+      const response = await teamService.addTeamMember({
+        name: name.trim(),
+        role: role.trim(),
+        email: email.trim().toLowerCase(),
+        qualification: qualification.trim(),
+        experience: parseInt(experience) || 0,
+        skills: skills.trim(),
+        description: description.trim(),
+        added_by: user?.id || user?.u_id || 1,
+      });
+
+      const newMember = response?.data || response;
+
+      if (newMember && newMember.id) {
+        setMembers(prev => [newMember, ...prev]);
+        setMemberStatsMap(prev => ({
+          ...prev,
+          [newMember.id]: computeTaskStatsForMember(newMember.id, tasks),
+        }));
+        setShowAdd(false);
+        resetFormState();
+        toast.success(`Team member "${name.trim()}" added successfully`);
+      } else {
+        toast.error('Failed to add team member');
+      }
+    } catch (error) {
+      console.error('Error adding member:', error);
+      const rawMsg = error?.response?.data?.message ||
+                     error?.response?.data?.detail ||
+                     error?.message;
+      const errorMsg = typeof rawMsg === 'string' ? rawMsg : 'Failed to add team member';
+      toast.error(errorMsg);
+    } finally {
+      setSavingForm(false);
+    }
+  };
 
   /* ─────────── Edit member ─────────── */
   const openEdit = (member) => {
@@ -417,7 +525,6 @@ export default function SupervisorTeams() {
       setSelected(null);
       resetFormState();
       toast.success('Member updated successfully');
-      await fetchMemberStats();
     } catch (error) {
       console.error('Error updating member:', error);
       const rawMsg = error?.response?.data?.message ||
@@ -692,8 +799,8 @@ export default function SupervisorTeams() {
                 <option value="full stack">🔄 Full Stack</option>
                 <option value="designer">✏️ Designer</option>
                 <option value="developer">💻 Developer</option>
-                <option value="lead">🚀 Lead</option>
-                <option value="manager">📊 Manager</option>
+                <option value="qa">🧪 QA</option>
+                <option value="devops">🔧 DevOps</option>
               </select>
             </div>
 
@@ -1047,10 +1154,10 @@ export default function SupervisorTeams() {
                   </div>
 
                   <div className="mm-section">
-                    <h4 className="mm-section-title"><Briefcase size={14} /> Current Projects</h4>
+                    <h4 className="mm-section-title"><Briefcase size={14} /> Current Tasks</h4>
                     <div className="mm-project-list">
                       {currentProjects.length === 0 ? (
-                        <div className="mm-no-data">No active projects</div>
+                        <div className="mm-no-data">No active tasks</div>
                       ) : (
                         currentProjects.map((p, i) => (
                           <div key={`proj-${i}`} className="mm-project-item">
@@ -1069,10 +1176,10 @@ export default function SupervisorTeams() {
                   </div>
 
                   <div className="mm-section">
-                    <h4 className="mm-section-title"><CheckCircle2 size={14} /> Completed Projects</h4>
+                    <h4 className="mm-section-title"><CheckCircle2 size={14} /> Completed Tasks</h4>
                     <div className="mm-project-list">
                       {completedProjects.length === 0 ? (
-                        <div className="mm-no-data">No completed projects</div>
+                        <div className="mm-no-data">No completed tasks</div>
                       ) : (
                         completedProjects.map((p, i) => (
                           <div key={`hist-${i}`} className="mm-project-item completed">
