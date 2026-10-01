@@ -313,38 +313,34 @@ export default function LeadProjectDetail() {
   const isEditTaskValid = Object.values(editTaskErrors).every(e => e === '');
 
   /* ─── Team categorization ─── */
-  const supervisorIdSet = useMemo(
-    () => new Set(asArray(projectSupervisors).map(s => Number(s.id))),
-    [projectSupervisors]
-  );
+  // Supervisors are User IDs; use s.userId for consistency
+const supervisorIdSet = useMemo(
+  () => new Set(asArray(projectSupervisors).map(s => Number(s.userId))),
+  [projectSupervisors]
+);
 
-  // Leads = project members (from PTeam) whose role is member/lead,
-  //         excluding the creator and excluding supervisors.
-  const projectLeadsDerived = useMemo(() => {
-    if (!project) return [];
-    const creatorId = Number(project.created_by);
-    return asArray(projectMembers).filter(m => {
-      const role = (m.role || '').toLowerCase();
-      if (!LEAD_ROLES.includes(role)) return false;
-      if (Number(m.id) === creatorId) return false;
-      if (supervisorIdSet.has(Number(m.id))) return false;
-      return true;
-    });
-  }, [projectMembers, project, supervisorIdSet]);
+const projectLeadsDerived = useMemo(() => {
+  if (!project) return [];
+  const creatorId = Number(project.created_by);
+  return asArray(projectMembers).filter(m => {
+    const role = (m.role || '').toLowerCase();
+    if (!LEAD_ROLES.includes(role)) return false;
+    if (Number(m.userId) === creatorId) return false;
+    if (supervisorIdSet.has(Number(m.userId))) return false;
+    return true;
+  });
+}, [projectMembers, project, supervisorIdSet]);
 
-  const projectLeadsFinal = asArray(projectLeads).length > 0 ? projectLeads : projectLeadsDerived;
-
-  // Regular Members = project members who aren't supervisors and aren't leads.
-  const regularMembers = useMemo(
-    () => asArray(projectMembers).filter(m => {
-      const role = (m.role || '').toLowerCase();
-      if (SUPERVISOR_ROLES.includes(role)) return false;
-      if (LEAD_ROLES.includes(role)) return false;
-      if (supervisorIdSet.has(Number(m.id))) return false;
-      return true;
-    }),
-    [projectMembers, supervisorIdSet]
-  );
+const regularMembers = useMemo(
+  () => asArray(projectMembers).filter(m => {
+    const role = (m.role || '').toLowerCase();
+    if (SUPERVISOR_ROLES.includes(role)) return false;
+    if (LEAD_ROLES.includes(role)) return false;
+    if (supervisorIdSet.has(Number(m.userId))) return false;
+    return true;
+  }),
+  [projectMembers, supervisorIdSet]
+);
 
   const assignableMembers = useMemo(
     () => asArray(projectMembers).filter(m => m.tmId != null),
@@ -518,45 +514,49 @@ export default function LeadProjectDetail() {
       console.log('✅ memberEntries:', memberEntries.length, memberEntries);
 
       // Step 6: parse supervisors.
-      const supervisorIds = asArray(projectItem?.supervisors).map(Number);
-      const supervisorNames = asArray(projectItem?.supervisor_names);
+const supervisorIds = asArray(projectItem?.supervisors).map(Number);
+const supervisorNames = asArray(projectItem?.supervisor_names);
 
-      const supervisorEntries = supervisorIds
-        .map((sid, idx) => {
-          if (!Number.isFinite(sid)) return null;
-          const userObj = usersList.find(u => Number(u.id) === Number(sid));
-          return {
-            id: sid,
-            userId: sid,
-            name: supervisorNames[idx] || userObj?.u_name || userObj?.name || `User ${sid}`,
-            email: userObj?.email || '',
-            role: (userObj?.role || 'supervisor').toLowerCase(),
-          };
-        })
-        .filter(Boolean);
+const supervisorEntries = supervisorIds
+  .map((sid, idx) => {
+    if (!Number.isFinite(sid)) return null;
+    const userObj = usersList.find(u => Number(u.id) === Number(sid));
+    return {
+      id: sid,
+      userId: sid,
+      name: supervisorNames[idx] || userObj?.u_name || userObj?.name || `User ${sid}`,
+      email: userObj?.email || '',
+      role: (userObj?.role || 'supervisor').toLowerCase(),
+    };
+  })
+  .filter(Boolean);
 
-      console.log('✅ supervisorEntries:', supervisorEntries);
-      setProjectSupervisors(supervisorEntries);
+console.log('✅ supervisorEntries:', supervisorEntries);
+setProjectSupervisors(supervisorEntries);
 
-      // Step 7: build the flat projectMembers list (supervisors + members).
-      const supIdSet = new Set(supervisorEntries.map(s => Number(s.id)));
-      const membersWithoutSupervisors = memberEntries.filter(m => !supIdSet.has(Number(m.id)));
-      const allMembers = [...supervisorEntries, ...membersWithoutSupervisors];
-      setProjectMembers(allMembers);
-      console.log('✅ projectMembers:', allMembers.length);
+// Step 7: build the flat projectMembers list (supervisors + members).
+// Use userId (User.id) for comparisons, because supervisors come from
+// the M2M to User while PTeam members are TeamMember rows.
+const supUserIdSet = new Set(supervisorEntries.map(s => Number(s.userId)));
+const membersWithoutSupervisors = memberEntries.filter(
+  m => !supUserIdSet.has(Number(m.userId))
+);
+const allMembers = [...supervisorEntries, ...membersWithoutSupervisors];
+setProjectMembers(allMembers);
+console.log('✅ projectMembers:', allMembers.length);
 
-      // Step 8: extract leads (project members with member/lead role,
-      //          excluding the creator and supervisors).
-      const creatorId = Number(projectItem?.created_by);
-      const leadEntries = memberEntries.filter(m => {
-        const role = (m.role || '').toLowerCase();
-        if (!LEAD_ROLES.includes(role)) return false;
-        if (Number(m.id) === creatorId) return false;
-        if (supIdSet.has(Number(m.id))) return false;
-        return true;
-      });
-      setProjectLeads(leadEntries);
-      console.log('✅ projectLeads:', leadEntries);
+// Step 8: extract leads (project members with member/lead role,
+//          excluding the creator and supervisors).
+const creatorId = Number(projectItem?.created_by);
+const leadEntries = memberEntries.filter(m => {
+  const role = (m.role || '').toLowerCase();
+  if (!LEAD_ROLES.includes(role)) return false;
+  if (Number(m.userId) === creatorId) return false;    // ← FIXED: use userId
+  if (supUserIdSet.has(Number(m.userId))) return false; // ← FIXED: use userId
+  return true;
+});
+setProjectLeads(leadEntries);
+console.log('✅ projectLeads:', leadEntries);
 
       // Step 9: map tasks with computed progress.
       const mappedTasks = projectTasks.map(t => ({
