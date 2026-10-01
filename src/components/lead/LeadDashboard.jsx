@@ -88,7 +88,7 @@ const HeroRing = ({ value }) => {
   const C = 2 * Math.PI * R;
   const offset = C - (Math.min(Number(value) || 0, 100) / 100) * C;
   return (
-    <div className="hero-ring" role="img" aria-label={`${value}% complete`}>
+    <div className="hero-ring" role="img" aria-label={`${value}% average progress`}>
       <svg viewBox="0 0 100 100" className="hero-ring-svg">
         <circle className="hero-ring-track" cx="50" cy="50" r={R} />
         <circle
@@ -103,7 +103,7 @@ const HeroRing = ({ value }) => {
       </svg>
       <div className="hero-ring-label">
         <span className="hero-ring-value">{value}%</span>
-        <span className="hero-ring-text">Done</span>
+        <span className="hero-ring-text">Progress</span>   {/* ← was "Done" */}
       </div>
     </div>
   );
@@ -857,14 +857,15 @@ export default function LeadDashboard() {
   const [activeIndex, setActiveIndex] = useState(null);
   const [projectStatsMap, setProjectStatsMap] = useState({});
   const [stats, setStats] = useState({
-    totalProjects: 0,
-    totalTasks: 0,
-    completedTasks: 0,
-    inProgressTasks: 0,
-    teamMembers: 0,
-    onTimeRate: 0,
-    completionRate: 0
-  });
+  totalProjects: 0,
+  totalTasks: 0,
+  completedTasks: 0,
+  inProgressTasks: 0,
+  teamMembers: 0,
+  onTimeRate: 0,
+  completionRate: 0,
+  avgProgress: 0,    // ← NEW
+});
 
   // Fetch data
   useEffect(() => {
@@ -940,27 +941,33 @@ export default function LeadDashboard() {
       setTasks(userTasks);
       setTeamMembers(membersList);
 
-      // ✅ Get stats for each project using the stats endpoint
       let totalTasks = 0;
-      let completedTasks = 0;
-      let inProgressTasks = 0;
-      let totalCompletion = 0;
-      const statsMap = {};
+let completedTasks = 0;
+let inProgressTasks = 0;
+let totalProgressWeighted = 0;   // sum of (avgProgress × taskCount)
+let totalTaskCountForAvg = 0;    // denominator for the weighted average
+const statsMap = {};
 
-      for (const project of userProjects) {
-        const projectId = Number(project.p_id || project.id);
-        try {
-          const statsResponse = await projectService.getProjectStats(projectId);
-          const stats = statsResponse?.data || {};
-          statsMap[projectId] = stats;
-          totalTasks += stats.totalTasks || 0;
-          completedTasks += stats.completedTasks || 0;
-          inProgressTasks += stats.inProgressTasks || 0;
-          totalCompletion += stats.completionRate || 0;
-        } catch (error) {
-          console.error(`Error fetching stats for project ${projectId}:`, error);
-        }
-      }
+for (const project of userProjects) {
+  const projectId = Number(project.p_id || project.id);
+  try {
+    const statsResponse = await projectService.getProjectStats(projectId);
+    const stats = statsResponse?.data || {};
+    statsMap[projectId] = stats;
+
+    const projectTotalTasks = stats.totalTasks || 0;
+    totalTasks += projectTotalTasks;
+    completedTasks += stats.completedTasks || 0;
+    inProgressTasks += stats.inProgressTasks || 0;
+
+    // Weighted sum: bigger projects pull the average more,
+    // exactly like the backend does per-project.
+    totalProgressWeighted += (Number(stats.avgProgress) || 0) * projectTotalTasks;
+    totalTaskCountForAvg += projectTotalTasks;
+  } catch (error) {
+    console.error(`Error fetching stats for project ${projectId}:`, error);
+  }
+}
 
       setProjectStatsMap(statsMap);
 
@@ -973,9 +980,15 @@ export default function LeadDashboard() {
         memberIds.has(Number(m.id))
       );
 
-      const completionRate = userProjects.length > 0 
-        ? Math.round(totalCompletion / userProjects.length) 
-        : 0;
+      const avgProgress = totalTaskCountForAvg > 0
+  ? Math.round(totalProgressWeighted / totalTaskCountForAvg)
+  : 0;
+
+// Keep completionRate around too — it's still used to show
+// "X% of tasks are fully done" in the trend badge.
+const completionRate = totalTasks > 0
+  ? Math.round((completedTasks / totalTasks) * 100)
+  : 0;
       
       // Calculate on-time rate
       const completedTasksList = userTasks.filter(t => 
@@ -996,14 +1009,15 @@ export default function LeadDashboard() {
       });
 
       setStats({
-        totalProjects: userProjects.length,
-        totalTasks: totalTasks,
-        completedTasks: completedTasks,
-        inProgressTasks: inProgressTasks,
-        teamMembers: uniqueMembers.length,
-        onTimeRate,
-        completionRate
-      });
+  totalProjects: userProjects.length,
+  totalTasks,
+  completedTasks,
+  inProgressTasks,
+  teamMembers: uniqueMembers.length,
+  onTimeRate,
+  completionRate,
+  avgProgress,       // ← NEW
+});
 
     } catch (error) {
       console.error('❌ Failed to fetch dashboard data:', error);
@@ -1021,9 +1035,12 @@ export default function LeadDashboard() {
   };
 
   const getProjectProgress = (projectId) => {
-    const stats = projectStatsMap[projectId];
-    return stats?.completionRate || 0;
-  };
+  const s = projectStatsMap[projectId];
+  // Prefer the true per-task average; fall back to completion rate.
+  const avg = Number(s?.avgProgress);
+  if (Number.isFinite(avg)) return Math.round(avg);
+  return Math.round(Number(s?.completionRate) || 0);
+};
 
   const getProjectMembers = (projectId) => {
     const projectTasks = tasks.filter(t => Number(t.p_id || t.p) === Number(projectId));
@@ -1123,7 +1140,7 @@ export default function LeadDashboard() {
             Managing <b>{stats.totalProjects}</b> projects · <b>{stats.totalTasks}</b> tasks · <b>{stats.teamMembers}</b> team members
           </p>
         </div>
-        <HeroRing value={stats.completionRate} />
+        <HeroRing value={stats.avgProgress} />
       </section>
 
       {/* ─── QUICK STATS ─── */}
@@ -1193,12 +1210,12 @@ export default function LeadDashboard() {
           </div>
         </div>
         <div className="stat-card-mini anim" style={{ '--d': '310ms' }}>
-          <TrendingUp size={16} className="stat-mini-icon" />
-          <div>
-            <span className="stat-mini-value"><AnimatedNumber value={stats.completionRate} suffix="%" /></span>
-            <span className="stat-mini-label">Completion Rate</span>
-          </div>
-        </div>
+  <TrendingUp size={16} className="stat-mini-icon" />
+  <div>
+    <span className="stat-mini-value"><AnimatedNumber value={stats.avgProgress} suffix="%" /></span>
+    <span className="stat-mini-label">Average Progress</span>
+  </div>
+</div>
         <div className="stat-card-mini anim" style={{ '--d': '340ms' }}>
           <Calendar size={16} className="stat-mini-icon" />
           <div>
