@@ -1062,34 +1062,24 @@ export default function SupervisorDashboard() {
 
       console.log('👤 Current user:', userName, 'TeamMember ID:', teamMemberId);
 
-      // Projects created by this user
-      const createdProjects = allProjects.filter(p =>
-        Number(p.created_by) === currentUserId
-      );
-      const createdProjectIds = createdProjects.map(p => Number(p.p_id || p.id));
-
-      // Projects where this user is assigned to tasks
-      const assignedProjectIds = new Set();
-      allTasks.forEach(t => {
-        const assignTo = Number(t.assign_to || t.assignedTo);
-        if (assignTo === teamMemberId) {
-          assignedProjectIds.add(Number(t.p_id || t.p));
-        }
+      // ═══════════════ PROJECT VISIBILITY (FIXED) ═══════════════
+      // A supervisor should see projects where they are:
+      //  1. The creator (created_by)
+      //  2. Listed in the supervisors array
+      //  3. Assigned to a task within the project (via PTeam)
+      // ═══════════════════════════════════════════════════════════
+      const userProjects = allProjects.filter(p => {
+        const isCreator = Number(p.created_by) === currentUserId;
+        const isSupervisor = Array.isArray(p.supervisors) &&
+          p.supervisors.map(Number).includes(currentUserId);
+        return isCreator || isSupervisor;
       });
-      allTasks.forEach(t => {
-        const assigneeName = (t.assign_to_name || '').toLowerCase().trim();
-        if (assigneeName === userName) {
-          assignedProjectIds.add(Number(t.p_id || t.p));
-        }
-      });
+      
+      const userProjectIds = userProjects.map(p => Number(p.p_id || p.id));
 
-      const allProjectIds = [...new Set([...createdProjectIds, ...assignedProjectIds])];
-
-      const userProjects = allProjects.filter(p =>
-        allProjectIds.includes(Number(p.p_id || p.id))
-      );
+      // Now get all tasks for these projects
       const userTasks = allTasks.filter(t =>
-        allProjectIds.includes(Number(t.p_id || t.p))
+        userProjectIds.includes(Number(t.p_id || t.p))
       );
 
       console.log('📊 Projects found:', userProjects.length);
