@@ -58,9 +58,13 @@ import userService from "../../services/userService";
 
 /* ─────────── Shared helpers (kept in sync with Project pages) ─────────── */
 function computeTaskProgress(task) {
-  const raw = Number(task.progress);
-  if (Number.isFinite(raw) && raw > 0) return raw;
-  const status = (task.status || '').toLowerCase();
+  // Trust the stored value first — even 0 is legitimate.
+  if (task?.progress !== undefined && task?.progress !== null) {
+    const raw = Number(task.progress);
+    if (Number.isFinite(raw)) return raw;
+  }
+  // Fallback only when the backend doesn't send progress at all.
+  const status = (task?.status || '').toLowerCase();
   if (status === 'done' || status === 'completed') return 100;
   if (status === 'review') return 75;
   if (status === 'in_progress' || status === 'in-progress') return 50;
@@ -178,7 +182,6 @@ const buildTrendData = (allTasks, range) => {
 
 /* ─────────── Pure UI components (no logic changes) ─────────── */
 
-// Smooth count-up animation for numbers — purely visual
 const AnimatedNumber = ({ value, duration = 900, decimals = 0, suffix = "" }) => {
   const [display, setDisplay] = useState(0);
   const fromRef = useRef(0);
@@ -190,7 +193,7 @@ const AnimatedNumber = ({ value, duration = 900, decimals = 0, suffix = "" }) =>
     let raf;
     const step = (now) => {
       const t = Math.min((now - start) / duration, 1);
-      const eased = 1 - Math.pow(1 - t, 3); // easeOutCubic
+      const eased = 1 - Math.pow(1 - t, 3);
       const current = from + (to - from) * eased;
       setDisplay(current.toFixed(decimals));
       if (t < 1) {
@@ -206,13 +209,12 @@ const AnimatedNumber = ({ value, duration = 900, decimals = 0, suffix = "" }) =>
   return <>{display}{suffix}</>;
 };
 
-// Self-contained animated ring for the hero (doesn't depend on ProgressRing internals)
 const HeroRing = ({ value }) => {
   const R = 42;
   const C = 2 * Math.PI * R;
   const offset = C - (Math.min(Number(value) || 0, 100) / 100) * C;
   return (
-    <div className="hero-ring" role="img" aria-label={`${value}% complete`}>
+    <div className="hero-ring" role="img" aria-label={`${value}% average progress`}>
       <svg viewBox="0 0 100 100" className="hero-ring-svg">
         <circle className="hero-ring-track" cx="50" cy="50" r={R} />
         <circle
@@ -227,7 +229,7 @@ const HeroRing = ({ value }) => {
       </svg>
       <div className="hero-ring-label">
         <span className="hero-ring-value">{value}%</span>
-        <span className="hero-ring-text">Done</span>
+        <span className="hero-ring-text">Progress</span>
       </div>
     </div>
   );
@@ -311,14 +313,12 @@ const dashboardCss = `
 
   .spin { animation: spin 1s linear infinite; }
 
-  /* ── Entrance animation utility ── */
   .anim {
     opacity: 0;
     animation: fadeUp 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
     animation-delay: var(--d, 0ms);
   }
 
-  /* ── Top progress bar (during refresh) ── */
   .refresh-progress {
     position: fixed;
     top: 0; left: 0; right: 0;
@@ -338,7 +338,6 @@ const dashboardCss = `
     animation: refreshSlide 1s ease-in-out infinite;
   }
 
-  /* ── Skeleton loading ── */
   .skeleton {
     position: relative;
     overflow: hidden;
@@ -362,7 +361,6 @@ const dashboardCss = `
   .sk-chart { height: 264px; border-radius: 16px; margin-bottom: 20px; }
   .sk-bottom { height: 320px; border-radius: 16px; }
 
-  /* ── Greeting ── */
   .greeting-text { display: flex; align-items: center; gap: 8px; }
   .greeting-wave {
     display: inline-block;
@@ -372,7 +370,6 @@ const dashboardCss = `
   }
   .refresh-btn { display: flex; align-items: center; gap: 6px; }
 
-  /* ── HERO ── */
   .dashboard-hero {
     position: relative;
     overflow: hidden;
@@ -446,7 +443,6 @@ const dashboardCss = `
   .hero-ring-value { font-size: 20px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
   .hero-ring-text { font-size: 9px; text-transform: uppercase; letter-spacing: 1.2px; opacity: 0.85; margin-top: 3px; }
 
-  /* ── STATS GRID ── */
   .stats-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -554,7 +550,6 @@ const dashboardCss = `
   .stat-card-trend.down { background: rgba(248, 113, 113, 0.12); color: #f87171; }
   .stat-card-trend.flat { background: rgba(148, 163, 184, 0.12); color: #94a3b8; }
 
-  /* ── SECONDARY STATS ── */
   .stats-grid-secondary {
     display: grid;
     grid-template-columns: repeat(5, 1fr);
@@ -589,7 +584,6 @@ const dashboardCss = `
   }
   .stat-mini-label { font-size: 11px; color: var(--text-muted); }
 
-  /* ── CHART CARDS ── */
   .charts-row {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -685,7 +679,6 @@ const dashboardCss = `
     color: var(--text-muted);
   }
 
-  /* ── PIE CHART ── */
   .pie-chart-wrapper { display: flex; align-items: center; gap: 20px; }
   .pie-chart-container { position: relative; width: 180px; height: 180px; flex-shrink: 0; }
   .pie-center-label {
@@ -733,7 +726,6 @@ const dashboardCss = `
   .pie-legend-value { font-size: 12px; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
   .pie-legend-empty { font-size: 12px; color: var(--text-muted); padding: 8px 0; }
 
-  /* ── TOOLTIP ── */
   .chart-tooltip {
     background: var(--bg-card);
     border: 1px solid var(--border-default);
@@ -760,7 +752,6 @@ const dashboardCss = `
   }
   .tt-dot { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
 
-  /* ── BOTTOM SECTION ── */
   .dashboard-bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 
   .health-card, .activity-card {
@@ -880,7 +871,6 @@ const dashboardCss = `
   .health-badges { display: flex; gap: 6px; flex-shrink: 0; }
   .health-empty { text-align: center; padding: 30px 0; color: var(--text-muted); font-size: 13px; }
 
-  /* ── ACTIVITY TIMELINE ── */
   .activity-badge {
     display: inline-flex;
     align-items: center;
@@ -961,7 +951,6 @@ const dashboardCss = `
   .activity-time { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
   .activity-empty { text-align: center; padding: 30px 0; color: var(--text-muted); font-size: 13px; }
 
-  /* ── RESPONSIVE ── */
   @media (max-width: 1200px) {
     .stats-grid-secondary { grid-template-columns: repeat(3, 1fr); }
   }
@@ -982,7 +971,6 @@ const dashboardCss = `
     .health-badges { flex-direction: column; align-items: flex-end; }
   }
 
-  /* ── ACCESSIBILITY ── */
   .time-btn:focus-visible,
   .health-item:focus-visible,
   .pie-legend-item:focus-visible,
@@ -1021,7 +1009,7 @@ export default function SupervisorDashboard() {
     activeProjects: 0,
     totalTasks: 0,
     doneTasks: 0,
-    completionPercent: 0,
+    completionPercent: 0,   // now = weighted avgProgress across all tasks
     totalMembers: 0,
     totalLeads: 0,
     inProgressTasks: 0,
@@ -1112,13 +1100,14 @@ export default function SupervisorDashboard() {
       setTeamMembers(allMembers);
       setUsers(allUsers);
 
-      // ─── Stats ───
-      // Backend stats (used for completed / in-progress / onTime counts)
+      // ─── Aggregate stats from each project's /stats endpoint ───
       let totalTasks = 0;
       let doneTasks = 0;
       let inProgressTasks = 0;
       let totalOnTime = 0;
       let totalCompletedTasks = 0;
+      let totalProgressWeighted = 0;   // sum of (avgProgress × taskCount)
+      let totalTaskCountForAvg = 0;    // denominator for weighted average
       const statsMap = {};
 
       for (const project of userProjects) {
@@ -1127,11 +1116,17 @@ export default function SupervisorDashboard() {
           const statsResponse = await projectService.getProjectStats(projectId);
           const s = statsResponse?.data || {};
           statsMap[projectId] = s;
-          totalTasks += s.totalTasks || 0;
+
+          const projectTotalTasks = s.totalTasks || 0;
+          totalTasks += projectTotalTasks;
           doneTasks += s.completedTasks || 0;
           inProgressTasks += s.inProgressTasks || 0;
           totalOnTime += s.onTimeRate || 0;
           totalCompletedTasks += s.completedTasks || 0;
+
+          // Weighted average: bigger projects pull the average more.
+          totalProgressWeighted += (Number(s.avgProgress) || 0) * projectTotalTasks;
+          totalTaskCountForAvg += projectTotalTasks;
         } catch (error) {
           console.error(`Error fetching stats for project ${projectId}:`, error);
         }
@@ -1143,13 +1138,16 @@ export default function SupervisorDashboard() {
         p.status === "active" || p.status === "in-progress" || p.status === "in_progress"
       ).length;
 
-      // ⭐ Completion rate = average of all task progress values
-      // This must match the project pages which also average task progress.
-      const completionPercent = (() => {
-        if (userTasks.length === 0) return 0;
-        const total = userTasks.reduce((sum, t) => sum + computeTaskProgress(t), 0);
-        return Math.round(total / userTasks.length);
-      })();
+      // ⭐ Completion percent = weighted average of per-project avgProgress.
+      // This matches exactly what each project page shows.
+      const completionPercent = totalTaskCountForAvg > 0
+        ? Math.round(totalProgressWeighted / totalTaskCountForAvg)
+        : (() => {
+            // Fallback: compute from the raw task list when stats are unavailable.
+            if (userTasks.length === 0) return 0;
+            const total = userTasks.reduce((sum, t) => sum + computeTaskProgress(t), 0);
+            return Math.round(total / userTasks.length);
+          })();
 
       // On-time rate from backend stats (across completed tasks)
       const onTimeRate = totalCompletedTasks > 0
@@ -1210,8 +1208,12 @@ export default function SupervisorDashboard() {
 
       const tasksThisWeek = userTasks.filter(t => inRange(t, weekStart, now));
       const tasksPrevWeek = userTasks.filter(t => inRange(t, prevWeekStart, prevWeekEnd));
-      const completionThisWeek = tasksThisWeek.length === 0 ? 0 : Math.round((tasksThisWeek.filter(isDone).length / tasksThisWeek.length) * 100);
-      const completionPrevWeek = tasksPrevWeek.length === 0 ? 0 : Math.round((tasksPrevWeek.filter(isDone).length / tasksPrevWeek.length) * 100);
+      const completionThisWeek = tasksThisWeek.length === 0
+        ? 0
+        : Math.round(tasksThisWeek.reduce((s, t) => s + computeTaskProgress(t), 0) / tasksThisWeek.length);
+      const completionPrevWeek = tasksPrevWeek.length === 0
+        ? 0
+        : Math.round(tasksPrevWeek.reduce((s, t) => s + computeTaskProgress(t), 0) / tasksPrevWeek.length);
 
       setTrends({
         projects: computeTrend(projectsThisWeek, projectsPrevWeek),
@@ -1261,18 +1263,23 @@ export default function SupervisorDashboard() {
       });
       setTeamProductivity(productivityData);
 
-      // ⭐ Project Health — use computed average of task progress, same as project pages.
+      // ─── Project Health ───
+      // Prefer backend avgProgress; fall back to client-side computation.
       const healthData = userProjects.slice(0, 8).map(project => {
         const projectId = project.p_id || project.id;
         const projectStats = statsMap[projectId] || {};
-        const computedProgress = computeProjectProgress(projectId, allTasks);
+        const backendProgress = Number(projectStats.avgProgress);
+        const progress = Number.isFinite(backendProgress) && backendProgress > 0
+          ? Math.round(backendProgress)
+          : computeProjectProgress(projectId, allTasks);
+
         const lead = allUsers.find(u =>
           Number(u.id || u.u_id) === Number(project.created_by || project.lead_id)
         );
 
         return {
           ...project,
-          progress: computedProgress,
+          progress,
           done: projectStats.completedTasks || 0,
           total: projectStats.totalTasks || 0,
           lead: lead?.u_name || lead?.name || "Unassigned"
@@ -1393,7 +1400,7 @@ export default function SupervisorDashboard() {
           <div className="stat-card-icon teal"><Award size={20} /></div>
           <div className="stat-card-content">
             <span className="stat-card-value"><AnimatedNumber value={stats.completionPercent} suffix="%" /></span>
-            <span className="stat-card-label">Completion Rate</span>
+            <span className="stat-card-label">Avg. Progress</span>
           </div>
           <TrendPill trend={trends.completionPercent} />
         </div>
