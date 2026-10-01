@@ -32,39 +32,6 @@ const TASK_STATUS_OPTIONS = ['todo', 'in_progress', 'review', 'done'];
 
 const SUPERVISOR_ROLES = ['manager', 'admin', 'supervisor'];
 
-/* ─────────── Local supervisor fallback (supervisors only) ─────────── */
-const SUPERVISOR_STORAGE_KEY = 'pms_project_supervisors';
-
-function readLocalSupervisors() {
-  try {
-    const raw = localStorage.getItem(SUPERVISOR_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch { return {}; }
-}
-
-function getLocalSupervisors(projectId) {
-  if (!projectId) return [];
-  const map = readLocalSupervisors();
-  const ids = map[String(projectId)];
-  return Array.isArray(ids) ? ids.map(Number) : [];
-}
-
-function setLocalSupervisors(projectId, ids) {
-  if (!projectId) return;
-  const map = readLocalSupervisors();
-  map[String(projectId)] = [...new Set((ids || []).map(Number))];
-  try { localStorage.setItem(SUPERVISOR_STORAGE_KEY, JSON.stringify(map)); }
-  catch (e) { console.warn('Could not persist supervisors locally:', e); }
-}
-
-function removeLocalSupervisors(projectId) {
-  if (!projectId) return;
-  const map = readLocalSupervisors();
-  delete map[String(projectId)];
-  try { localStorage.setItem(SUPERVISOR_STORAGE_KEY, JSON.stringify(map)); }
-  catch (e) { console.warn('Could not remove local supervisors:', e); }
-}
-
 /* ─────────── Resolve TeamMember id → user-like object ─────────── */
 function resolveTeamMemberId(tmId, usersList, membersList) {
   if (tmId == null) return null;
@@ -99,7 +66,7 @@ function resolveTeamMemberId(tmId, usersList, membersList) {
   return null;
 }
 
-/* ─────────── Resolve User id → object (for local supervisors) ─────────── */
+/* ─────────── Resolve User id → object (for supervisors) ─────────── */
 function resolveUserId(userId, usersList, membersList) {
   if (userId == null) return null;
   const numId = Number(userId);
@@ -271,7 +238,6 @@ function FieldError({ message }) {
   );
 }
 
-/* ─── Multi-member picker ─── */
 function MemberPicker({ selected = [], onChange, label = 'Members', members = [] }) {
   const [open, setOpen] = useState(false);
 
@@ -616,22 +582,14 @@ export default function LeadProjects() {
       setMemberOptions(memberList);
       setTeamMembers(activeMembersList);
 
-      const userProjects = projectsList.filter(p => {
-        const isCreator = Number(p.created_by) === Number(userId);
-        const isMember = pteamList.some(pteam =>
-          Number(pteam.p) === Number(p.p_id || p.id) &&
-          Number(pteam.tm) === Number(userId)
-        );
-        const isLocalSup = getLocalSupervisors(p.p_id || p.id).includes(Number(userId));
-        return isCreator || isMember || isLocalSup;
-      });
-
-      const projectsWithMembers = userProjects.map(project => {
+      // ✅ Backend already filters — take as-is
+      const projectsWithMembers = projectsList.map(project => {
         const projectId = project.p_id || project.id;
         const projectPteamEntries = pteamList.filter(entry => getPteamProjectId(entry) === Number(projectId));
 
         const memberMap = new Map();
 
+        // PTeam members
         projectPteamEntries.forEach(entry => {
           const tmId = getPteamTmId(entry);
           if (memberMap.has(tmId)) return;
@@ -645,35 +603,22 @@ export default function LeadProjects() {
           }
         });
 
-        getLocalSupervisors(projectId).forEach(sid => {
-          if (memberMap.has(Number(sid))) return;
-          const resolved = resolveUserId(sid, usersList, activeMembersList);
-          if (resolved) {
-            memberMap.set(Number(sid), { ...resolved, pt_id: null, task_id: null });
-          }
-        });
-
         const projectMembersRaw = Array.from(memberMap.values());
 
-        const supervisorMap = new Map();
+        // 🆕 Read supervisors from API, not localStorage
+        const supervisorIds = Array.isArray(project.supervisors)
+          ? project.supervisors.map(Number)
+          : [];
 
-        getLocalSupervisors(projectId).forEach(sid => {
-          if (supervisorMap.has(Number(sid))) return;
-          const resolved = resolveUserId(sid, usersList, activeMembersList);
-          if (resolved) supervisorMap.set(Number(sid), { ...resolved, role: resolved.role || 'supervisor' });
-        });
+        const supervisorMembers = supervisorIds
+          .map(sid => resolveUserId(sid, usersList, activeMembersList))
+          .filter(Boolean)
+          .map(s => ({ ...s, role: s.role || 'supervisor' }));
 
-        projectMembersRaw.forEach(m => {
-          if (supervisorMap.has(Number(m.id))) return;
-          const resolvedUser = usersList.find(u => Number(u.id) === Number(m.userId ?? m.id));
-          const role = ((resolvedUser?.role) || m.role || '').toLowerCase();
-          if (SUPERVISOR_ROLES.includes(role)) {
-            supervisorMap.set(Number(m.id), { ...m, role });
-          }
-        });
+        // Regular members = everyone else
+        const supervisorIdSet2 = new Set(supervisorMembers.map(s => Number(s.id)));
+        const regularMembersList = projectMembersRaw.filter(m => !supervisorIdSet2.has(Number(m.id)));
 
-        const supervisorMembers = Array.from(supervisorMap.values());
-        const regularMembersList = projectMembersRaw.filter(m => !supervisorMap.has(Number(m.id)));
         const allMembers = [...supervisorMembers, ...regularMembersList];
 
         return {
@@ -763,39 +708,6 @@ export default function LeadProjects() {
     resetProjectTouched();
   };
 
-  /* ─── Helper: persist a supervisor to PTeam (or localStorage fallback) ─── */
-  const persistSupervisor = async (projectId, supId, teamMembersList, usersList, currentMemberIds, localFallback) => {
-    // Try to resolve to a real TeamMember row
-    const realTmId = findRealTeamMemberId(supId, teamMembersList, usersList);
-
-    if (realTmId) {
-      if (currentMemberIds.includes(realTmId)) return; // already there
-      try {
-        await projectTeamService.addMemberToProject(projectId, realTmId);
-        currentMemberIds.push(realTmId);
-        return;
-      } catch (e) {
-        console.warn(`Could not add supervisor tm ${realTmId} to PTeam:`, e);
-      }
-    }
-
-    // No TeamMember row — try adding the user id directly to PTeam.
-    // Some backends accept user ids in the `tm` field.
-    const numSupId = Number(supId);
-    if (!currentMemberIds.includes(numSupId)) {
-      try {
-        await projectTeamService.addMemberToProject(projectId, numSupId);
-        currentMemberIds.push(numSupId);
-        return;
-      } catch (e) {
-        console.warn(`Could not add supervisor user ${numSupId} to PTeam directly:`, e);
-      }
-    }
-
-    // Both failed — fall back to localStorage
-    localFallback.push(numSupId);
-  };
-
   const handleSaveProject = async () => {
     setProjectSubmitAttempted(true);
 
@@ -807,8 +719,6 @@ export default function LeadProjects() {
 
     setSavingProject(true);
     try {
-      const userId = user?.id || user?.u_id || null;
-
       const projectData = {
         name: form.name.trim(),
         description: (form.description || '').trim(),
@@ -816,11 +726,9 @@ export default function LeadProjects() {
         status: form.status,
         startDate: form.startDate || null,
         deadline: form.deadline || null,
-        created_by: userId,
+        supervisors: [...new Set(form.supervisors.map(Number))],   // 🆕 sent to backend
+        members: [...new Set(form.members.map(Number))],           // for PTeam
       };
-
-      const uniqueSupervisors = [...new Set(form.supervisors)];
-      const uniqueMembers = [...new Set(form.members)];
 
       let createdProject;
       if (editProject) {
@@ -828,39 +736,27 @@ export default function LeadProjects() {
         createdProject = updated?.data || updated;
         const projectId = createdProject.p_id || createdProject.id;
 
+        // Team members → PTeam (unchanged)
         const currentPteam = pteamEntries.filter(entry => getPteamProjectId(entry) === Number(projectId));
         const currentMemberIds = [...new Set(currentPteam.map(entry => getPteamTmId(entry)))];
 
-        // ── Supervisors: try PTeam (by TeamMember id, then user id), fall back to localStorage ──
-        const localSupervisorFallback = [];
-        for (const supId of uniqueSupervisors) {
-          await persistSupervisor(projectId, supId, teamMembers, users, currentMemberIds, localSupervisorFallback);
-        }
-
-        // ── Regular members: PTeam only ──
-        for (const memberId of uniqueMembers) {
+        for (const memberId of projectData.members) {
           const realTmId = findRealTeamMemberId(memberId, teamMembers, users);
-          if (!realTmId) {
-            console.warn(`Member ${memberId} has no TeamMember row — skipping`);
-            continue;
-          }
-          if (!currentMemberIds.includes(realTmId)) {
-            try {
-              await projectTeamService.addMemberToProject(projectId, realTmId);
-              currentMemberIds.push(realTmId);
-            } catch (e) {
-              console.warn(`Could not add member ${memberId} to PTeam:`, e);
-            }
+          if (!realTmId) continue;
+          if (currentMemberIds.includes(realTmId)) continue;
+          try {
+            await projectTeamService.addMemberToProject(projectId, realTmId);
+            currentMemberIds.push(realTmId);
+          } catch (e) {
+            console.warn(`Could not add member ${memberId} to PTeam:`, e);
           }
         }
 
-        // Remove no-longer-wanted PTeam entries (only ones we're sure about — i.e., actual TeamMember rows)
-        const allWantedTmIds = [
-          ...uniqueSupervisors.map(id => findRealTeamMemberId(id, teamMembers, users)).filter(Boolean),
-          ...uniqueMembers.map(id => findRealTeamMemberId(id, teamMembers, users)).filter(Boolean),
-        ];
+        // Remove no-longer-wanted PTeam entries
+        const allWantedTmIds = projectData.members
+          .map(id => findRealTeamMemberId(id, teamMembers, users))
+          .filter(Boolean);
         for (const currentTmId of currentMemberIds) {
-          // Only remove if this tm id is a real TeamMember (not a fallback user id we just added)
           const isRealTm = teamMembers.some(m => Number(m.id) === Number(currentTmId));
           if (!isRealTm) continue;
           if (!allWantedTmIds.includes(currentTmId)) {
@@ -872,43 +768,23 @@ export default function LeadProjects() {
           }
         }
 
-        setLocalSupervisors(projectId, localSupervisorFallback);
-
-        setProjects(projects.map(p =>
-          (p.p_id || p.id) === (editProject.p_id || editProject.id) ? createdProject : p
-        ));
         toast.success('Project updated successfully');
       } else {
         const newProject = await projectService.createProject(projectData);
         createdProject = newProject?.data || newProject;
         const projectId = createdProject.p_id || createdProject.id;
 
-        // ── Supervisors: try PTeam (by TeamMember id, then user id), fall back to localStorage ──
-        const localSupervisorFallback = [];
-        const currentMemberIds = [];
-        for (const supId of uniqueSupervisors) {
-          await persistSupervisor(projectId, supId, teamMembers, users, currentMemberIds, localSupervisorFallback);
-        }
-
-        // ── Regular members: PTeam only ──
-        for (const memberId of uniqueMembers) {
+        // Team members → PTeam
+        for (const memberId of projectData.members) {
           const realTmId = findRealTeamMemberId(memberId, teamMembers, users);
-          if (!realTmId) {
-            console.warn(`Member ${memberId} has no TeamMember row — skipping`);
-            continue;
-          }
-          if (currentMemberIds.includes(realTmId)) continue;
+          if (!realTmId) continue;
           try {
             await projectTeamService.addMemberToProject(projectId, realTmId);
-            currentMemberIds.push(realTmId);
           } catch (e) {
             console.warn(`Could not add member ${memberId} to PTeam:`, e);
           }
         }
 
-        setLocalSupervisors(projectId, localSupervisorFallback);
-
-        setProjects([createdProject, ...projects]);
         toast.success('Project created successfully');
       }
 
@@ -927,7 +803,6 @@ export default function LeadProjects() {
   const handleDeleteProject = async () => {
     try {
       await projectService.deleteProject(deleteProjectId);
-      removeLocalSupervisors(deleteProjectId);
       setProjects(projects.filter(p => (p.p_id || p.id) !== deleteProjectId));
       setDeleteProjectId(null);
       toast.success('Project deleted successfully');
@@ -1175,9 +1050,6 @@ export default function LeadProjects() {
           catch (e) { console.warn('Could not remove PTeam entry:', e); }
         }
       }
-
-      const localSups = getLocalSupervisors(projectId).filter(id => Number(id) !== memberUserId);
-      setLocalSupervisors(projectId, localSups);
 
       toast.success(
         reassignTo
@@ -2049,362 +1921,129 @@ export default function LeadProjects() {
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
         .spin { animation: spin 1s linear infinite; }
-
         .loading-spinner-wrapper { display: flex; justify-content: center; align-items: center; height: 400px; }
-        .loading-spinner {
-          width: 40px; height: 40px;
-          border: 3px solid var(--border-subtle);
-          border-top-color: var(--accent-primary);
-          border-radius: 50%;
-          animation: spin 0.8s linear infinite;
-        }
+        .loading-spinner { width: 40px; height: 40px; border: 3px solid var(--border-subtle); border-top-color: var(--accent-primary); border-radius: 50%; animation: spin 0.8s linear infinite; }
         .refresh-btn { display: flex; align-items: center; gap: 6px; }
-
-        .lp-field-error {
-          display: flex; align-items: center; gap: 5px;
-          font-size: 11.5px; font-weight: 500; color: #f87171;
-          margin-top: -4px; margin-bottom: 4px;
-        }
-
-        .input-error {
-          border-color: #f87171 !important;
-          background: rgba(248, 113, 113, 0.04) !important;
-        }
+        .lp-field-error { display: flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 500; color: #f87171; margin-top: -4px; margin-bottom: 4px; }
+        .input-error { border-color: #f87171 !important; background: rgba(248, 113, 113, 0.04) !important; }
         .input-error:focus { box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.12) !important; }
-
-        .lp-supervisor-badge {
-          display: inline-flex; align-items: center; gap: 3px;
-          padding: 2px 7px; border-radius: 7px;
-          font-size: 10px; font-weight: 600;
-          background: rgba(245, 158, 11, 0.15);
-          color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3);
-        }
-        .lp-supervisor-picker {
-          padding: 10px 12px; border-radius: 9px;
-          border: 1px solid rgba(245, 158, 11, 0.25);
-          background: rgba(245, 158, 11, 0.03); min-height: 44px;
-        }
-        .lp-supervisor-chip {
-          display: inline-flex; align-items: center; gap: 5px;
-          padding: 4px 10px 4px 6px; border-radius: 20px;
-          border: 1px solid var(--border-subtle);
-          background: var(--bg-card); color: var(--text-primary);
-          font-size: 12px; font-weight: 500;
-          cursor: pointer; transition: all 0.15s;
-        }
+        .lp-supervisor-badge { display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 7px; font-size: 10px; font-weight: 600; background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); }
+        .lp-supervisor-picker { padding: 10px 12px; border-radius: 9px; border: 1px solid rgba(245, 158, 11, 0.25); background: rgba(245, 158, 11, 0.03); min-height: 44px; }
+        .lp-supervisor-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px 4px 6px; border-radius: 20px; border: 1px solid var(--border-subtle); background: var(--bg-card); color: var(--text-primary); font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s; }
         .lp-supervisor-chip:hover { border-color: #f59e0b; background: var(--bg-hover); }
         .lp-supervisor-chip.selected { background: rgba(245, 158, 11, 0.12); border-color: #f59e0b; }
         .lp-supervisor-chip.current-user { border-color: #34d399; background: rgba(52, 211, 153, 0.1); }
         .lp-current-user-badge { font-size: 9px; color: #34d399; font-weight: 600; }
-
-        .lp-filters-container {
-          display: flex; flex-direction: column; gap: 14px; margin-bottom: 24px;
-          background: var(--bg-card); padding: 18px 20px;
-          border-radius: 14px; border: 1px solid var(--border-subtle);
-          transition: all 0.2s ease;
-        }
+        .lp-filters-container { display: flex; flex-direction: column; gap: 14px; margin-bottom: 24px; background: var(--bg-card); padding: 18px 20px; border-radius: 14px; border: 1px solid var(--border-subtle); transition: all 0.2s ease; }
         .lp-filters-container:focus-within { border-color: var(--accent-primary); box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08); }
         .lp-search-wrapper { position: relative; display: flex; align-items: center; width: 100%; }
         .lp-search-icon { position: absolute; left: 14px; color: var(--text-muted); pointer-events: none; transition: color 0.2s; }
         .lp-search-wrapper:focus-within .lp-search-icon { color: var(--accent-primary); }
-        .lp-search-input {
-          width: 100%; padding: 11px 40px 11px 42px;
-          border-radius: 10px; border: 1px solid var(--border-default);
-          background: var(--bg-secondary); color: var(--text-primary);
-          font-size: 13px; transition: all 0.2s ease; outline: none;
-        }
+        .lp-search-input { width: 100%; padding: 11px 40px 11px 42px; border-radius: 10px; border: 1px solid var(--border-default); background: var(--bg-secondary); color: var(--text-primary); font-size: 13px; transition: all 0.2s ease; outline: none; }
         .lp-search-input:focus { border-color: var(--accent-primary); background: var(--bg-card); box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08); }
         .lp-search-input::placeholder { color: var(--text-muted); }
-        .lp-search-clear {
-          position: absolute; right: 10px;
-          display: flex; align-items: center; justify-content: center;
-          width: 28px; height: 28px; border: none; border-radius: 50%;
-          background: var(--bg-hover); color: var(--text-muted);
-          cursor: pointer; transition: all 0.15s;
-        }
+        .lp-search-clear { position: absolute; right: 10px; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: none; border-radius: 50%; background: var(--bg-hover); color: var(--text-muted); cursor: pointer; transition: all 0.15s; }
         .lp-search-clear:hover { background: var(--border-default); color: var(--text-primary); }
         .lp-filter-controls { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
         .lp-filter-group { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 140px; }
-        .lp-filter-label {
-          display: flex; align-items: center; gap: 4px;
-          font-size: 11px; font-weight: 600; color: var(--text-muted);
-          text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap;
-        }
-        .lp-filter-select {
-          flex: 1; padding: 8px 12px; border-radius: 8px;
-          border: 1px solid var(--border-default);
-          background: var(--bg-secondary); color: var(--text-primary);
-          font-size: 12px; font-weight: 500; cursor: pointer; outline: none;
-          transition: all 0.2s ease; min-width: 120px; appearance: none;
-          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-          background-repeat: no-repeat; background-position: right 10px center; padding-right: 32px;
-        }
+        .lp-filter-label { display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
+        .lp-filter-select { flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border-default); background: var(--bg-secondary); color: var(--text-primary); font-size: 12px; font-weight: 500; cursor: pointer; outline: none; transition: all 0.2s ease; min-width: 120px; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; padding-right: 32px; }
         .lp-filter-select:hover { border-color: var(--border-strong); background-color: var(--bg-hover); }
         .lp-filter-select:focus { border-color: var(--accent-primary); background-color: var(--bg-card); box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08); }
         .lp-active-filters { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-left: auto; }
-        .lp-filter-chip {
-          display: inline-flex; align-items: center; gap: 4px;
-          padding: 4px 10px 4px 12px; border-radius: 20px;
-          font-size: 11px; font-weight: 600;
-          background: var(--accent-muted); color: var(--accent-primary);
-          border: 1px solid rgba(99, 102, 241, 0.2); white-space: nowrap;
-        }
-        .lp-filter-chip button {
-          display: flex; align-items: center; justify-content: center;
-          padding: 2px; border: none; border-radius: 50%;
-          background: transparent; color: var(--accent-primary);
-          cursor: pointer; transition: all 0.15s;
-        }
+        .lp-filter-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 600; background: var(--accent-muted); color: var(--accent-primary); border: 1px solid rgba(99, 102, 241, 0.2); white-space: nowrap; }
+        .lp-filter-chip button { display: flex; align-items: center; justify-content: center; padding: 2px; border: none; border-radius: 50%; background: transparent; color: var(--accent-primary); cursor: pointer; transition: all 0.15s; }
         .lp-filter-chip button:hover { background: rgba(239, 68, 68, 0.1); color: #ef4444; }
-        .lp-results-count {
-          display: flex; align-items: center; gap: 8px;
-          padding-top: 12px; border-top: 1px solid var(--border-subtle);
-          font-size: 12px; color: var(--text-muted); flex-wrap: wrap;
-        }
+        .lp-results-count { display: flex; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border-subtle); font-size: 12px; color: var(--text-muted); flex-wrap: wrap; }
         .lp-results-count span { font-weight: 500; }
         .lp-results-count .lp-results-total { color: var(--text-secondary); }
         .lp-results-dot { color: var(--border-default); }
-        .lp-clear-filters-btn {
-          margin-left: auto; padding: 4px 12px; border: none; border-radius: 6px;
-          background: var(--bg-secondary); color: var(--text-secondary);
-          font-size: 11px; font-weight: 500; cursor: pointer; transition: all 0.15s;
-        }
+        .lp-clear-filters-btn { margin-left: auto; padding: 4px 12px; border: none; border-radius: 6px; background: var(--bg-secondary); color: var(--text-secondary); font-size: 11px; font-weight: 500; cursor: pointer; transition: all 0.15s; }
         .lp-clear-filters-btn:hover { background: var(--bg-hover); color: var(--accent-primary); }
-
         .lp-projects-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
-        .lp-project-card {
-          padding: 0 0 14px !important;
-          display: flex !important; flex-direction: column !important;
-          gap: 10px !important; overflow: hidden; cursor: pointer;
-          background: var(--bg-card); border: 1px solid var(--border-subtle);
-          border-radius: 14px; transition: all 0.2s ease;
-        }
+        .lp-project-card { padding: 0 0 14px !important; display: flex !important; flex-direction: column !important; gap: 10px !important; overflow: hidden; cursor: pointer; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 14px; transition: all 0.2s ease; }
         .lp-project-card:hover { border-color: var(--accent-primary); transform: translateY(-2px); box-shadow: var(--shadow-md); }
-        .lp-card-top {
-          display: flex; align-items: center; justify-content: space-between;
-          gap: 8px; padding: 12px 14px 0;
-          width: 100%; box-sizing: border-box; min-width: 0;
-        }
+        .lp-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 14px 0; width: 100%; box-sizing: border-box; min-width: 0; }
         .lp-card-badges { display: flex; align-items: center; gap: 5px; min-width: 0; flex: 1; overflow: hidden; flex-wrap: wrap; }
-        .lp-card-badges > * {
-          font-size: 10.5px !important; padding: 2px 7px !important;
-          height: auto !important; line-height: 1.4 !important;
-          border-radius: 7px !important; white-space: nowrap !important;
-          display: inline-flex !important; align-items: center !important;
-          gap: 3px !important; flex-shrink: 0 !important; box-sizing: border-box !important;
-        }
+        .lp-card-badges > * { font-size: 10.5px !important; padding: 2px 7px !important; height: auto !important; line-height: 1.4 !important; border-radius: 7px !important; white-space: nowrap !important; display: inline-flex !important; align-items: center !important; gap: 3px !important; flex-shrink: 0 !important; box-sizing: border-box !important; }
         .lp-card-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
         .lp-card-body { padding: 0 16px; }
-        .lp-project-name {
-          font-size: 15px; font-weight: 700; margin-bottom: 2px;
-          color: var(--text-primary);
-          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        }
-        .lp-project-desc {
-          font-size: 12px; color: var(--text-muted);
-          display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-        }
+        .lp-project-name { font-size: 15px; font-weight: 700; margin-bottom: 2px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .lp-project-desc { font-size: 12px; color: var(--text-muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
         .lp-progress-header { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px; color: var(--text-secondary); }
         .lp-progress-value { font-weight: 600; }
         .lp-card-meta { display: flex; justify-content: space-between; font-size: 12px; padding: 0 16px; }
         .lp-meta-label { font-size: 10px; color: var(--text-muted); margin: 0; }
         .lp-meta-value { font-weight: 600; color: var(--text-primary); margin: 0; }
-        .lp-card-footer {
-          display: flex; justify-content: space-between; align-items: center;
-          border-top: 1px solid var(--border-subtle);
-          padding-top: 10px; margin: 0 16px;
-        }
+        .lp-card-footer { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-subtle); padding-top: 10px; margin: 0 16px; }
         .lp-member-count { font-size: 11px; color: var(--text-muted); }
         .lp-pagination { display: flex; justify-content: center; gap: 10px; margin-top: 20px; }
         .lp-page-info { padding: 6px 10px; font-size: 13px; color: var(--text-secondary); }
-
-        .lp-overlay {
-          position: fixed; inset: 0;
-          background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
-          display: flex; align-items: center; justify-content: center;
-          z-index: 1000; padding: 16px;
-        }
-        .lp-modal {
-          background: var(--bg-card); border: 1px solid var(--border-default);
-          border-radius: 20px; width: 100%; max-width: 520px; max-height: 90vh;
-          overflow-y: auto; box-shadow: 0 24px 60px rgba(0,0,0,0.3);
-          animation: lp-in 0.2s ease;
-          scrollbar-width: thin; scrollbar-color: var(--border-default) transparent;
-        }
+        .lp-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 16px; }
+        .lp-modal { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 20px; width: 100%; max-width: 520px; max-height: 90vh; overflow-y: auto; box-shadow: 0 24px 60px rgba(0,0,0,0.3); animation: lp-in 0.2s ease; scrollbar-width: thin; scrollbar-color: var(--border-default) transparent; }
         .lp-modal-wide { max-width: 800px; }
-        @keyframes lp-in {
-          from { opacity:0; transform: translateY(14px) scale(0.97); }
-          to   { opacity:1; transform: none; }
-        }
-        .lp-modal-header {
-          display: flex; align-items: flex-start; justify-content: space-between;
-          gap: 12px; padding: 20px 20px 14px;
-          border-bottom: 1px solid var(--border-subtle);
-        }
+        @keyframes lp-in { from { opacity:0; transform: translateY(14px) scale(0.97); } to { opacity:1; transform: none; } }
+        .lp-modal-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 20px 20px 14px; border-bottom: 1px solid var(--border-subtle); }
         .lp-modal-title { display: flex; align-items: center; gap: 8px; font-size: 17px; font-weight: 700; color: var(--text-primary); }
         .lp-modal-sub { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
-        .lp-modal-body-split {
-          display: grid; grid-template-columns: 1fr 220px;
-          min-height: 300px; max-height: calc(90vh - 130px); overflow: hidden;
-        }
+        .lp-modal-body-split { display: grid; grid-template-columns: 1fr 220px; min-height: 300px; max-height: calc(90vh - 130px); overflow: hidden; }
         .lp-modal-body { padding: 18px 20px; }
-        .lp-modal-footer {
-          display: flex; gap: 10px; padding: 14px 20px 20px;
-          border-top: 1px solid var(--border-subtle); justify-content: flex-end;
-        }
+        .lp-modal-footer { display: flex; gap: 10px; padding: 14px 20px 20px; border-top: 1px solid var(--border-subtle); justify-content: flex-end; }
         .lp-modal-desc { font-size: 14px; color: var(--text-secondary); line-height: 1.6; margin-bottom: 14px; }
-
-        .lp-task-scroll {
-          max-height: 100%; overflow-y: auto; padding: 14px 20px;
-          display: flex; flex-direction: column; gap: 10px;
-          scrollbar-width: thin; scrollbar-color: var(--border-default) transparent;
-          border-right: 1px solid var(--border-subtle);
-        }
-        .lp-task-row {
-          display: flex; align-items: center; gap: 12px;
-          padding: 12px 14px; border: 1px solid var(--border-subtle); border-radius: 12px;
-          background: var(--bg-secondary); cursor: pointer;
-          transition: border-color 0.15s, box-shadow 0.15s; flex-wrap: wrap;
-        }
+        .lp-task-scroll { max-height: 100%; overflow-y: auto; padding: 14px 20px; display: flex; flex-direction: column; gap: 10px; scrollbar-width: thin; scrollbar-color: var(--border-default) transparent; border-right: 1px solid var(--border-subtle); }
+        .lp-task-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--border-subtle); border-radius: 12px; background: var(--bg-secondary); cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s; flex-wrap: wrap; }
         .lp-task-row:hover { border-color: var(--accent-primary); box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
         .lp-task-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-        .lp-task-title {
-          font-size: 13px; font-weight: 600; color: var(--text-primary);
-          white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-        }
-        .lp-task-assignee {
-          display: inline-flex; align-items: center; justify-content: center;
-          width: 20px; height: 20px; border-radius: 50%;
-          background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
-          color: var(--accent-primary); font-size: 10px; font-weight: 700;
-          border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
-        }
+        .lp-task-title { font-size: 13px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .lp-task-assignee { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; background: color-mix(in srgb, var(--accent-primary) 20%, transparent); color: var(--accent-primary); font-size: 10px; font-weight: 700; border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent); }
         .lp-task-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .lp-task-actions { display: flex; gap: 5px; flex-shrink: 0; }
-        .lp-priority-select {
-          font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 8px;
-          border: 1px solid var(--border-default);
-          background: var(--bg-card); color: var(--text-primary);
-          cursor: pointer; outline: none;
-        }
+        .lp-priority-select { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 8px; border: 1px solid var(--border-default); background: var(--bg-card); color: var(--text-primary); cursor: pointer; outline: none; }
         .lp-priority-select:focus { border-color: var(--accent-primary); }
         .lp-mini-progress { display: flex; align-items: center; gap: 6px; }
         .lp-mini-track { width: 70px; height: 5px; background: var(--border-subtle); border-radius: 10px; overflow: hidden; }
         .lp-mini-fill { height: 100%; background: var(--accent-primary); border-radius: 10px; transition: width 0.3s; }
         .lp-mini-pct { font-size: 11px; font-weight: 700; color: var(--text-secondary); white-space: nowrap; }
-        .lp-milestone-tag {
-          display: inline-flex; align-items: center; gap: 4px;
-          font-size: 11px; font-weight: 600; color: var(--accent-primary);
-          background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
-          border-radius: 7px; padding: 2px 8px;
-        }
+        .lp-milestone-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 12%, transparent); border-radius: 7px; padding: 2px 8px; }
         .lp-milestone-tag.lg { font-size: 12px; padding: 4px 10px; margin-bottom: 12px; }
         .lp-progress-section { margin-top: 16px; }
         .lp-progress-label-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
         .lp-progress-label { font-size: 13px; font-weight: 600; color: var(--text-secondary); }
-        .lp-progress-pct   { font-size: 15px; font-weight: 800; color: var(--accent-primary); }
+        .lp-progress-pct { font-size: 15px; font-weight: 800; color: var(--accent-primary); }
         .lp-progress-track { width: 100%; height: 10px; background: var(--border-subtle); border-radius: 10px; overflow: hidden; }
-        .lp-progress-fill {
-          height: 100%;
-          background: linear-gradient(90deg, var(--accent-primary), color-mix(in srgb, var(--accent-primary) 60%, #a78bfa));
-          border-radius: 10px; transition: width 0.4s ease;
-        }
+        .lp-progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent-primary), color-mix(in srgb, var(--accent-primary) 60%, #a78bfa)); border-radius: 10px; transition: width 0.4s ease; }
         .lp-meta-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
-
         .lp-edit-form { display: flex; flex-direction: column; gap: 10px; }
         .lp-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 3px; display: block; }
-        .lp-input {
-          width: 100%; box-sizing: border-box; padding: 9px 12px;
-          border-radius: 9px; font-size: 13px;
-          background: var(--bg-secondary); border: 1px solid var(--border-default);
-          color: var(--text-primary);
-        }
+        .lp-input { width: 100%; box-sizing: border-box; padding: 9px 12px; border-radius: 9px; font-size: 13px; background: var(--bg-secondary); border: 1px solid var(--border-default); color: var(--text-primary); }
         .lp-textarea { min-height: 80px; resize: vertical; }
         .lp-form-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
         .lp-range { width: 100%; accent-color: var(--accent-primary); cursor: pointer; }
-
         .lp-confirm { max-width: 360px; text-align: center; padding-top: 28px; }
         .lp-confirm-title { font-size: 18px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px; }
-
-        .lp-icon-btn {
-          display: inline-flex; align-items: center; justify-content: center;
-          padding: 5px 6px; border-radius: 7px;
-          border: 1px solid var(--border-subtle); background: var(--bg-card);
-          color: var(--text-secondary); cursor: pointer; transition: all 0.14s;
-        }
+        .lp-icon-btn { display: inline-flex; align-items: center; justify-content: center; padding: 5px 6px; border-radius: 7px; border: 1px solid var(--border-subtle); background: var(--bg-card); color: var(--text-secondary); cursor: pointer; transition: all 0.14s; }
         .lp-icon-btn:hover { background: var(--bg-primary); color: var(--accent-primary); border-color: var(--accent-primary); }
         .lp-icon-btn.danger:hover { color: #ef4444; border-color: #ef4444; background: rgba(239,68,68,0.07); }
-
         .btn-danger { background: rgba(239,68,68,0.1); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
         .btn-danger:hover { background: rgba(239,68,68,0.2); }
         .btn-secondary { background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-default); }
         .btn-secondary:hover { border-color: var(--accent-primary); }
-
-        .lp-member-trigger {
-          display: flex; align-items: center; gap: 8px; width: 100%; min-height: 42px;
-          padding: 8px 12px; border-radius: 9px;
-          border: 1px solid rgba(99, 102, 241, 0.25);
-          background: rgba(99, 102, 241, 0.03);
-          color: var(--text-primary);
-          cursor: pointer; text-align: left; font-size: 13px;
-          transition: border-color 0.15s; flex-wrap: wrap;
-        }
+        .lp-member-trigger { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 42px; padding: 8px 12px; border-radius: 9px; border: 1px solid rgba(99, 102, 241, 0.25); background: rgba(99, 102, 241, 0.03); color: var(--text-primary); cursor: pointer; text-align: left; font-size: 13px; transition: border-color 0.15s; flex-wrap: wrap; }
         .lp-member-trigger:hover, .lp-member-trigger:focus { border-color: var(--accent-primary); outline: none; }
         .lp-picker-backdrop { position: fixed; inset: 0; z-index: 10; }
-        .lp-member-dropdown {
-          position: absolute; top: calc(100% + 6px); left: 0; right: 0;
-          background: var(--bg-card); border: 1px solid var(--border-default);
-          border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.2);
-          z-index: 20; overflow: hidden; max-height: 220px; overflow-y: auto;
-          scrollbar-width: thin; scrollbar-color: var(--border-default) transparent;
-        }
-        .lp-member-option {
-          display: flex; align-items: center; gap: 10px; width: 100%;
-          padding: 10px 14px; border: none; background: transparent;
-          color: var(--text-primary); cursor: pointer; transition: background 0.12s; text-align: left;
-        }
+        .lp-member-dropdown { position: absolute; top: calc(100% + 6px); left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.2); z-index: 20; overflow: hidden; max-height: 220px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border-default) transparent; }
+        .lp-member-option { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 14px; border: none; background: transparent; color: var(--text-primary); cursor: pointer; transition: background 0.12s; text-align: left; }
         .lp-member-option:hover { background: var(--bg-secondary); }
         .lp-member-option.selected { background: color-mix(in srgb, var(--accent-primary) 8%, transparent); }
-        .lp-member-avatar {
-          display: inline-flex; align-items: center; justify-content: center;
-          width: 28px; height: 28px; border-radius: 50%;
-          background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
-          color: var(--accent-primary); font-size: 12px; font-weight: 700; flex-shrink: 0;
-        }
-        .lp-member-avatar-sm {
-          display: inline-flex; align-items: center; justify-content: center;
-          width: 20px; height: 20px; border-radius: 50%;
-          background: color-mix(in srgb, var(--accent-primary) 20%, transparent);
-          color: var(--accent-primary); font-size: 10px; font-weight: 700; flex-shrink: 0;
-        }
-        .lp-member-chip {
-          display: inline-flex; align-items: center; gap: 5px;
-          padding: 3px 8px 3px 4px; border-radius: 20px;
-          background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
-          border: 1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent);
-          color: var(--text-primary); font-size: 12px; font-weight: 500;
-        }
-        .lp-chip-remove {
-          display: inline-flex; align-items: center; justify-content: center;
-          padding: 1px; border: none; background: transparent; color: var(--text-muted);
-          cursor: pointer; border-radius: 50%; transition: color 0.12s, background 0.12s; margin-left: 2px;
-        }
+        .lp-member-avatar { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: color-mix(in srgb, var(--accent-primary) 20%, transparent); color: var(--accent-primary); font-size: 12px; font-weight: 700; flex-shrink: 0; }
+        .lp-member-avatar-sm { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; background: color-mix(in srgb, var(--accent-primary) 20%, transparent); color: var(--accent-primary); font-size: 10px; font-weight: 700; flex-shrink: 0; }
+        .lp-member-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px 3px 4px; border-radius: 20px; background: color-mix(in srgb, var(--accent-primary) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent); color: var(--text-primary); font-size: 12px; font-weight: 500; }
+        .lp-chip-remove { display: inline-flex; align-items: center; justify-content: center; padding: 1px; border: none; background: transparent; color: var(--text-muted); cursor: pointer; border-radius: 50%; transition: color 0.12s, background 0.12s; margin-left: 2px; }
         .lp-chip-remove:hover { color: #ef4444; background: rgba(239,68,68,0.1); }
-        .lp-members-sidebar {
-          padding: 16px; overflow-y: auto; background: var(--bg-secondary);
-          scrollbar-width: thin; scrollbar-color: var(--border-default) transparent;
-        }
-        .lp-members-panel-header {
-          display: flex; align-items: center; gap: 6px;
-          font-size: 12px; font-weight: 700; color: var(--text-secondary);
-          text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 12px;
-        }
+        .lp-members-sidebar { padding: 16px; overflow-y: auto; background: var(--bg-secondary); scrollbar-width: thin; scrollbar-color: var(--border-default) transparent; }
+        .lp-members-panel-header { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 12px; }
         .lp-members-list { display: flex; flex-direction: column; gap: 8px; }
-        .lp-member-row {
-          display: flex; align-items: center; gap: 8px; padding: 6px 8px;
-          border-radius: 8px; background: var(--bg-card); border: 1px solid var(--border-subtle);
-        }
-
+        .lp-member-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; background: var(--bg-card); border: 1px solid var(--border-subtle); }
         @media (max-width: 768px) {
           .lp-filters-container { padding: 14px 16px; gap: 12px; }
           .lp-filter-controls { flex-direction: column; align-items: stretch; gap: 10px; }

@@ -62,16 +62,8 @@ class ProjectService {
       const response = await api.get(endpoints.projects.list);
       const allProjects = response.data?.data || response.data || [];
 
-      let filteredProjects = [];
-
-      if (userRole === 'supervisor' || userRole === 'manager' || userRole === 'admin') {
-        filteredProjects = allProjects;
-      } else {
-        filteredProjects = allProjects;
-      }
-
-      console.log(`📊 Filtered projects for user ${userId} (${userRole}):`, filteredProjects.length);
-      return { data: filteredProjects };
+      // Backend now filters by role/supervisor/membership — return as-is.
+      return { data: allProjects };
     } catch (error) {
       console.error('ProjectService: Error fetching user projects:', error);
       return { data: [] };
@@ -87,13 +79,11 @@ class ProjectService {
         status: projectData.status || 'planning',
         deadline: projectData.deadline || null,
         start_at: projectData.startDate || null,
-        created_by: projectData.created_by || null,
+        // 🆕 Always send supervisors array (backend validates Lead must send ≥1)
+        supervisors: Array.isArray(projectData.supervisors)
+          ? projectData.supervisors.map(Number)
+          : [],
       };
-
-      // 👇 NEW: include supervisors if the backend supports it
-      if (Array.isArray(projectData.supervisors) && projectData.supervisors.length > 0) {
-        payload.supervisors = projectData.supervisors;
-      }
 
       console.log('📤 Creating project with payload:', payload);
 
@@ -116,9 +106,9 @@ class ProjectService {
         start_at: projectData.startDate || null,
       };
 
-      // 👇 NEW: include supervisors if the backend supports it
-      if (Array.isArray(projectData.supervisors) && projectData.supervisors.length > 0) {
-        payload.supervisors = projectData.supervisors;
+      // Only send supervisors on PATCH if explicitly provided
+      if (Array.isArray(projectData.supervisors)) {
+        payload.supervisors = projectData.supervisors.map(Number);
       }
 
       console.log('📤 Updating project with payload:', payload);
