@@ -18,6 +18,7 @@ import userService from '../../services/userService';
 import { useAuth } from '../../context/AuthContext';
 
 /* ─────────── Roles that are NOT team members ─────────── */
+// Leads & supervisors belong on their own pages — not the team-member grid.
 const NON_MEMBER_ROLES = ['lead', 'member', 'manager', 'admin', 'supervisor'];
 
 /* ─────────── Validation constants ─────────── */
@@ -113,11 +114,20 @@ const defaultForm = {
 };
 
 /* ─────────── Compute per-member task stats from a task list ─────────── */
-function computeTaskStatsForMember(memberId, allTasks) {
+/* ─────────── Compute per-member task stats from a task list ─────────── */
+function computeTaskStatsForMember(memberId, allTasks, usersList = []) {
   const numId = Number(memberId);
+
+  // The member might be identified in tasks by:
+  //   - assign_to (TeamMember.id — the normal case)
+  //   - assign_to_name (string match — fallback)
+  //   - assignedTo (camelCase variant from some serializers)
+  const member = null; // not passed here; name lookup happens below if needed
+
   const memberTasks = (allTasks || []).filter(t => {
-    const assignTo = t.assign_to ?? t.assignedTo;
-    return Number(assignTo) === numId;
+    const a1 = t.assign_to ?? t.assignedTo;
+    if (a1 != null && Number(a1) === numId) return true;
+    return false;
   });
 
   const totalTasks = memberTasks.length;
@@ -138,7 +148,6 @@ function computeTaskStatsForMember(memberId, allTasks) {
     ? Math.round((completedTasks / totalTasks) * 100)
     : 0;
 
-  // Average per-task progress (0-100)
   const avgProgress = totalTasks > 0
     ? Math.round(
         memberTasks.reduce((sum, t) => {
@@ -153,17 +162,13 @@ function computeTaskStatsForMember(memberId, allTasks) {
       )
     : 0;
 
-  // On-time rate: of the completed tasks that had a due_date, how many
-  // were completed by their due date.
   const completedWithDue = memberTasks.filter(t => {
     const s = (t.status || '').toLowerCase();
     return (s === 'done' || s === 'completed') && (t.due_date || t.deadline);
   });
   const onTimeTasks = completedWithDue.filter(t => {
     const due = new Date(t.due_date || t.deadline);
-    const updated = new Date(
-      t.updated_at || t.update_last || t.created_at || Date.now()
-    );
+    const updated = new Date(t.updated_at || t.update_last || t.created_at || Date.now());
     return updated <= due;
   }).length;
   const onTimeRate = completedWithDue.length > 0
@@ -222,96 +227,115 @@ export default function LeadTeamMembers() {
 
   useEffect(() => { fetchData(); }, []);
 
+  /* ─────────── Fetch data ─────────── */
   const fetchData = async () => {
-    try {
-      setLoading(true);
-      const [membersData, tasksData, usersData] = await Promise.all([
-        teamService.getTeamMembers(),
-        taskService.getTasks(),
-        userService.getUsers(),
-      ]);
+  try {
+    setLoading(true);
+    const [membersData, tasksData, usersData] = await Promise.all([
+      teamService.getTeamMembers(),
+      taskService.getTasks(),
+      userService.getUsers(),
+    ]);
 
-      let rawMembers = membersData?.data || membersData || [];
-      const tasksList = tasksData?.data || tasksData || [];
-      const usersList = usersData?.data || usersData || [];
+    let rawMembers = membersData?.data || membersData || [];
+    const tasksList = tasksData?.data || tasksData || [];
+    const usersList = usersData?.data || usersData || [];
 
-      if (!Array.isArray(rawMembers)) rawMembers = [];
+    if (!Array.isArray(rawMembers)) rawMembers = [];
 
-      // ═══════════════════════════════════════════════════════════
-      // FILTER: only show real team members (exclude leads/supervisors).
-      // ═══════════════════════════════════════════════════════════
-      const activeMembers = rawMembers.filter(m => m.is_deleted !== 1);
+    // ─── DIAGNOSTICS ───
+    console.log('🔍 [Diagnostic] rawMembers count:', rawMembers.length);
+    console.log('🔍 [Diagnostic] usersList count:', usersList.length);
+    console.log('🔍 [Diagnostic] tasksList count:', tasksList.length);
+    console.log('🔍 [Diagnostic] sample member:', rawMembers[0]);
+    console.log('🔍 [Diagnostic] sample user:', usersList[0]);
+    console.log('🔍 [Diagnostic] sample task:', tasksList[0]);
+    console.log('🔍 [Diagnostic] task assign_to values:',
+      tasksList.map(t => ({
+        t_id: t.t_id || t.id,
+        title: t.title,
+        assign_to: t.assign_to ?? t.assignedTo ?? null,
+        assign_to_name: t.assign_to_name ?? null,
+      }))
+    );
+    console.log('🔍 [Diagnostic] member ids:',
+      rawMembers.map(m => ({ id: m.id, name: m.name, role: m.role }))
+    );
 
-      const filteredMembers = activeMembers.filter(m => {
-        const memberName = (m.name || '').toLowerCase().trim();
-        const memberEmail = (m.email || '').toLowerCase().trim();
+    const activeMembers = rawMembers.filter(m => m.is_deleted !== 1);
 
-        const linkedUser = usersList.find(u => {
-          const uEmail = (u.email || '').toLowerCase().trim();
-          const uName = (u.u_name || u.name || '').toLowerCase().trim();
-          if (memberEmail && uEmail && memberEmail === uEmail) return true;
-          if (memberName && uName && memberName === uName) return true;
-          return false;
-        });
+    const filteredMembers = activeMembers.filter(m => {
+      const memberName = (m.name || '').toLowerCase().trim();
+      const memberEmail = (m.email || '').toLowerCase().trim();
 
-        if (!linkedUser) return true;
-        const role = (linkedUser.role || '').toLowerCase();
-        return !NON_MEMBER_ROLES.includes(role);
+      const linkedUser = usersList.find(u => {
+        const uEmail = (u.email || '').toLowerCase().trim();
+        const uName = (u.u_name || u.name || '').toLowerCase().trim();
+        if (memberEmail && uEmail && memberEmail === uEmail) return true;
+        if (memberName && uName && memberName === uName) return true;
+        return false;
       });
 
-      setMembers(filteredMembers);
-      setTasks(tasksList);
-      setUsers(usersList);
+      if (!linkedUser) return true;
+      const role = (linkedUser.role || '').toLowerCase();
+      return !NON_MEMBER_ROLES.includes(role);
+    });
 
-      // ═══════════════════════════════════════════════════════════
-      // Precompute local stats + enrich with backend stats.
-      // ═══════════════════════════════════════════════════════════
-      const localStats = {};
-      filteredMembers.forEach(m => {
-        localStats[m.id] = computeTaskStatsForMember(m.id, tasksList);
-      });
+    setMembers(filteredMembers);
+    setTasks(tasksList);
+    setUsers(usersList);
 
-      const mergedStats = { ...localStats };
-      await Promise.all(
-        filteredMembers.map(async (member) => {
-          try {
-            const response = await teamService.getTeamMemberStats(member.id);
-            const backend = response?.data || response || {};
-            const local = localStats[member.id];
+    // Precompute local stats for every member
+    const localStats = {};
+    filteredMembers.forEach(m => {
+      localStats[m.id] = computeTaskStatsForMember(m.id, tasksList);
+    });
 
-            mergedStats[member.id] = {
-              totalTasks:      Number(backend.totalTasks)      || local.totalTasks      || 0,
-              completedTasks:  Number(backend.completedTasks)  || local.completedTasks  || 0,
-              inProgressTasks: Number(backend.inProgressTasks) || local.inProgressTasks || 0,
-              todoTasks:       Number(backend.todoTasks)       || local.todoTasks       || 0,
-              completionRate:  Number(backend.completionRate)  || local.completionRate  || 0,
-              onTimeRate:      Number(backend.onTimeRate)      || local.onTimeRate      || 0,
-              avgProgress:     Number(backend.avgProgress)     || local.avgProgress     || 0,
-              projectsCount:   Number(backend.projectsCount)   || local.projectsCount   || 0,
-              tasks: local.tasks,
-            };
-          } catch (err) {
-            // keep local stats
-          }
-        })
-      );
+    // Try to enrich with backend stats
+    const mergedStats = { ...localStats };
+    await Promise.all(
+      filteredMembers.map(async (member) => {
+        try {
+          const response = await teamService.getTeamMemberStats(member.id);
+          const backend = response?.data || response || {};
+          const local = localStats[member.id];
 
-      setMemberStatsMap(mergedStats);
+          mergedStats[member.id] = {
+            totalTasks:      Number(backend.totalTasks)      || local.totalTasks      || 0,
+            completedTasks:  Number(backend.completedTasks)  || local.completedTasks  || 0,
+            inProgressTasks: Number(backend.inProgressTasks) || local.inProgressTasks || 0,
+            todoTasks:       Number(backend.todoTasks)       || local.todoTasks       || 0,
+            completionRate:  Number(backend.completionRate)  || local.completionRate  || 0,
+            onTimeRate:      Number(backend.onTimeRate)      || local.onTimeRate      || 0,
+            avgProgress:     Number(backend.avgProgress)     || local.avgProgress     || 0,
+            projectsCount:   Number(backend.projectsCount)   || local.projectsCount   || 0,
+            tasks: local.tasks,
+          };
+        } catch (err) {
+          // keep local
+        }
+      })
+    );
 
-      console.log('📊 [LeadTeamMembers] Members (filtered):', filteredMembers.length);
-      console.log('📊 [LeadTeamMembers] Tasks:', tasksList.length);
-    } catch (error) {
-      console.error('Error fetching data:', error);
-      toast.error('Failed to load team members');
-      setMembers([]);
-      setTasks([]);
-      setUsers([]);
-      setMemberStatsMap({});
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  };
+    setMemberStatsMap(mergedStats);
+
+    console.log('📊 [LeadTeamMembers] Members (after filter):', filteredMembers.length);
+    console.log('📊 [LeadTeamMembers] Stats map keys:', Object.keys(mergedStats).length);
+    console.log('📊 [LeadTeamMembers] First member stats:',
+      mergedStats[filteredMembers[0]?.id]
+    );
+  } catch (error) {
+    console.error('Error fetching data:', error);
+    toast.error('Failed to load team members');
+    setMembers([]);
+    setTasks([]);
+    setUsers([]);
+    setMemberStatsMap({});
+  } finally {
+    setLoading(false);
+    setRefreshing(false);
+  }
+};
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -341,8 +365,12 @@ export default function LeadTeamMembers() {
   /* ─────────── Stats accessor (never returns 0 when data exists) ─────────── */
   const getMemberStats = (memberId) => {
     const numId = Number(memberId);
+
+    // 1. Use precomputed map when present
     const cached = memberStatsMap[numId] || memberStatsMap[memberId];
     if (cached) return cached;
+
+    // 2. Fall back to fresh computation from tasks
     return computeTaskStatsForMember(numId, tasks);
   };
 
@@ -363,6 +391,7 @@ export default function LeadTeamMembers() {
     return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
   };
 
+  /* ─────────── Form validation ─────────── */
   const formErrors = useMemo(() => ({
     name: validators.name(form.name),
     role: validators.role(form.role),
@@ -387,6 +416,7 @@ export default function LeadTeamMembers() {
     setFormSubmitAttempted(false);
   };
 
+  /* ─────────── Add member ─────────── */
   const handleAdd = async () => {
     setFormSubmitAttempted(true);
 
@@ -414,6 +444,7 @@ export default function LeadTeamMembers() {
       const newMember = response?.data || response;
 
       if (newMember && newMember.id) {
+        // Add to local list + seed stats
         setMembers(prev => [newMember, ...prev]);
         setMemberStatsMap(prev => ({
           ...prev,
@@ -437,6 +468,7 @@ export default function LeadTeamMembers() {
     }
   };
 
+  /* ─────────── Edit member ─────────── */
   const openEdit = (member) => {
     setSelected(member);
     setForm({
@@ -513,6 +545,7 @@ export default function LeadTeamMembers() {
     resetFormState();
   };
 
+  /* ─────────── Delete ─────────── */
   const handleDeleteClick = (member) => {
     const memberTasks = getTasksForMember(member.id);
     setMemberToDelete(member);
@@ -617,6 +650,7 @@ export default function LeadTeamMembers() {
     }
   };
 
+  /* ─────────── Escape to close ─────────── */
   useEffect(() => {
     const onKey = (e) => {
       if (e.key !== 'Escape') return;
@@ -631,6 +665,7 @@ export default function LeadTeamMembers() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showDeleteConfirm, showEdit, showAdd, drawer, isDeleting]);
 
+  /* ─────────── Filtering / sorting ─────────── */
   const filtered = members.filter(m => {
     const skills = m.skills || '';
     const name = m.name || '';
@@ -823,10 +858,6 @@ export default function LeadTeamMembers() {
               const completedTasks = stats?.completedTasks || 0;
               const inProgressTasks = stats?.inProgressTasks || 0;
 
-              // ✅ Show "—" when there's nothing to measure instead of a
-              // misleading 0%.
-              const hasCompletedWithDue = completedTasks > 0;
-
               return (
                 <motion.div
                   key={memberId || `member-${i}`}
@@ -900,16 +931,14 @@ export default function LeadTeamMembers() {
                     <div className="member-on-time">
                       <ProgressRing progress={onTimeRate} size={36} strokeWidth={3} />
                       <div>
-                        <p className="member-on-time-value">
-                          {hasCompletedWithDue ? `${onTimeRate}%` : '—'}
-                        </p>
+                        <p className="member-on-time-value">{onTimeRate}%</p>
                         <p className="member-on-time-label">On-time</p>
                       </div>
                     </div>
                     <span className="member-completion" style={{
                       color: completionRate >= 70 ? '#34d399' : completionRate >= 40 ? '#f59e0b' : '#f87171'
                     }}>
-                      {totalTasks > 0 ? `${completionRate}% completion` : 'No tasks'}
+                      {completionRate}% completion
                     </span>
                   </div>
                 </motion.div>
@@ -1057,9 +1086,7 @@ export default function LeadTeamMembers() {
                       <span className="mm-stat-label">Active</span>
                     </div>
                     <div className="mm-stat-item">
-                      <span className="mm-stat-value" style={{ color: completedTasks > 0 && onTimeRate >= 70 ? '#34d399' : '#f59e0b' }}>
-                        {completedTasks > 0 ? `${onTimeRate}%` : '—'}
-                      </span>
+                      <span className="mm-stat-value" style={{ color: onTimeRate >= 70 ? '#34d399' : '#f59e0b' }}>{onTimeRate}%</span>
                       <span className="mm-stat-label">On-Time</span>
                     </div>
                   </div>
