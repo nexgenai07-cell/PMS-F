@@ -519,31 +519,7 @@ export default function SupervisorProjectDetail() {
       setProjectLeads(leadEntries);
       console.log('✅ [Supervisor] projectLeads:', leadEntries);
 
-      const mappedTasks = projectTasks.map(t => ({
-        ...t,
-        progress: computeTaskProgress(t),
-        milestones: asArray(t.milestones),
-        assigneeId: t.assign_to ?? null,
-      }));
-      setTasks(mappedTasks);
-      console.log('✅ [Supervisor] mappedTasks:', mappedTasks.length);
-      
-
-      loadCommentsForTasks(mappedTasks);
-
-    } catch (error) {
-      console.error('❌ [Supervisor] Error fetching project data:', error);
-      toast.error('Failed to load project details');
-      if (error?.status === 404 || error?.response?.status === 404) {
-        navigate('/supervisor/projects');
-      }
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-      console.log('✅ [Supervisor] fetchProjectData COMPLETE');
-    }
-  };
-        const mappedTasks = projectTasks.map(t => ({
+       const mappedTasks = projectTasks.map(t => ({
         ...t,
         progress: computeTaskProgress(t),
         milestones: asArray(t.milestones),
@@ -552,9 +528,7 @@ export default function SupervisorProjectDetail() {
       setTasks(mappedTasks);
       console.log('✅ [Supervisor] mappedTasks:', mappedTasks.length);
 
-      // ═══════════════════════════════════════════════════════════
-      // 🔍 TEMP DIAGNOSTIC — DELETE THIS BLOCK AFTER DEBUGGING
-      // ═══════════════════════════════════════════════════════════
+      // ⬇️⬇️⬇️  DIAGNOSTIC GOES HERE  ⬇️⬇️⬇️
       console.log('🔍 ===== TASK / ASSIGNEE DIAGNOSTIC =====');
       console.log('🔍 TeamMembers:', membersList.map(m => ({ id: m.id, name: m.name })));
       console.log('🔍 Users:', usersList.map(u => ({ id: u.id, name: u.u_name || u.name })));
@@ -585,7 +559,23 @@ export default function SupervisorProjectDetail() {
         })
       );
       console.log('🔍 =========================================');
-      // ═══════════════════════════════════════════════════════════
+      
+
+      loadCommentsForTasks(mappedTasks);
+
+    } catch (error) {
+      console.error('❌ [Supervisor] Error fetching project data:', error);
+      toast.error('Failed to load project details');
+      if (error?.status === 404 || error?.response?.status === 404) {
+        navigate('/supervisor/projects');
+      }
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+      console.log('✅ [Supervisor] fetchProjectData COMPLETE');
+    }
+  };
+  
 
   const loadCommentsForTasks = async (taskList) => {
     if (!Array.isArray(taskList) || taskList.length === 0) {
