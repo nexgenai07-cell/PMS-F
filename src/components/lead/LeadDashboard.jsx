@@ -18,10 +18,7 @@ import {
   BarChart3,
   PieChart as PieChartIcon,
   ArrowUpRight,
-  ArrowDownRight,
   Sparkles,
-  MoreHorizontal,
-  AlertCircle,
   Inbox
 } from 'lucide-react';
 import {
@@ -35,7 +32,6 @@ import {
   Cell,
   PieChart,
   Pie,
-  Legend,
   AreaChart,
   Area
 } from 'recharts';
@@ -103,7 +99,7 @@ const HeroRing = ({ value }) => {
       </svg>
       <div className="hero-ring-label">
         <span className="hero-ring-value">{value}%</span>
-        <span className="hero-ring-text">Progress</span>   {/* ← was "Done" */}
+        <span className="hero-ring-text">Progress</span>
       </div>
     </div>
   );
@@ -854,28 +850,28 @@ export default function LeadDashboard() {
   const [projects, setProjects] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [teamMembers, setTeamMembers] = useState([]);
-  const [activeIndex, setActiveIndex] = useState(null);
   const [projectStatsMap, setProjectStatsMap] = useState({});
   const [stats, setStats] = useState({
-  totalProjects: 0,
-  totalTasks: 0,
-  completedTasks: 0,
-  inProgressTasks: 0,
-  teamMembers: 0,
-  onTimeRate: 0,
-  completionRate: 0,
-  avgProgress: 0,    // ← NEW
-});
+    totalProjects: 0,
+    totalTasks: 0,
+    completedTasks: 0,
+    inProgressTasks: 0,
+    teamMembers: 0,
+    onTimeRate: 0,
+    completionRate: 0,
+    avgProgress: 0,
+  });
 
   // Fetch data
   useEffect(() => {
     fetchDashboardData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchDashboardData = async () => {
     try {
       setLoading(true);
-      
+
       const [projectsData, tasksData, membersData] = await Promise.all([
         projectService.getProjects(),
         taskService.getTasks(),
@@ -886,118 +882,93 @@ export default function LeadDashboard() {
       const tasksList = tasksData?.data || tasksData || [];
       const membersList = membersData?.data || membersData || [];
 
-      // ✅ Get current user
-      const userId = Number(user?.id || user?.u_id);
-      const userName = (user?.u_name || '').toLowerCase().trim();
-      
-      // ✅ Find TeamMember that matches this user
-      const userTeamMember = membersList.find(m => {
-        const memberName = (m.name || '').toLowerCase().trim();
-        return memberName === userName;
-      });
-      const teamMemberId = userTeamMember ? Number(userTeamMember.id) : null;
-      
-      // ✅ Find projects created by this user
-      const createdProjects = allProjects.filter(p => 
-        Number(p.created_by) === userId
-      );
-      const createdProjectIds = createdProjects.map(p => Number(p.p_id || p.id));
-      
-      // ✅ Find projects where this user is assigned to tasks
-      const assignedProjectIds = new Set();
-      tasksList.forEach(t => {
-        const assignTo = Number(t.assign_to || t.assignedTo);
-        if (assignTo === teamMemberId) {
-          assignedProjectIds.add(Number(t.p_id || t.p));
-        }
-      });
-      
-      // ✅ Also check by name (fallback)
-      tasksList.forEach(t => {
-        const assigneeName = (t.assign_to_name || '').toLowerCase().trim();
-        if (assigneeName === userName) {
-          assignedProjectIds.add(Number(t.p_id || t.p));
-        }
-      });
-      
-      // ✅ Combine all project IDs
-      const allProjectIds = [...new Set([...createdProjectIds, ...assignedProjectIds])];
-      
-      // ✅ Filter projects for this user
-      const userProjects = allProjects.filter(p => 
-        allProjectIds.includes(Number(p.p_id || p.id))
-      );
-      
-      // ✅ Filter tasks for this user's projects
-      const userTasks = tasksList.filter(t => 
-        allProjectIds.includes(Number(t.p_id || t.p))
+      // ═══════════════════════════════════════════════════════════
+      // PROJECT VISIBILITY (FIXED)
+      //
+      // The backend `/api/projects/` endpoint already filters projects
+      // by the current user's visibility:
+      //   1. They created the project (created_by)
+      //   2. They are in project.supervisors M2M
+      //   3. They are linked via PTeam (added as a member/lead)
+      //
+      // We trust it — no client-side re-filtering needed.
+      // Previously the dashboard only looked at created_by and task
+      // assignments, which hid any project where the user was added
+      // as a member/lead but had no assigned tasks yet.
+      // ═══════════════════════════════════════════════════════════
+      const userProjects = allProjects;
+
+      const userProjectIds = userProjects.map(p => Number(p.p_id || p.id));
+
+      // Tasks scoped to visible projects only
+      const userTasks = tasksList.filter(t =>
+        userProjectIds.includes(Number(t.p_id || t.p))
       );
 
-      console.log('📊 Lead Dashboard - User:', user?.u_name, 'TeamMember ID:', teamMemberId);
       console.log('📊 Lead Dashboard - Projects found:', userProjects.length);
       console.log('📊 Lead Dashboard - Tasks found:', userTasks.length);
-      
+
       setProjects(userProjects);
       setTasks(userTasks);
       setTeamMembers(membersList);
 
+      // ─── Aggregate stats from each project's /stats endpoint ───
       let totalTasks = 0;
-let completedTasks = 0;
-let inProgressTasks = 0;
-let totalProgressWeighted = 0;   // sum of (avgProgress × taskCount)
-let totalTaskCountForAvg = 0;    // denominator for the weighted average
-const statsMap = {};
+      let completedTasks = 0;
+      let inProgressTasks = 0;
+      let totalProgressWeighted = 0;   // sum of (avgProgress × taskCount)
+      let totalTaskCountForAvg = 0;    // denominator for weighted average
+      let totalOnTimeSum = 0;          // sum of onTimeRate per project
+      let totalCompletedForOnTime = 0; // sum of completedTasks per project
+      const statsMap = {};
 
-for (const project of userProjects) {
-  const projectId = Number(project.p_id || project.id);
-  try {
-    const statsResponse = await projectService.getProjectStats(projectId);
-    const stats = statsResponse?.data || {};
-    statsMap[projectId] = stats;
+      for (const project of userProjects) {
+        const projectId = Number(project.p_id || project.id);
+        try {
+          const statsResponse = await projectService.getProjectStats(projectId);
+          const projectStats = statsResponse?.data || {};
+          statsMap[projectId] = projectStats;
 
-    const projectTotalTasks = stats.totalTasks || 0;
-    totalTasks += projectTotalTasks;
-    completedTasks += stats.completedTasks || 0;
-    inProgressTasks += stats.inProgressTasks || 0;
+          const projectTotalTasks = projectStats.totalTasks || 0;
+          const projectCompleted = projectStats.completedTasks || 0;
 
-    // Weighted sum: bigger projects pull the average more,
-    // exactly like the backend does per-project.
-    totalProgressWeighted += (Number(stats.avgProgress) || 0) * projectTotalTasks;
-    totalTaskCountForAvg += projectTotalTasks;
-  } catch (error) {
-    console.error(`Error fetching stats for project ${projectId}:`, error);
-  }
-}
+          totalTasks += projectTotalTasks;
+          completedTasks += projectCompleted;
+          inProgressTasks += projectStats.inProgressTasks || 0;
+
+          // Weighted sum for average progress
+          totalProgressWeighted += (Number(projectStats.avgProgress) || 0) * projectTotalTasks;
+          totalTaskCountForAvg += projectTotalTasks;
+
+          // On-time rate — weight by completed tasks
+          totalOnTimeSum += (Number(projectStats.onTimeRate) || 0) * projectCompleted;
+          totalCompletedForOnTime += projectCompleted;
+        } catch (error) {
+          console.error(`Error fetching stats for project ${projectId}:`, error);
+        }
+      }
 
       setProjectStatsMap(statsMap);
 
-      // ✅ Get unique team members from tasks
+      // ─── Compute headline stats ───
+      const avgProgress = totalTaskCountForAvg > 0
+        ? Math.round(totalProgressWeighted / totalTaskCountForAvg)
+        : 0;
+
+      const completionRate = totalTasks > 0
+        ? Math.round((completedTasks / totalTasks) * 100)
+        : 0;
+
+      const onTimeRate = totalCompletedForOnTime > 0
+        ? Math.round(totalOnTimeSum / totalCompletedForOnTime)
+        : 0;
+
+      // ─── Unique team members from project tasks ───
       const memberIds = new Set();
       userTasks.forEach(t => {
         if (t.assign_to) memberIds.add(Number(t.assign_to));
       });
-      const uniqueMembers = membersList.filter(m => 
-        memberIds.has(Number(m.id))
-      );
-
-      const avgProgress = totalTaskCountForAvg > 0
-  ? Math.round(totalProgressWeighted / totalTaskCountForAvg)
-  : 0;
-
-// Keep completionRate around too — it's still used to show
-// "X% of tasks are fully done" in the trend badge.
-const completionRate = totalTasks > 0
-  ? Math.round((completedTasks / totalTasks) * 100)
-  : 0;
-      
-      // Calculate on-time rate
-      const completedTasksList = userTasks.filter(t => 
-        t.status === 'done' || t.status === 'completed'
-      );
-      const onTime = completedTasksList.filter(t => 
-        t.due_date && new Date(t.due_date) >= new Date(t.start_date || t.created_at)
-      ).length;
-      const onTimeRate = completedTasksList.length === 0 ? 0 : Math.round((onTime / completedTasksList.length) * 100);
+      const uniqueMembers = membersList.filter(m => memberIds.has(Number(m.id)));
 
       console.log('📊 Lead Dashboard Stats:', {
         totalProjects: userProjects.length,
@@ -1005,19 +976,20 @@ const completionRate = totalTasks > 0
         completedTasks,
         inProgressTasks,
         completionRate,
-        onTimeRate
+        onTimeRate,
+        avgProgress,
       });
 
       setStats({
-  totalProjects: userProjects.length,
-  totalTasks,
-  completedTasks,
-  inProgressTasks,
-  teamMembers: uniqueMembers.length,
-  onTimeRate,
-  completionRate,
-  avgProgress,       // ← NEW
-});
+        totalProjects: userProjects.length,
+        totalTasks,
+        completedTasks,
+        inProgressTasks,
+        teamMembers: uniqueMembers.length,
+        onTimeRate,
+        completionRate,
+        avgProgress,
+      });
 
     } catch (error) {
       console.error('❌ Failed to fetch dashboard data:', error);
@@ -1035,12 +1007,12 @@ const completionRate = totalTasks > 0
   };
 
   const getProjectProgress = (projectId) => {
-  const s = projectStatsMap[projectId];
-  // Prefer the true per-task average; fall back to completion rate.
-  const avg = Number(s?.avgProgress);
-  if (Number.isFinite(avg)) return Math.round(avg);
-  return Math.round(Number(s?.completionRate) || 0);
-};
+    const s = projectStatsMap[projectId];
+    // Prefer the true per-task average; fall back to completion rate.
+    const avg = Number(s?.avgProgress);
+    if (Number.isFinite(avg)) return Math.round(avg);
+    return Math.round(Number(s?.completionRate) || 0);
+  };
 
   const getProjectMembers = (projectId) => {
     const projectTasks = tasks.filter(t => Number(t.p_id || t.p) === Number(projectId));
@@ -1053,25 +1025,25 @@ const completionRate = totalTasks > 0
 
   // Chart data - only from user's tasks
   const taskStatusData = [
-    { 
-      name: 'To Do', 
-      value: tasks.filter(t => t.status === 'todo' || t.status === 'pending').length, 
-      fill: '#94a3b8' 
+    {
+      name: 'To Do',
+      value: tasks.filter(t => t.status === 'todo' || t.status === 'pending').length,
+      fill: '#94a3b8'
     },
-    { 
-      name: 'In Progress', 
-      value: tasks.filter(t => t.status === 'in_progress' || t.status === 'in-progress').length, 
-      fill: '#818cf8' 
+    {
+      name: 'In Progress',
+      value: tasks.filter(t => t.status === 'in_progress' || t.status === 'in-progress').length,
+      fill: '#818cf8'
     },
-    { 
-      name: 'Review', 
-      value: tasks.filter(t => t.status === 'review').length, 
-      fill: '#f59e0b' 
+    {
+      name: 'Review',
+      value: tasks.filter(t => t.status === 'review').length,
+      fill: '#f59e0b'
     },
-    { 
-      name: 'Done', 
-      value: tasks.filter(t => t.status === 'done' || t.status === 'completed').length, 
-      fill: '#34d399' 
+    {
+      name: 'Done',
+      value: tasks.filter(t => t.status === 'done' || t.status === 'completed').length,
+      fill: '#34d399'
     }
   ];
 
@@ -1210,12 +1182,12 @@ const completionRate = totalTasks > 0
           </div>
         </div>
         <div className="stat-card-mini anim" style={{ '--d': '310ms' }}>
-  <TrendingUp size={16} className="stat-mini-icon" />
-  <div>
-    <span className="stat-mini-value"><AnimatedNumber value={stats.avgProgress} suffix="%" /></span>
-    <span className="stat-mini-label">Average Progress</span>
-  </div>
-</div>
+          <TrendingUp size={16} className="stat-mini-icon" />
+          <div>
+            <span className="stat-mini-value"><AnimatedNumber value={stats.avgProgress} suffix="%" /></span>
+            <span className="stat-mini-label">Average Progress</span>
+          </div>
+        </div>
         <div className="stat-card-mini anim" style={{ '--d': '340ms' }}>
           <Calendar size={16} className="stat-mini-icon" />
           <div>
@@ -1438,8 +1410,8 @@ const completionRate = totalTasks > 0
         }
         onMenuClick={onMenuClick}
         actions={
-          <button 
-            className="btn btn-secondary btn-sm refresh-btn" 
+          <button
+            className="btn btn-secondary btn-sm refresh-btn"
             onClick={handleRefresh}
             disabled={refreshing}
           >
