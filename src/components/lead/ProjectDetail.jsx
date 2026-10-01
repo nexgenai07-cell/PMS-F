@@ -26,7 +26,7 @@ import NotificationHelper from '../../services/notificationHelper';
 const PRIORITY_OPTIONS = ["low", "medium", "high", "critical"];
 const STATUS_OPTIONS = ["todo", "in_progress", "review", "done", "cancelled"];
 const SUPERVISOR_ROLES = ['manager', 'admin', 'supervisor'];
-const LEAD_ROLES = ['member', 'lead'];
+const LEAD_ROLES = ['lead', 'member']; // both roles count as "Lead" for now
 
 /* ─────────── Safe array helper ─────────── */
 const asArray = (v) => (Array.isArray(v) ? v : []);
@@ -64,39 +64,6 @@ function resolveTeamMemberId(tmId, usersList, membersList) {
       name: userObj.u_name || userObj.name || `User ${userObj.id}`,
       email: userObj.email || '',
       role: (userObj.role || '').toLowerCase(),
-    };
-  }
-  return null;
-}
-
-/* ─────────── Resolve User id → object ─────────── */
-function resolveUserId(userId, usersList, membersList) {
-  if (userId == null) return null;
-  const numId = Number(userId);
-  if (!Number.isFinite(numId)) return null;
-
-  const safeUsers = asArray(usersList);
-  const safeMembers = asArray(membersList);
-
-  const userObj = safeUsers.find(u => Number(u.id) === numId);
-  if (userObj) {
-    return {
-      id: userObj.id,
-      userId: userObj.id,
-      name: userObj.u_name || userObj.name || `User ${userObj.id}`,
-      email: userObj.email || '',
-      role: (userObj.role || '').toLowerCase(),
-    };
-  }
-
-  const tm = safeMembers.find(m => Number(m.id) === numId);
-  if (tm) {
-    return {
-      id: tm.id,
-      userId: tm.id,
-      name: tm.name || `User ${tm.id}`,
-      email: tm.email || '',
-      role: (tm.role || '').toLowerCase(),
     };
   }
   return null;
@@ -312,36 +279,51 @@ export default function LeadProjectDetail() {
   const isAddTaskValid = Object.values(addTaskErrors).every(e => e === '');
   const isEditTaskValid = Object.values(editTaskErrors).every(e => e === '');
 
-  /* ─── Team categorization ─── */
-  // Supervisors are User IDs; use s.userId for consistency
-const supervisorIdSet = useMemo(
-  () => new Set(asArray(projectSupervisors).map(s => Number(s.userId))),
-  [projectSupervisors]
-);
+  /* ═══════════════════════════════════════════════════════════
+     DERIVED DATA (all computed from state — no missing variables)
+     ═══════════════════════════════════════════════════════════ */
 
-const projectLeadsDerived = useMemo(() => {
-  if (!project) return [];
-  const creatorId = Number(project.created_by);
-  return asArray(projectMembers).filter(m => {
-    const role = (m.role || '').toLowerCase();
-    if (!LEAD_ROLES.includes(role)) return false;
-    if (Number(m.userId) === creatorId) return false;
-    if (supervisorIdSet.has(Number(m.userId))) return false;
-    return true;
-  });
-}, [projectMembers, project, supervisorIdSet]);
+  // Set of User.ids for supervisors.
+  const supervisorIdSet = useMemo(
+    () => new Set(asArray(projectSupervisors).map(s => Number(s.userId))),
+    [projectSupervisors]
+  );
 
-const regularMembers = useMemo(
-  () => asArray(projectMembers).filter(m => {
-    const role = (m.role || '').toLowerCase();
-    if (SUPERVISOR_ROLES.includes(role)) return false;
-    if (LEAD_ROLES.includes(role)) return false;
-    if (supervisorIdSet.has(Number(m.userId))) return false;
-    return true;
-  }),
-  [projectMembers, supervisorIdSet]
-);
+  // Leads = project members whose role is lead/member, excluding the
+  // creator and any supervisors. Uses userId (User.id) for comparison
+  // because supervisors come from a User M2M while members come from
+  // PTeam rows (TeamMember.id).
+  const projectLeadsDerived = useMemo(() => {
+    if (!project) return [];
+    const creatorId = Number(project.created_by);
+    return asArray(projectMembers).filter(m => {
+      const role = (m.role || '').toLowerCase();
+      if (!LEAD_ROLES.includes(role)) return false;
+      if (Number(m.userId) === creatorId) return false;
+      if (supervisorIdSet.has(Number(m.userId))) return false;
+      return true;
+    });
+  }, [projectMembers, project, supervisorIdSet]);
 
+  // If the state `projectLeads` was populated by fetchProjectData, use it.
+  // Otherwise fall back to the derived list so we never render nothing.
+  const projectLeadsFinal = asArray(projectLeads).length > 0
+    ? asArray(projectLeads)
+    : projectLeadsDerived;
+
+  // Regular members = project members that are neither supervisors nor leads.
+  const regularMembers = useMemo(
+    () => asArray(projectMembers).filter(m => {
+      const role = (m.role || '').toLowerCase();
+      if (SUPERVISOR_ROLES.includes(role)) return false;
+      if (LEAD_ROLES.includes(role)) return false;
+      if (supervisorIdSet.has(Number(m.userId))) return false;
+      return true;
+    }),
+    [projectMembers, supervisorIdSet]
+  );
+
+  // Members that have a resolved TeamMember id (assignable to tasks).
   const assignableMembers = useMemo(
     () => asArray(projectMembers).filter(m => m.tmId != null),
     [projectMembers]
@@ -361,6 +343,10 @@ const regularMembers = useMemo(
     );
     return Math.round(total / countable.length);
   }, [tasks, stats?.avgProgress]);
+
+  /* ═══════════════════════════════════════════════════════════
+     EFFECTS
+     ═══════════════════════════════════════════════════════════ */
 
   useEffect(() => {
     const onKey = (e) => {
@@ -417,15 +403,12 @@ const regularMembers = useMemo(
   }, [projectId]);
 
   /* ═══════════════════════════════════════════════════════════
-     FETCH — fully defensive
+     FETCH PROJECT DATA (defensive, verbose, step-by-step)
      ═══════════════════════════════════════════════════════════ */
   const fetchProjectData = async () => {
     console.log('🚀 fetchProjectData STARTED for projectId:', projectId);
     try {
       setLoading(true);
-
-      // Step 1: fire all API calls individually (don't Promise.all so one
-      // failure doesn't blank the whole page).
       console.log('📡 Fetching project, tasks, members, users, pteam, stats...');
 
       const [
@@ -444,7 +427,6 @@ const regularMembers = useMemo(
         projectService.getProjectStats(projectId).catch(e => { console.error('❌ getProjectStats:', e); return { data: {} }; }),
       ]);
 
-      // Step 2: normalize responses.
       const projectItem  = projectData?.data || projectData || null;
       const allTasks     = asArray(tasksData?.data || tasksData);
       const membersList  = asArray(membersData?.data || membersData);
@@ -461,7 +443,7 @@ const regularMembers = useMemo(
         stats: statsResponse,
       });
 
-      // Step 3: store the raw stuff.
+      // ─── Store raw data ───
       setProject(projectItem);
       setAllTeamMembers(membersList);
       setUsers(usersList);
@@ -478,14 +460,14 @@ const regularMembers = useMemo(
         avgProgress:     Number(statsResponse.avgProgress) || 0,
       });
 
-      // Step 4: filter tasks for this project.
+      // ─── Filter tasks for this project ───
       const projectTasks = allTasks.filter(t => {
         const taskProjectId = t.p_id ?? t.p ?? t.project ?? t.project_id;
         return Number(taskProjectId) === Number(projectId);
       });
       console.log('✅ projectTasks filtered:', projectTasks.length);
 
-      // Step 5: build PTeam member map.
+      // ─── Build PTeam member map ───
       const memberMap = new Map();
       const projectPteamEntries = pteamList.filter(
         entry => getPteamProjectId(entry) === Number(projectId)
@@ -513,52 +495,49 @@ const regularMembers = useMemo(
       });
       console.log('✅ memberEntries:', memberEntries.length, memberEntries);
 
-      // Step 6: parse supervisors.
-const supervisorIds = asArray(projectItem?.supervisors).map(Number);
-const supervisorNames = asArray(projectItem?.supervisor_names);
+      // ─── Parse supervisors (User IDs from M2M) ───
+      const supervisorIds = asArray(projectItem?.supervisors).map(Number);
+      const supervisorNames = asArray(projectItem?.supervisor_names);
 
-const supervisorEntries = supervisorIds
-  .map((sid, idx) => {
-    if (!Number.isFinite(sid)) return null;
-    const userObj = usersList.find(u => Number(u.id) === Number(sid));
-    return {
-      id: sid,
-      userId: sid,
-      name: supervisorNames[idx] || userObj?.u_name || userObj?.name || `User ${sid}`,
-      email: userObj?.email || '',
-      role: (userObj?.role || 'supervisor').toLowerCase(),
-    };
-  })
-  .filter(Boolean);
+      const supervisorEntries = supervisorIds
+        .map((sid, idx) => {
+          if (!Number.isFinite(sid)) return null;
+          const userObj = usersList.find(u => Number(u.id) === Number(sid));
+          return {
+            id: sid,
+            userId: sid,
+            name: supervisorNames[idx] || userObj?.u_name || userObj?.name || `User ${sid}`,
+            email: userObj?.email || '',
+            role: (userObj?.role || 'supervisor').toLowerCase(),
+          };
+        })
+        .filter(Boolean);
 
-console.log('✅ supervisorEntries:', supervisorEntries);
-setProjectSupervisors(supervisorEntries);
+      console.log('✅ supervisorEntries:', supervisorEntries);
+      setProjectSupervisors(supervisorEntries);
 
-// Step 7: build the flat projectMembers list (supervisors + members).
-// Use userId (User.id) for comparisons, because supervisors come from
-// the M2M to User while PTeam members are TeamMember rows.
-const supUserIdSet = new Set(supervisorEntries.map(s => Number(s.userId)));
-const membersWithoutSupervisors = memberEntries.filter(
-  m => !supUserIdSet.has(Number(m.userId))
-);
-const allMembers = [...supervisorEntries, ...membersWithoutSupervisors];
-setProjectMembers(allMembers);
-console.log('✅ projectMembers:', allMembers.length);
+      // ─── Build projectMembers (supervisors + non-supervisor members) ───
+      const supUserIdSet = new Set(supervisorEntries.map(s => Number(s.userId)));
+      const membersWithoutSupervisors = memberEntries.filter(
+        m => !supUserIdSet.has(Number(m.userId))
+      );
+      const allMembers = [...supervisorEntries, ...membersWithoutSupervisors];
+      setProjectMembers(allMembers);
+      console.log('✅ projectMembers:', allMembers.length);
 
-// Step 8: extract leads (project members with member/lead role,
-//          excluding the creator and supervisors).
-const creatorId = Number(projectItem?.created_by);
-const leadEntries = memberEntries.filter(m => {
-  const role = (m.role || '').toLowerCase();
-  if (!LEAD_ROLES.includes(role)) return false;
-  if (Number(m.userId) === creatorId) return false;    // ← FIXED: use userId
-  if (supUserIdSet.has(Number(m.userId))) return false; // ← FIXED: use userId
-  return true;
-});
-setProjectLeads(leadEntries);
-console.log('✅ projectLeads:', leadEntries);
+      // ─── Extract leads (excludes creator and supervisors) ───
+      const creatorId = Number(projectItem?.created_by);
+      const leadEntries = memberEntries.filter(m => {
+        const role = (m.role || '').toLowerCase();
+        if (!LEAD_ROLES.includes(role)) return false;
+        if (Number(m.userId) === creatorId) return false;
+        if (supUserIdSet.has(Number(m.userId))) return false;
+        return true;
+      });
+      setProjectLeads(leadEntries);
+      console.log('✅ projectLeads:', leadEntries);
 
-      // Step 9: map tasks with computed progress.
+      // ─── Map tasks with computed progress ───
       const mappedTasks = projectTasks.map(t => ({
         ...t,
         progress: computeTaskProgress(t),
@@ -568,7 +547,7 @@ console.log('✅ projectLeads:', leadEntries);
       setTasks(mappedTasks);
       console.log('✅ mappedTasks:', mappedTasks.length);
 
-      // Step 10: load comments (fire-and-forget; don't block render).
+      // ─── Load comments (non-blocking) ───
       loadCommentsForTasks(mappedTasks);
 
     } catch (error) {
@@ -600,9 +579,7 @@ console.log('✅ projectLeads:', leadEntries);
           commentsList.forEach(comment => {
             allComments.push({ ...comment, taskId: tid });
           });
-        } catch (e) {
-          // silent — one task's comments failing shouldn't kill the page
-        }
+        } catch (e) { /* silent */ }
       }
       setComments(allComments);
       console.log('✅ comments loaded:', allComments.length);
@@ -968,6 +945,10 @@ console.log('✅ projectLeads:', leadEntries);
     }
   };
 
+  /* ═══════════════════════════════════════════════════════════
+     RENDER
+     ═══════════════════════════════════════════════════════════ */
+
   if (loading) {
     return (
       <div>
@@ -997,10 +978,12 @@ console.log('✅ projectLeads:', leadEntries);
     );
   }
 
-  // Final safety net for the "Project Lead" section: the creator is always
-  // shown, even if we couldn't resolve their name.
   const creatorName = project.created_by_name || 'Project Lead';
-  const totalLeadCount = 1 + projectLeadsFinal.length;
+  // Count = 1 (creator) + additional leads (deduplicated against creator).
+  const additionalLeads = asArray(projectLeadsFinal).filter(
+    m => Number(m.userId) !== Number(project.created_by)
+  );
+  const totalLeadCount = 1 + additionalLeads.length;
 
   return (
     <div className="project-detail-page">
@@ -1216,7 +1199,7 @@ console.log('✅ projectLeads:', leadEntries);
                     <option value="">Unassigned</option>
                     {assignableMembers.map((m) => (
                       <option key={m.id} value={m.tmId}>
-                        {m.name} {supervisorIdSet.has(Number(m.id)) ? '👑' : ''}
+                        {m.name} {supervisorIdSet.has(Number(m.userId)) ? '👑' : ''}
                       </option>
                     ))}
                   </select>
@@ -1308,7 +1291,7 @@ console.log('✅ projectLeads:', leadEntries);
                     <option value="">Select Member</option>
                     {assignableMembers.map((mem) => (
                       <option key={mem.id} value={mem.tmId}>
-                        {mem.name} {supervisorIdSet.has(Number(mem.id)) ? '👑' : ''}
+                        {mem.name} {supervisorIdSet.has(Number(mem.userId)) ? '👑' : ''}
                       </option>
                     ))}
                   </select>
@@ -1606,8 +1589,8 @@ console.log('✅ projectLeads:', leadEntries);
                     </div>
                   </div>
 
-                  {/* Additional leads added via the + button */}
-                  {projectLeadsFinal.map((m, idx) => (
+                  {/* Additional leads (filtered to exclude the creator again, just in case) */}
+                  {additionalLeads.map((m, idx) => (
                     <div key={m.id || `lead-${idx}`} className="team-member-item lead-item">
                       <Avatar name={m.name || 'Lead'} size="sm" />
                       <div className="team-member-info">
@@ -1802,7 +1785,7 @@ console.log('✅ projectLeads:', leadEntries);
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
                   {asArray(users)
                     .filter(u => SUPERVISOR_ROLES.includes((u.role || '').toLowerCase()))
-                    .filter(u => !asArray(projectSupervisors).some(s => Number(s.id) === Number(u.id)))
+                    .filter(u => !asArray(projectSupervisors).some(s => Number(s.userId) === Number(u.id)))
                     .map(u => (
                       <button
                         key={u.id}
@@ -1825,7 +1808,7 @@ console.log('✅ projectLeads:', leadEntries);
                   }
                   {asArray(users)
                     .filter(u => SUPERVISOR_ROLES.includes((u.role || '').toLowerCase()))
-                    .filter(u => !asArray(projectSupervisors).some(s => Number(s.id) === Number(u.id)))
+                    .filter(u => !asArray(projectSupervisors).some(s => Number(s.userId) === Number(u.id)))
                     .length === 0 && (
                     <div style={{
                       padding: '20px 16px', textAlign: 'center', fontSize: 13,
@@ -1870,7 +1853,8 @@ console.log('✅ projectLeads:', leadEntries);
                   {asArray(allTeamMembers)
                     .filter(m => m.is_deleted !== 1)
                     .filter(m => LEAD_ROLES.includes((m.role || '').toLowerCase()))
-                    .filter(m => !asArray(projectMembers).some(pm => Number(pm.id) === Number(m.id)))
+                    .filter(m => !asArray(projectMembers).some(pm => Number(pm.userId) === Number(m.id)))
+                    .filter(m => Number(m.id) !== Number(project?.created_by))
                     .map(m => (
                       <button
                         key={m.id}
@@ -1894,7 +1878,7 @@ console.log('✅ projectLeads:', leadEntries);
                   {asArray(allTeamMembers)
                     .filter(m => m.is_deleted !== 1)
                     .filter(m => LEAD_ROLES.includes((m.role || '').toLowerCase()))
-                    .filter(m => !asArray(projectMembers).some(pm => Number(pm.id) === Number(m.id)))
+                    .filter(m => !asArray(projectMembers).some(pm => Number(pm.userId) === Number(m.id)))
                     .length === 0 && (
                     <div style={{
                       padding: '20px 16px', textAlign: 'center', fontSize: 13,
@@ -1939,8 +1923,8 @@ console.log('✅ projectLeads:', leadEntries);
                   {asArray(allTeamMembers)
                     .filter(m => m.is_deleted !== 1)
                     .filter(m => !LEAD_ROLES.includes((m.role || '').toLowerCase()))
-                    .filter(m => !asArray(projectMembers).some(pm => Number(pm.id) === Number(m.id)))
-                    .filter(m => !asArray(projectSupervisors).some(s => Number(s.id) === Number(m.id)))
+                    .filter(m => !asArray(projectMembers).some(pm => Number(pm.userId) === Number(m.id)))
+                    .filter(m => !asArray(projectSupervisors).some(s => Number(s.userId) === Number(m.id)))
                     .map(m => (
                       <button
                         key={m.id}
@@ -1964,8 +1948,8 @@ console.log('✅ projectLeads:', leadEntries);
                   {asArray(allTeamMembers)
                     .filter(m => m.is_deleted !== 1)
                     .filter(m => !LEAD_ROLES.includes((m.role || '').toLowerCase()))
-                    .filter(m => !asArray(projectMembers).some(pm => Number(pm.id) === Number(m.id)))
-                    .filter(m => !asArray(projectSupervisors).some(s => Number(s.id) === Number(m.id)))
+                    .filter(m => !asArray(projectMembers).some(pm => Number(pm.userId) === Number(m.id)))
+                    .filter(m => !asArray(projectSupervisors).some(s => Number(s.userId) === Number(m.id)))
                     .length === 0 && (
                     <div style={{
                       padding: '20px 16px', textAlign: 'center', fontSize: 13,
