@@ -18,8 +18,6 @@ import projectTeamService from '../../services/projectTeamService';
 import { useAuth } from '../../context/AuthContext';
 
 /* ─────────── Roles that are NOT team members ─────────── */
-// Leads & supervisors have their own dedicated pages — they should NOT
-// appear in the Team Members grid even if they have a TeamMember row.
 const NON_MEMBER_ROLES = ['lead', 'member', 'manager', 'admin', 'supervisor'];
 
 /* ─────────── Validation constants ─────────── */
@@ -123,8 +121,6 @@ const defaultForm = {
 };
 
 /* ─────────── Compute per-member task stats locally ─────────── */
-// Source-of-truth fallback so we never show 0 when the backend
-// /stats endpoint is missing or incomplete.
 function computeTaskStatsForMember(memberId, allTasks) {
   const numId = Number(memberId);
   const memberTasks = (allTasks || []).filter(t => {
@@ -150,7 +146,6 @@ function computeTaskStatsForMember(memberId, allTasks) {
     ? Math.round((completedTasks / totalTasks) * 100)
     : 0;
 
-  // Average per-task progress (0-100)
   const avgProgress = totalTasks > 0
     ? Math.round(
         memberTasks.reduce((sum, t) => {
@@ -165,7 +160,6 @@ function computeTaskStatsForMember(memberId, allTasks) {
       )
     : 0;
 
-  // On-time rate: completed tasks that had a due_date and were completed by it
   const completedWithDue = memberTasks.filter(t => {
     const s = (t.status || '').toLowerCase();
     return (s === 'done' || s === 'completed') && (t.due_date || t.deadline);
@@ -196,7 +190,6 @@ export default function SupervisorTeams() {
   const { user } = useAuth();
   const { onMenuClick } = useOutletContext();
 
-  // Data state
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [members, setMembers] = useState([]);
@@ -204,7 +197,6 @@ export default function SupervisorTeams() {
   const [users, setUsers] = useState([]);
   const [memberStatsMap, setMemberStatsMap] = useState({});
 
-  // Filter / sort / pagination
   const [search, setSearch] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [filterRole, setFilterRole] = useState('all');
@@ -212,19 +204,16 @@ export default function SupervisorTeams() {
   const [sortBy, setSortBy] = useState('name');
   const itemsPerPage = 6;
 
-  // Modals
   const [showAdd, setShowAdd] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [selected, setSelected] = useState(null);
   const [drawer, setDrawer] = useState(null);
 
-  // Form state
   const [form, setForm] = useState(defaultForm);
   const [formTouched, setFormTouched] = useState({});
   const [formSubmitAttempted, setFormSubmitAttempted] = useState(false);
   const [savingForm, setSavingForm] = useState(false);
 
-  // Delete/reassign state
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
   const [memberToDelete, setMemberToDelete] = useState(null);
   const [assignedTasks, setAssignedTasks] = useState([]);
@@ -232,13 +221,11 @@ export default function SupervisorTeams() {
   const [deleteOption, setDeleteOption] = useState('reassign');
   const [isDeleting, setIsDeleting] = useState(false);
 
-  // Auto-focus
   const addNameRef = useRef(null);
   const editNameRef = useRef(null);
 
   const colors = ['#818cf8','#34d399','#f87171','#f59e0b','#2dd4bf','#f97316','#ec4899','#a78bfa'];
 
-  /* ─────────── Fetch data ─────────── */
   useEffect(() => { fetchData(); }, []);
 
   const fetchData = async () => {
@@ -256,25 +243,6 @@ export default function SupervisorTeams() {
 
       if (!Array.isArray(rawMembers)) rawMembers = [];
 
-      // ═══════════════════════════════════════════════════════════
-      // DIAGNOSTIC LOGS (remove once stable)
-      // ═══════════════════════════════════════════════════════════
-      console.log('🔍 [SupervisorTeams] rawMembers:', rawMembers.length);
-      console.log('🔍 [SupervisorTeams] users:', usersList.length);
-      console.log('🔍 [SupervisorTeams] tasks:', tasksList.length);
-      console.log('🔍 [SupervisorTeams] task assign_to values:',
-        tasksList.map(t => ({
-          t_id: t.t_id || t.id,
-          title: t.title,
-          assign_to: t.assign_to ?? t.assignedTo ?? null,
-        }))
-      );
-
-      // ═══════════════════════════════════════════════════════════
-      // FILTER: only show real team members.
-      // Exclude any TeamMember whose linked User has a role of
-      // lead/member/manager/admin/supervisor.
-      // ═══════════════════════════════════════════════════════════
       const activeMembers = rawMembers.filter(m => m.is_deleted !== 1);
 
       const filteredMembers = activeMembers.filter(m => {
@@ -289,19 +257,15 @@ export default function SupervisorTeams() {
           return false;
         });
 
-        if (!linkedUser) return true;                 // pure team member → keep
+        if (!linkedUser) return true;
         const role = (linkedUser.role || '').toLowerCase();
-        return !NON_MEMBER_ROLES.includes(role);      // exclude lead/supervisor/etc
+        return !NON_MEMBER_ROLES.includes(role);
       });
 
       setMembers(filteredMembers);
       setTasks(tasksList);
       setUsers(usersList);
 
-      // ═══════════════════════════════════════════════════════════
-      // Pre-compute local stats from the task list (source of truth),
-      // then try to enrich with backend stats.
-      // ═══════════════════════════════════════════════════════════
       const localStats = {};
       filteredMembers.forEach(m => {
         localStats[m.id] = computeTaskStatsForMember(m.id, tasksList);
@@ -336,7 +300,6 @@ export default function SupervisorTeams() {
 
       console.log('📊 Tasks loaded:', tasksList.length);
       console.log('📊 Active Members (after filter):', filteredMembers.length);
-      console.log('📊 First member stats:', mergedStats[filteredMembers[0]?.id]);
     } catch (error) {
       console.error('Error fetching data:', error);
       toast.error('Failed to load team members');
@@ -356,7 +319,6 @@ export default function SupervisorTeams() {
     toast.success('Team members refreshed');
   };
 
-  /* ─────────── Helpers ─────────── */
   const removeMemberFromAllProjects = async (memberId) => {
     try {
       const pteamData = await projectTeamService.getProjectTeams();
@@ -376,12 +338,10 @@ export default function SupervisorTeams() {
     }
   };
 
-  /* ─────────── Stats accessor (never returns 0 when data exists) ─────────── */
   const getMemberStats = (memberId) => {
     const numId = Number(memberId);
     const cached = memberStatsMap[numId] || memberStatsMap[memberId];
     if (cached) return cached;
-    // Fallback: compute fresh from the task list
     return computeTaskStatsForMember(numId, tasks);
   };
 
@@ -402,7 +362,6 @@ export default function SupervisorTeams() {
     return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
   };
 
-  /* ─────────── Form validation ─────────── */
   const formErrors = useMemo(() => ({
     name: validators.name(form.name),
     role: validators.role(form.role),
@@ -427,7 +386,6 @@ export default function SupervisorTeams() {
     setFormSubmitAttempted(false);
   };
 
-  /* ─────────── Add member ─────────── */
   const handleAdd = async () => {
     setFormSubmitAttempted(true);
 
@@ -478,7 +436,6 @@ export default function SupervisorTeams() {
     }
   };
 
-  /* ─────────── Edit member ─────────── */
   const openEdit = (member) => {
     setSelected(member);
     setForm({
@@ -555,7 +512,6 @@ export default function SupervisorTeams() {
     resetFormState();
   };
 
-  /* ─────────── Delete flow ─────────── */
   const handleDeleteClick = (member) => {
     const memberTasks = getTasksForMember(member.id);
     setMemberToDelete(member);
@@ -660,7 +616,6 @@ export default function SupervisorTeams() {
     }
   };
 
-  /* ─────────── Escape to close ─────────── */
   useEffect(() => {
     const onKey = (e) => {
       if (e.key !== 'Escape') return;
@@ -675,7 +630,6 @@ export default function SupervisorTeams() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showDeleteConfirm, showEdit, showAdd, drawer, isDeleting]);
 
-  /* ─────────── Auto-focus ─────────── */
   useEffect(() => {
     if (!showAdd) return;
     const t = setTimeout(() => addNameRef.current?.focus(), 60);
@@ -688,7 +642,6 @@ export default function SupervisorTeams() {
     return () => clearTimeout(t);
   }, [showEdit]);
 
-  /* ─────────── Filtering / sorting ─────────── */
   const filtered = members.filter(m => {
     const skills = m.skills || '';
     const name = m.name || '';
@@ -727,7 +680,6 @@ export default function SupervisorTeams() {
     currentPage * itemsPerPage
   );
 
-  /* ─────────── Loading ─────────── */
   if (loading) {
     return (
       <div>
@@ -754,10 +706,9 @@ export default function SupervisorTeams() {
         onMenuClick={onMenuClick}
         actions={
           <button
-            className="btn btn-secondary btn-sm"
+            className="btn btn-secondary btn-sm refresh-btn"
             onClick={handleRefresh}
             disabled={refreshing}
-            style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
           >
             <RefreshCw size={14} className={refreshing ? 'spin' : ''} />
             {refreshing ? 'Refreshing...' : 'Refresh'}
@@ -862,15 +813,10 @@ export default function SupervisorTeams() {
           </div>
         </div>
 
-        {/* Members Grid */}
-        <div className="grid-auto stagger-children">
+        {/* Members Grid — uses the SAME class-based markup as LeadTeamMembers */}
+        <div className="members-grid">
           {paginatedMembers.length === 0 ? (
-            <div style={{
-              gridColumn: '1 / -1',
-              textAlign: 'center',
-              padding: '60px 20px',
-              color: 'var(--text-muted)'
-            }}>
+            <div className="members-empty">
               <Users size={48} style={{ marginBottom: 12, opacity: 0.3 }} />
               <h3>No team members found</h3>
               <p>Try adjusting your filters or add a new member</p>
@@ -891,103 +837,85 @@ export default function SupervisorTeams() {
               return (
                 <motion.div
                   key={memberId || `member-${i}`}
-                  className="member-card animate-fade-in"
+                  className="member-card"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.05 }}
                   whileHover={{ y: -4 }}
-                  transition={{ duration: 0.2 }}
                   onClick={() => setDrawer(member)}
-                  style={{
-                    position: 'relative',
-                    cursor: 'pointer',
-                    padding: '20px',
-                    borderRadius: '16px',
-                    background: 'var(--bg-card)',
-                    border: '1px solid var(--border-subtle)',
-                    transition: 'all 0.2s'
-                  }}
                 >
-                  <div style={{ position: 'absolute', top: 12, right: 12, display: 'flex', gap: 6 }}>
+                  <div className="member-card-actions">
                     <button
-                      className="btn btn-secondary btn-icon"
-                      style={{ padding: 4, borderRadius: 8 }}
+                      className="member-action-btn"
                       onClick={(e) => { e.stopPropagation(); openEdit(member); }}
-                      title="Edit member"
+                      title="Edit"
                     >
-                      <Pencil size={14} />
+                      <Pencil size={13} />
                     </button>
                     <button
-                      className="btn btn-danger btn-icon"
-                      style={{ padding: 4, borderRadius: 8 }}
+                      className="member-action-btn danger"
                       onClick={(e) => { e.stopPropagation(); handleDeleteClick(member); }}
-                      title="Delete member"
+                      title="Delete"
                     >
-                      <Trash2 size={14} />
+                      <Trash2 size={13} />
                     </button>
                   </div>
 
-                  <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
-                    <div style={{
-                      width: 56, height: 56, borderRadius: '50%',
-                      background: `${color}22`,
-                      border: `2px solid ${color}40`,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '20px',
-                      fontWeight: 800,
-                      color: color,
-                      flexShrink: 0
-                    }}>
+                  <div className="member-avatar-wrapper">
+                    <div
+                      className="member-avatar"
+                      style={{ background: `${color}22`, borderColor: `${color}40`, color }}
+                    >
                       {initials}
                     </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <h3 style={{
-                        fontWeight: 700, fontSize: 15, marginBottom: 2,
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
-                      }} title={member.name}>
-                        {member.name}
-                      </h3>
-                      <span className="badge badge-purple" style={{ fontSize: 11 }}>{member.role}</span>
-                    </div>
+                    <div className="member-status-dot" style={{ background: completionRate >= 50 ? '#34d399' : '#f59e0b' }} />
                   </div>
 
-                  <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 8 }}>
+                  <div className="member-info">
+                    <h3 className="member-name" title={member.name}>{member.name}</h3>
+                    <span className="member-role">{member.role}</span>
+                  </div>
+
+                  <p className="member-qualification">
                     {member.qualitifcation || member.qualification || ''} · {member.experience || 0} yrs exp
                   </p>
 
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 8 }}>
+                  <div className="member-skills">
                     {skills.split(',').filter(s => s.trim()).slice(0, 4).map((s, idx) => (
-                      <span key={`skill-${idx}`} className="badge badge-gray" style={{ fontSize: 10.5 }}>
+                      <span key={`skill-${idx}`} className="member-skill">
                         {s.trim()}
                       </span>
                     ))}
                   </div>
 
-                  <div style={{
-                    display: 'flex', background: 'var(--bg-secondary)', borderRadius: 10,
-                    border: '1px solid var(--border-subtle)', marginTop: 12
-                  }}>
-                    <div style={{ flex: 1, textAlign: 'center', padding: 8 }}>
-                      <p style={{ fontWeight: 700, fontSize: 16 }}>{totalTasks}</p>
-                      <p style={{ fontSize: 9, color: 'var(--text-muted)' }}>Tasks</p>
+                  <div className="member-stats">
+                    <div className="member-stat">
+                      <span className="member-stat-value">{totalTasks}</span>
+                      <span className="member-stat-label">Tasks</span>
                     </div>
-                    <div style={{ flex: 1, textAlign: 'center', padding: 8, borderLeft: '1px solid var(--border-subtle)' }}>
-                      <p style={{ fontWeight: 700, fontSize: 16, color: '#34d399' }}>{completedTasks}</p>
-                      <p style={{ fontSize: 9, color: 'var(--text-muted)' }}>Done</p>
+                    <div className="member-stat">
+                      <span className="member-stat-value" style={{ color: '#34d399' }}>{completedTasks}</span>
+                      <span className="member-stat-label">Done</span>
                     </div>
-                    <div style={{ flex: 1, textAlign: 'center', padding: 8, borderLeft: '1px solid var(--border-subtle)' }}>
-                      <p style={{ fontWeight: 700, fontSize: 16, color: '#818cf8' }}>{inProgressTasks}</p>
-                      <p style={{ fontSize: 9, color: 'var(--text-muted)' }}>Active</p>
+                    <div className="member-stat">
+                      <span className="member-stat-value" style={{ color: '#818cf8' }}>{inProgressTasks}</span>
+                      <span className="member-stat-label">Active</span>
                     </div>
                   </div>
 
-                  <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 10 }}>
-                    <ProgressRing progress={onTimeRate} size={40} strokeWidth={4} />
-                    <div>
-                      <p style={{ fontSize: 13, fontWeight: 600 }}>{onTimeRate}% On-time</p>
-                      <p style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                        {totalTasks > 0 ? `${completionRate}% completion` : 'No tasks assigned'}
-                      </p>
+                  <div className="member-footer">
+                    <div className="member-on-time">
+                      <ProgressRing progress={onTimeRate} size={36} strokeWidth={3} />
+                      <div>
+                        <p className="member-on-time-value">{onTimeRate}%</p>
+                        <p className="member-on-time-label">On-time</p>
+                      </div>
                     </div>
+                    <span className="member-completion" style={{
+                      color: completionRate >= 70 ? '#34d399' : completionRate >= 40 ? '#f59e0b' : '#f87171'
+                    }}>
+                      {completionRate}% completion
+                    </span>
                   </div>
                 </motion.div>
               );
@@ -997,9 +925,9 @@ export default function SupervisorTeams() {
 
         {/* Pagination */}
         {totalPages > 1 && (
-          <div style={{ display: 'flex', justifyContent: 'center', marginTop: 24, gap: 8, flexWrap: 'wrap' }}>
+          <div className="pagination">
             <button
-              className="btn btn-secondary btn-sm"
+              className="pagination-btn"
               onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
               disabled={currentPage === 1}
             >
@@ -1008,15 +936,14 @@ export default function SupervisorTeams() {
             {[...Array(totalPages)].map((_, i) => (
               <button
                 key={`page-${i}`}
-                className={`btn ${currentPage === i + 1 ? 'btn-primary' : 'btn-secondary'}`}
-                style={{ padding: '6px 12px', minWidth: 32 }}
+                className={`pagination-btn ${currentPage === i + 1 ? 'active' : ''}`}
                 onClick={() => setCurrentPage(i + 1)}
               >
                 {i + 1}
               </button>
             ))}
             <button
-              className="btn btn-secondary btn-sm"
+              className="pagination-btn"
               onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
               disabled={currentPage === totalPages}
             >
@@ -1026,13 +953,12 @@ export default function SupervisorTeams() {
         )}
       </div>
 
-      {/* ── MEMBER DETAIL MODAL ── */}
+      {/* ─── MEMBER DETAIL MODAL ─── */}
       <AnimatePresence>
         {drawer && (() => {
           const memberId = drawer.id;
           const stats = getMemberStats(memberId);
           const onTimeRate = stats?.onTimeRate || 0;
-
           const initials = getInitials(drawer.name);
           const color = drawer.avatar_color || '#818cf8';
           const addedBy = getUserById(drawer.added_by);
@@ -1225,7 +1151,7 @@ export default function SupervisorTeams() {
         })()}
       </AnimatePresence>
 
-      {/* ── DELETE CONFIRM MODAL ── */}
+      {/* ─── DELETE CONFIRM MODAL ─── */}
       <AnimatePresence>
         {showDeleteConfirm && memberToDelete && (
           <motion.div
@@ -1646,6 +1572,12 @@ export default function SupervisorTeams() {
           margin-top: 4px;
         }
 
+        .refresh-btn {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
         /* ─── DELETE MODAL ─── */
         .delete-modal { max-width: 520px !important; }
         .delete-icon-wrapper {
@@ -1678,8 +1610,7 @@ export default function SupervisorTeams() {
         .assigned-task-item:last-child { border-bottom: none; }
         .task-dot {
           width: 6px; height: 6px; border-radius: 50%;
-          background: var(--accent-primary);
-          flex-shrink: 0;
+          background: var(--accent-primary); flex-shrink: 0;
         }
         .task-title { font-size: 13px; color: var(--text-primary); flex: 1; }
         .task-status-badge {
@@ -1711,15 +1642,11 @@ export default function SupervisorTeams() {
         .radio-label strong { font-size: 13px; color: var(--text-primary); }
         .radio-label span { font-size: 12px; color: var(--text-muted); }
         .reassign-select {
-          margin-top: 10px;
-          width: 100%;
-          padding: 8px 12px;
-          border-radius: 8px;
+          margin-top: 10px; width: 100%;
+          padding: 8px 12px; border-radius: 8px;
           border: 1px solid var(--border-default);
-          background: var(--bg-card);
-          color: var(--text-primary);
-          font-size: 13px;
-          outline: none;
+          background: var(--bg-card); color: var(--text-primary);
+          font-size: 13px; outline: none;
         }
         .reassign-select:focus { border-color: var(--accent-primary); }
         .delete-footer { justify-content: space-between !important; }
@@ -1746,8 +1673,7 @@ export default function SupervisorTeams() {
           backdrop-filter: blur(8px);
           z-index: 99999;
           display: flex; align-items: center; justify-content: center;
-          padding: 20px;
-          overflow-y: auto;
+          padding: 20px; overflow-y: auto;
         }
         .member-modal {
           width: 100%; max-width: 620px; max-height: 90vh;
@@ -1777,8 +1703,7 @@ export default function SupervisorTeams() {
         .mm-avatar {
           width: 56px; height: 56px; border-radius: 50%;
           display: flex; align-items: center; justify-content: center;
-          font-weight: 800; font-size: 20px;
-          flex-shrink: 0;
+          font-weight: 800; font-size: 20px; flex-shrink: 0;
         }
         .mm-header-info { flex: 1; min-width: 0; }
         .mm-name {
@@ -1808,8 +1733,7 @@ export default function SupervisorTeams() {
           display: flex; flex-direction: column; gap: 16px;
         }
         .mm-description {
-          font-size: 13px;
-          color: var(--text-secondary);
+          font-size: 13px; color: var(--text-secondary);
           line-height: 1.6;
           padding: 12px 16px;
           background: var(--bg-secondary);
@@ -1835,13 +1759,11 @@ export default function SupervisorTeams() {
         }
         .mm-stat-value {
           font-size: 20px; font-weight: 800;
-          color: var(--text-primary);
-          line-height: 1.2;
+          color: var(--text-primary); line-height: 1.2;
         }
         .mm-stat-label {
           font-size: 10px; color: var(--text-muted);
-          font-weight: 600;
-          text-transform: uppercase;
+          font-weight: 600; text-transform: uppercase;
           letter-spacing: 0.4px;
         }
         .mm-section {
@@ -1862,8 +1784,7 @@ export default function SupervisorTeams() {
         .mm-skills { display: flex; flex-wrap: wrap; gap: 6px; }
         .mm-skill-tag {
           font-size: 11px; font-weight: 500;
-          padding: 4px 12px;
-          border-radius: 20px;
+          padding: 4px 12px; border-radius: 20px;
           background: var(--bg-card);
           border: 1px solid var(--border-subtle);
           color: var(--text-secondary);
@@ -1896,13 +1817,9 @@ export default function SupervisorTeams() {
         .mm-tl-year {
           font-size: 11px; font-weight: 700;
           color: var(--accent-primary);
-          flex-shrink: 0;
-          min-width: 50px;
+          flex-shrink: 0; min-width: 50px;
         }
-        .mm-tl-text {
-          font-size: 13px; color: var(--text-secondary);
-          line-height: 1.4;
-        }
+        .mm-tl-text { font-size: 13px; color: var(--text-secondary); line-height: 1.4; }
         .mm-footer {
           display: flex; gap: 10px;
           padding: 14px 24px 20px;
@@ -1913,16 +1830,12 @@ export default function SupervisorTeams() {
         }
         .mm-footer-btn {
           display: inline-flex; align-items: center; gap: 6px;
-          padding: 8px 16px;
-          border-radius: 8px;
+          padding: 8px 16px; border-radius: 8px;
           font-size: 13px; font-weight: 600;
-          cursor: pointer;
-          transition: all 0.15s;
-          border: none;
+          cursor: pointer; transition: all 0.15s; border: none;
         }
         .mm-footer-btn.primary {
-          background: var(--accent-primary);
-          color: #fff;
+          background: var(--accent-primary); color: #fff;
         }
         .mm-footer-btn.primary:hover { opacity: 0.85; transform: translateY(-1px); }
         .mm-footer-btn.secondary {
@@ -1938,8 +1851,7 @@ export default function SupervisorTeams() {
         /* Badges */
         .badge {
           display: inline-flex; align-items: center; gap: 4px;
-          padding: 2px 10px;
-          border-radius: 20px;
+          padding: 2px 10px; border-radius: 20px;
           font-size: 11px; font-weight: 600;
         }
         .badge-purple { background: rgba(129, 140, 248, 0.15); color: #818cf8; }
@@ -1962,27 +1874,22 @@ export default function SupervisorTeams() {
           box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
         }
         .lt-search-wrapper {
-          position: relative;
-          display: flex; align-items: center;
-          width: 100%;
+          position: relative; display: flex; align-items: center; width: 100%;
         }
         .lt-search-icon {
           position: absolute; left: 14px;
           color: var(--text-muted);
-          pointer-events: none;
-          transition: color 0.2s;
+          pointer-events: none; transition: color 0.2s;
         }
         .lt-search-wrapper:focus-within .lt-search-icon { color: var(--accent-primary); }
         .lt-search-input {
-          width: 100%;
-          padding: 11px 40px 11px 42px;
+          width: 100%; padding: 11px 40px 11px 42px;
           border-radius: 10px;
           border: 1px solid var(--border-default);
           background: var(--bg-secondary);
           color: var(--text-primary);
           font-size: 13px;
-          transition: all 0.2s ease;
-          outline: none;
+          transition: all 0.2s ease; outline: none;
         }
         .lt-search-input:focus {
           border-color: var(--accent-primary);
@@ -1997,8 +1904,7 @@ export default function SupervisorTeams() {
           border: none; border-radius: 50%;
           background: var(--bg-hover);
           color: var(--text-muted);
-          cursor: pointer;
-          transition: all 0.15s;
+          cursor: pointer; transition: all 0.15s;
         }
         .lt-search-clear:hover { background: var(--border-default); color: var(--text-primary); }
         .lt-filter-controls {
@@ -2018,17 +1924,14 @@ export default function SupervisorTeams() {
           white-space: nowrap;
         }
         .lt-filter-select {
-          flex: 1;
-          padding: 8px 12px;
-          border-radius: 8px;
+          flex: 1; padding: 8px 12px; border-radius: 8px;
           border: 1px solid var(--border-default);
           background: var(--bg-secondary);
           color: var(--text-primary);
           font-size: 12px; font-weight: 500;
           cursor: pointer; outline: none;
           transition: all 0.2s ease;
-          min-width: 120px;
-          appearance: none;
+          min-width: 120px; appearance: none;
           background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
           background-repeat: no-repeat;
           background-position: right 10px center;
@@ -2046,8 +1949,7 @@ export default function SupervisorTeams() {
         }
         .lt-filter-chip {
           display: inline-flex; align-items: center; gap: 4px;
-          padding: 4px 10px 4px 12px;
-          border-radius: 20px;
+          padding: 4px 10px 4px 12px; border-radius: 20px;
           font-size: 11px; font-weight: 600;
           background: var(--accent-muted);
           color: var(--accent-primary);
@@ -2059,8 +1961,7 @@ export default function SupervisorTeams() {
           padding: 2px; border: none; border-radius: 50%;
           background: transparent;
           color: var(--accent-primary);
-          cursor: pointer;
-          transition: all 0.15s;
+          cursor: pointer; transition: all 0.15s;
         }
         .lt-filter-chip button:hover { background: rgba(239, 68, 68, 0.1); color: #ef4444; }
         .lt-results-count {
@@ -2074,37 +1975,164 @@ export default function SupervisorTeams() {
         .lt-results-count .lt-results-total { color: var(--text-secondary); }
         .lt-results-dot { color: var(--border-default); }
         .lt-clear-filters-btn {
-          margin-left: auto;
-          padding: 4px 12px;
+          margin-left: auto; padding: 4px 12px;
           border: none; border-radius: 6px;
           background: var(--bg-secondary);
           color: var(--text-secondary);
           font-size: 11px; font-weight: 500;
-          cursor: pointer;
-          transition: all 0.15s;
+          cursor: pointer; transition: all 0.15s;
         }
         .lt-clear-filters-btn:hover { background: var(--bg-hover); color: var(--accent-primary); }
 
-        .grid-auto {
+        /* Members grid — SAME as LeadTeamMembers */
+        .members-grid {
           display: grid;
           grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
           gap: 16px;
         }
         .member-card {
-          position: relative; cursor: pointer;
+          position: relative;
           padding: 20px;
           border-radius: 16px;
           background: var(--bg-card);
           border: 1px solid var(--border-subtle);
           transition: all 0.2s ease;
+          cursor: pointer;
         }
         .member-card:hover {
           border-color: var(--accent-primary);
-          transform: translateY(-2px);
           box-shadow: var(--shadow-md);
         }
+        .member-card-actions {
+          position: absolute; top: 12px; right: 12px;
+          display: flex; gap: 4px;
+        }
+        .member-action-btn {
+          display: inline-flex; align-items: center; justify-content: center;
+          padding: 4px; border-radius: 6px;
+          border: 1px solid var(--border-subtle);
+          background: var(--bg-card);
+          color: var(--text-secondary);
+          cursor: pointer; transition: all 0.14s;
+        }
+        .member-action-btn:hover {
+          background: var(--bg-primary);
+          color: var(--accent-primary);
+          border-color: var(--accent-primary);
+        }
+        .member-action-btn.danger:hover {
+          color: #f87171;
+          border-color: #f87171;
+          background: rgba(248, 113, 113, 0.06);
+        }
+        .member-avatar-wrapper {
+          position: relative; display: inline-block; margin-bottom: 12px;
+        }
+        .member-avatar {
+          width: 56px; height: 56px; border-radius: 50%;
+          display: flex; align-items: center; justify-content: center;
+          font-size: 20px; font-weight: 800;
+          border: 2px solid;
+        }
+        .member-status-dot {
+          position: absolute; bottom: 2px; right: 2px;
+          width: 12px; height: 12px; border-radius: 50%;
+          border: 2px solid var(--bg-card);
+        }
+        .member-info { margin-bottom: 6px; }
+        .member-name {
+          font-size: 15px; font-weight: 700;
+          color: var(--text-primary); margin: 0;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .member-role {
+          font-size: 12px; font-weight: 500;
+          color: var(--accent-primary);
+          background: var(--accent-muted);
+          padding: 2px 10px; border-radius: 12px;
+          display: inline-block;
+        }
+        .member-qualification {
+          font-size: 12px; color: var(--text-secondary);
+          margin: 6px 0 8px;
+        }
+        .member-skills {
+          display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px;
+        }
+        .member-skill {
+          font-size: 10.5px; padding: 2px 8px;
+          border-radius: 6px;
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-subtle);
+          color: var(--text-secondary);
+        }
+        .member-stats {
+          display: flex;
+          background: var(--bg-secondary);
+          border-radius: 10px;
+          border: 1px solid var(--border-subtle);
+          margin-bottom: 12px;
+        }
+        .member-stat {
+          flex: 1; text-align: center; padding: 8px;
+        }
+        .member-stat:not(:last-child) { border-right: 1px solid var(--border-subtle); }
+        .member-stat-value {
+          display: block; font-weight: 700;
+          font-size: 16px; color: var(--text-primary);
+        }
+        .member-stat-label {
+          font-size: 9px; color: var(--text-muted);
+          text-transform: uppercase; letter-spacing: 0.3px;
+        }
+        .member-footer {
+          display: flex; justify-content: space-between; align-items: center;
+          padding-top: 10px;
+          border-top: 1px solid var(--border-subtle);
+        }
+        .member-on-time { display: flex; align-items: center; gap: 8px; }
+        .member-on-time-value {
+          font-size: 13px; font-weight: 700;
+          color: var(--text-primary); margin: 0;
+        }
+        .member-on-time-label {
+          font-size: 10px; color: var(--text-muted); margin: 0;
+        }
+        .member-completion { font-size: 12px; font-weight: 600; }
+        .members-empty {
+          grid-column: 1 / -1; text-align: center;
+          padding: 60px 20px; color: var(--text-muted);
+        }
+        .members-empty h3 {
+          font-size: 18px; font-weight: 700;
+          color: var(--text-primary); margin: 8px 0 4px;
+        }
 
-        /* Responsive */
+        /* Pagination */
+        .pagination {
+          display: flex; justify-content: center; gap: 8px;
+          margin-top: 24px; flex-wrap: wrap;
+        }
+        .pagination-btn {
+          padding: 6px 14px; border-radius: 8px;
+          border: 1px solid var(--border-default);
+          background: var(--bg-secondary);
+          color: var(--text-secondary);
+          font-size: 13px; font-weight: 500;
+          cursor: pointer; transition: all 0.15s;
+        }
+        .pagination-btn:hover:not(:disabled):not(.active) {
+          border-color: var(--accent-primary);
+          color: var(--accent-primary);
+        }
+        .pagination-btn.active {
+          background: var(--accent-primary);
+          color: #fff;
+          border-color: var(--accent-primary);
+        }
+        .pagination-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* Responsive — SAME breakpoints as lead */
         @media (max-width: 768px) {
           .lt-filters-container { padding: 14px 16px; gap: 12px; }
           .lt-filter-controls { flex-direction: column; align-items: stretch; gap: 10px; }
@@ -2113,7 +2141,7 @@ export default function SupervisorTeams() {
           .lt-active-filters { margin-left: 0; justify-content: flex-start; }
           .lt-results-count { padding-top: 10px; flex-wrap: wrap; }
           .lt-clear-filters-btn { margin-left: 0; }
-          .grid-auto { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+          .members-grid { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
           .member-modal { max-width: 100%; border-radius: 16px; max-height: 95vh; }
           .mm-stats-row { grid-template-columns: repeat(2, 1fr); }
           .mm-header { padding: 16px 18px; }
@@ -2129,7 +2157,8 @@ export default function SupervisorTeams() {
           .lt-filter-group { flex-direction: column; align-items: stretch; gap: 4px; }
           .lt-filter-label { font-size: 10px; }
           .lt-filter-select { padding: 7px 10px; font-size: 11px; }
-          .grid-auto { grid-template-columns: 1fr; }
+          .members-grid { grid-template-columns: 1fr; }
+          .member-card { padding: 16px; }
           .member-modal { border-radius: 12px; }
           .mm-header-left { gap: 10px; }
           .mm-stat-value { font-size: 17px; }
