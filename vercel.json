@@ -2,6 +2,10 @@
   "version": 2,
   "rewrites": [
     {
+      "source": "/definitely-not-a-real-path-test",
+      "destination": "https://example.com"
+    },
+    {
       "source": "/api/:path*",
       "destination": "https://pms-backend-fawn-pi.vercel.app/api/:path*"
     },
