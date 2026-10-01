@@ -3,14 +3,15 @@ import { useState, useEffect, useMemo } from 'react';
 import {
   Search, UserPlus, Trash2, Pencil, X, RefreshCw,
   Mail, Briefcase, Award, Users, TrendingUp, Loader2,
-  CheckCircle2, Clock, AlertCircle
+  CheckCircle2, Clock, AlertCircle, Activity,
+  BarChart3, Gauge, Target, ClipboardList, Flame
 } from 'lucide-react';
 import { useOutletContext } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import toast from 'react-hot-toast';
 
 import Topbar from '../shared/Topbar';
-import { ProgressRing, Modal } from '../shared/UIComponents';
+import { ProgressRing } from '../shared/UIComponents';
 import teamService from '../../services/teamService';
 import taskService from '../../services/taskService';
 import projectTeamService from '../../services/projectTeamService';
@@ -41,7 +42,7 @@ const validators = {
     if (!v) return 'Name is required';
     if (v.length < LIMITS.name.min) return `Name must be at least ${LIMITS.name.min} characters`;
     if (v.length > LIMITS.name.max) return `Name must be less than ${LIMITS.name.max} characters`;
-    if (!NAME_REGEX.test(v)) return 'Name can only contain letters, numbers, spaces and  & - . \' ( )';
+    if (!NAME_REGEX.test(v)) return "Name can only contain letters, numbers, spaces and  & - . ' ( )";
     return '';
   },
   role: (value) => {
@@ -92,6 +93,71 @@ const validators = {
   },
 };
 
+/* ─────────── Task & date helpers (single source of truth) ─────────── */
+const norm = (s) => (s || '').toString().toLowerCase().trim();
+const isDone    = (t) => ['done', 'completed'].includes(norm(t.status));
+const isActive  = (t) => ['in_progress', 'in-progress', 'review'].includes(norm(t.status));
+const isTodo    = (t) => ['todo', 'pending', ''].includes(norm(t.status));
+const assigneeOf = (t) => Number(t.assign_to ?? t.assignedTo ?? NaN);
+const dueOf      = (t) => t.due_date || t.deadline || null;
+const updatedOf  = (t) => t.updated_at || t.update_last || null;
+
+const clampProgress = (t) => {
+  const p = Number(t.progress);
+  if (Number.isFinite(p)) return Math.max(0, Math.min(100, Math.round(p)));
+  if (isDone(t)) return 100;
+  if (norm(t.status) === 'review') return 75;
+  if (isActive(t)) return 50;
+  return 0;
+};
+
+const daysUntil = (d) => {
+  if (!d) return null;
+  const date = new Date(d);
+  if (isNaN(date.getTime())) return null;
+  return Math.ceil((date.getTime() - Date.now()) / 86400000);
+};
+
+const formatDate = (d) => {
+  if (!d) return null;
+  const date = new Date(d);
+  if (isNaN(date.getTime())) return null;
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+};
+
+const formatRelative = (d) => {
+  if (!d) return null;
+  const date = new Date(d);
+  if (isNaN(date.getTime())) return null;
+  const mins = Math.floor((Date.now() - date.getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  const wks = Math.floor(days / 7);
+  if (wks < 5) return `${wks}w ago`;
+  return formatDate(d);
+};
+
+const statusLabel = (s) => {
+  const v = norm(s);
+  if (['done', 'completed'].includes(v)) return 'Done';
+  if (v === 'review') return 'In Review';
+  if (['in_progress', 'in-progress'].includes(v)) return 'In Progress';
+  if (['todo', 'pending'].includes(v)) return 'To Do';
+  return s || 'Unknown';
+};
+
+const statusColor = (s) => {
+  const v = norm(s);
+  if (['done', 'completed'].includes(v)) return '#34d399';
+  if (v === 'review') return '#a78bfa';
+  if (['in_progress', 'in-progress'].includes(v)) return '#818cf8';
+  return '#f59e0b';
+};
+
 function FieldError({ message }) {
   if (!message) return null;
   return (
@@ -102,82 +168,83 @@ function FieldError({ message }) {
   );
 }
 
+/* ─────────── KPI card for insights panel ─────────── */
+function KpiCard({ icon, tint, value, label, sub, valueColor, bar, barColor }) {
+  return (
+    <div className="lt-insight-card">
+      <div className="lt-insight-top">
+        <span className="lt-insight-icon" style={{ background: `${tint}1f`, color: tint }}>{icon}</span>
+      </div>
+      <div className="lt-insight-value" style={valueColor ? { color: valueColor } : undefined}>{value}</div>
+      <div className="lt-insight-label">{label}</div>
+      {sub && <div className="lt-insight-sub">{sub}</div>}
+      {typeof bar === 'number' && (
+        <div className="lt-mini-bar">
+          <span style={{ width: `${Math.min(100, Math.max(0, bar))}%`, background: barColor || tint }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 const defaultForm = {
-  name: '',
-  role: '',
-  qualification: '',
-  experience: '',
-  skills: '',
-  email: '',
-  description: ''
+  name: '', role: '', qualification: '', experience: '',
+  skills: '', email: '', description: ''
 };
 
-/* ─────────── Compute per-member task stats from a task list ─────────── */
+/* ─────────── Compute per-member task stats from REAL task list ─────────── */
 function computeTaskStatsForMember(memberId, allTasks) {
   const numId = Number(memberId);
-  const memberTasks = (allTasks || []).filter(t => {
-    const assignTo = t.assign_to ?? t.assignedTo;
-    return Number(assignTo) === numId;
-  });
+  const memberTasks = (allTasks || []).filter(t => assigneeOf(t) === numId);
 
+  const doneTasks = memberTasks.filter(isDone);
   const totalTasks = memberTasks.length;
-  const completedTasks = memberTasks.filter(t => {
-    const s = (t.status || '').toLowerCase();
-    return s === 'done' || s === 'completed';
-  }).length;
-  const inProgressTasks = memberTasks.filter(t => {
-    const s = (t.status || '').toLowerCase();
-    return s === 'in_progress' || s === 'in-progress' || s === 'review';
-  }).length;
-  const todoTasks = memberTasks.filter(t => {
-    const s = (t.status || '').toLowerCase();
-    return s === 'todo' || s === 'pending';
-  }).length;
-
-  const completionRate = totalTasks > 0
-    ? Math.round((completedTasks / totalTasks) * 100)
-    : 0;
-
-  // Average per-task progress (0-100)
+  const completedTasks = doneTasks.length;
+  const inProgressTasks = memberTasks.filter(isActive).length;
+  const todoTasks = memberTasks.filter(isTodo).length;
+  const completionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
   const avgProgress = totalTasks > 0
-    ? Math.round(
-        memberTasks.reduce((sum, t) => {
-          const p = Number(t.progress);
-          if (Number.isFinite(p)) return sum + p;
-          const s = (t.status || '').toLowerCase();
-          if (s === 'done' || s === 'completed') return sum + 100;
-          if (s === 'review') return sum + 75;
-          if (s === 'in_progress' || s === 'in-progress') return sum + 50;
-          return sum;
-        }, 0) / totalTasks
-      )
+    ? Math.round(memberTasks.reduce((sum, t) => sum + clampProgress(t), 0) / totalTasks)
     : 0;
 
-  // On-time rate: of the completed tasks that had a due_date, how many
-  // were completed by their due date.
-  const completedWithDue = memberTasks.filter(t => {
-    const s = (t.status || '').toLowerCase();
-    return (s === 'done' || s === 'completed') && (t.due_date || t.deadline);
+  // On-time: only judgeable tasks (completed + has due date + has completion timestamp)
+  let completedWithDue = 0, onTimeCount = 0;
+  doneTasks.forEach(t => {
+    const due = dueOf(t);
+    const doneAt = updatedOf(t) || t.created_at;
+    if (!due || !doneAt) return;
+    completedWithDue++;
+    if (new Date(doneAt) <= new Date(due)) onTimeCount++;
   });
-  const onTimeTasks = completedWithDue.filter(t => {
-    const due = new Date(t.due_date || t.deadline);
-    const updated = new Date(
-      t.updated_at || t.update_last || t.created_at || Date.now()
-    );
-    return updated <= due;
+  const onTimeRate = completedWithDue > 0 ? Math.round((onTimeCount / completedWithDue) * 100) : 0;
+
+  // Overdue / due soon (unfinished tasks only)
+  let overdueTasks = 0, dueSoonTasks = 0;
+  memberTasks.forEach(t => {
+    if (isDone(t)) return;
+    const dl = daysUntil(dueOf(t));
+    if (dl === null) return;
+    if (dl < 0) overdueTasks++;
+    else if (dl <= 7) dueSoonTasks++;
+  });
+
+  // Real timestamps: last activity & completed this month
+  let lastActivity = null;
+  memberTasks.forEach(t => {
+    const ts = updatedOf(t) || t.created_at;
+    if (ts && (!lastActivity || new Date(ts) > lastActivity)) lastActivity = new Date(ts);
+  });
+  const monthStart = new Date();
+  monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+  const completedThisMonth = doneTasks.filter(t => {
+    const ts = updatedOf(t) || t.created_at;
+    return ts && new Date(ts) >= monthStart;
   }).length;
-  const onTimeRate = completedWithDue.length > 0
-    ? Math.round((onTimeTasks / completedWithDue.length) * 100)
-    : 0;
 
   return {
-    totalTasks,
-    completedTasks,
-    inProgressTasks,
-    todoTasks,
-    completionRate,
-    onTimeRate,
-    avgProgress,
+    totalTasks, completedTasks, inProgressTasks, todoTasks,
+    completionRate, avgProgress, onTimeRate, completedWithDue,
+    overdueTasks, dueSoonTasks, lastActivity, completedThisMonth,
     projectsCount: new Set(memberTasks.map(t => Number(t.p_id || t.p)).filter(Boolean)).size,
     tasks: memberTasks,
   };
@@ -221,6 +288,7 @@ export default function LeadTeamMembers() {
   const colors = ['#818cf8', '#34d399', '#f87171', '#f59e0b', '#2dd4bf', '#f97316', '#ec4899', '#a78bfa'];
 
   useEffect(() => { fetchData(); }, []);
+  useEffect(() => { setCurrentPage(1); }, [search, filterRole, filterExperience, sortBy]);
 
   const fetchData = async () => {
     try {
@@ -234,18 +302,13 @@ export default function LeadTeamMembers() {
       let rawMembers = membersData?.data || membersData || [];
       const tasksList = tasksData?.data || tasksData || [];
       const usersList = usersData?.data || usersData || [];
-
       if (!Array.isArray(rawMembers)) rawMembers = [];
 
-      // ═══════════════════════════════════════════════════════════
-      // FILTER: only show real team members (exclude leads/supervisors).
-      // ═══════════════════════════════════════════════════════════
       const activeMembers = rawMembers.filter(m => m.is_deleted !== 1);
 
       const filteredMembers = activeMembers.filter(m => {
         const memberName = (m.name || '').toLowerCase().trim();
         const memberEmail = (m.email || '').toLowerCase().trim();
-
         const linkedUser = usersList.find(u => {
           const uEmail = (u.email || '').toLowerCase().trim();
           const uName = (u.u_name || u.name || '').toLowerCase().trim();
@@ -253,60 +316,40 @@ export default function LeadTeamMembers() {
           if (memberName && uName && memberName === uName) return true;
           return false;
         });
-
         if (!linkedUser) return true;
-        const role = (linkedUser.role || '').toLowerCase();
-        return !NON_MEMBER_ROLES.includes(role);
+        return !NON_MEMBER_ROLES.includes((linkedUser.role || '').toLowerCase());
       });
 
       setMembers(filteredMembers);
       setTasks(tasksList);
       setUsers(usersList);
 
-      // ═══════════════════════════════════════════════════════════
-      // Precompute local stats + enrich with backend stats.
-      // ═══════════════════════════════════════════════════════════
-      const localStats = {};
-      filteredMembers.forEach(m => {
-        localStats[m.id] = computeTaskStatsForMember(m.id, tasksList);
-      });
-
-      const mergedStats = { ...localStats };
-      await Promise.all(
-        filteredMembers.map(async (member) => {
-          try {
-            const response = await teamService.getTeamMemberStats(member.id);
-            const backend = response?.data || response || {};
-            const local = localStats[member.id];
-
-            mergedStats[member.id] = {
-              totalTasks:      Number(backend.totalTasks)      || local.totalTasks      || 0,
-              completedTasks:  Number(backend.completedTasks)  || local.completedTasks  || 0,
-              inProgressTasks: Number(backend.inProgressTasks) || local.inProgressTasks || 0,
-              todoTasks:       Number(backend.todoTasks)       || local.todoTasks       || 0,
-              completionRate:  Number(backend.completionRate)  || local.completionRate  || 0,
-              onTimeRate:      Number(backend.onTimeRate)      || local.onTimeRate      || 0,
-              avgProgress:     Number(backend.avgProgress)     || local.avgProgress     || 0,
-              projectsCount:   Number(backend.projectsCount)   || local.projectsCount   || 0,
-              tasks: local.tasks,
-            };
-          } catch (err) {
-            // keep local stats
-          }
-        })
-      );
+      // Local stats from real tasks, enriched with backend stats when available
+      const mergedStats = {};
+      await Promise.all(filteredMembers.map(async (member) => {
+        const local = computeTaskStatsForMember(member.id, tasksList);
+        let stats = local;
+        try {
+          const response = await teamService.getTeamMemberStats(member.id);
+          const backend = response?.data || response || {};
+          stats = { ...local };
+          const KNOWN = ['totalTasks','completedTasks','inProgressTasks','todoTasks',
+                         'completionRate','onTimeRate','avgProgress','projectsCount'];
+          KNOWN.forEach(k => {
+            if (backend?.[k] != null && backend[k] !== '') {
+              const n = Number(backend[k]);
+              if (Number.isFinite(n)) stats[k] = n;
+            }
+          });
+        } catch { /* keep local stats */ }
+        mergedStats[Number(member.id)] = stats;
+      }));
 
       setMemberStatsMap(mergedStats);
-
-      console.log('📊 [LeadTeamMembers] Members (filtered):', filteredMembers.length);
-      console.log('📊 [LeadTeamMembers] Tasks:', tasksList.length);
     } catch (error) {
       console.error('Error fetching data:', error);
       toast.error('Failed to load team members');
-      setMembers([]);
-      setTasks([]);
-      setUsers([]);
-      setMemberStatsMap({});
+      setMembers([]); setTasks([]); setUsers([]); setMemberStatsMap({});
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -323,13 +366,9 @@ export default function LeadTeamMembers() {
     try {
       const pteamData = await projectTeamService.getProjectTeams();
       const pteamList = pteamData?.data || pteamData || [];
-
       const memberEntries = pteamList.filter(entry => Number(entry.tm) === Number(memberId));
-
       for (const entry of memberEntries) {
-        if (entry.pt_id) {
-          await projectTeamService.removeMemberFromProject(entry.pt_id);
-        }
+        if (entry.pt_id) await projectTeamService.removeMemberFromProject(entry.pt_id);
       }
       return memberEntries.length;
     } catch (error) {
@@ -338,31 +377,98 @@ export default function LeadTeamMembers() {
     }
   };
 
-  /* ─────────── Stats accessor (never returns 0 when data exists) ─────────── */
   const getMemberStats = (memberId) => {
     const numId = Number(memberId);
-    const cached = memberStatsMap[numId] || memberStatsMap[memberId];
-    if (cached) return cached;
-    return computeTaskStatsForMember(numId, tasks);
+    return memberStatsMap[numId] || computeTaskStatsForMember(numId, tasks);
   };
 
-  const getTasksForMember = (memberId) => {
-    const stats = getMemberStats(memberId);
-    return stats.tasks || [];
-  };
+  const getTasksForMember = (memberId) => getMemberStats(memberId).tasks || [];
 
   const getMemberName = (memberId) => {
     const member = members.find(m => Number(m.id) === Number(memberId));
     return member ? member.name : 'Unknown';
   };
 
-  const getUserById = (id) => users.find(u => (u.id || u.u_id) === id);
+  const getUserById = (id) => users.find(u => Number(u.id ?? u.u_id) === Number(id));
 
   const getInitials = (name) => {
     if (!name) return '?';
     return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
   };
 
+  /* ─────────── LIVE team insights — computed from real tasks & members ─────────── */
+  const teamInsights = useMemo(() => {
+    const memberIds = new Set(members.map(m => Number(m.id)));
+    const teamTasks = (tasks || []).filter(t => memberIds.has(assigneeOf(t)));
+
+    const doneTasks = teamTasks.filter(isDone);
+    const activeTasks = teamTasks.filter(isActive);
+    const todoTasks = teamTasks.filter(isTodo);
+    const totalTasks = teamTasks.length;
+    const completionRate = totalTasks ? Math.round((doneTasks.length / totalTasks) * 100) : 0;
+
+    let onTimeSample = 0, onTimeCount = 0;
+    doneTasks.forEach(t => {
+      const due = dueOf(t);
+      const doneAt = updatedOf(t) || t.created_at;
+      if (!due || !doneAt) return;
+      onTimeSample++;
+      if (new Date(doneAt) <= new Date(due)) onTimeCount++;
+    });
+    const onTimeRate = onTimeSample ? Math.round((onTimeCount / onTimeSample) * 100) : 0;
+
+    let overdueTasks = 0, dueSoonTasks = 0;
+    teamTasks.forEach(t => {
+      if (isDone(t)) return;
+      const dl = daysUntil(dueOf(t));
+      if (dl === null) return;
+      if (dl < 0) overdueTasks++;
+      else if (dl <= 7) dueSoonTasks++;
+    });
+
+    const statsOf = (id) => memberStatsMap[Number(id)] || computeTaskStatsForMember(id, tasks);
+
+    const workload = members.map(m => {
+      const s = statsOf(m.id);
+      return {
+        id: m.id, name: m.name,
+        active: s.inProgressTasks, total: s.totalTasks,
+        completionRate: s.completionRate, onTimeRate: s.onTimeRate,
+        overdue: s.overdueTasks,
+      };
+    }).sort((a, b) => b.active - a.active || b.total - a.total);
+
+    const membersWithTasks = workload.filter(w => w.total > 0).length;
+    const overloadedCount = workload.filter(w => w.active >= 5).length;
+    const availableCount = workload.filter(w => w.active === 0).length;
+    const maxActive = Math.max(1, ...workload.map(w => w.active));
+
+    const eligible = workload.filter(w => w.total >= 2);
+    const topPerformer = eligible.length
+      ? eligible.reduce((best, w) =>
+          (w.completionRate > best.completionRate ||
+           (w.completionRate === best.completionRate && w.onTimeRate > best.onTimeRate)) ? w : best)
+      : null;
+
+    const skillMap = {};
+    members.forEach(m => (m.skills || '').split(',').forEach(raw => {
+      const s = raw.trim();
+      if (!s) return;
+      const key = s.toLowerCase();
+      if (!skillMap[key]) skillMap[key] = { name: s, count: 0 };
+      skillMap[key].count++;
+    }));
+    const topSkills = Object.values(skillMap).sort((a, b) => b.count - a.count).slice(0, 8);
+
+    return {
+      totalTasks, doneCount: doneTasks.length, activeCount: activeTasks.length, todoCount: todoTasks.length,
+      completionRate, onTimeRate, onTimeSample, overdueTasks, dueSoonTasks,
+      workload, membersWithTasks, overloadedCount, availableCount, maxActive, topPerformer,
+      topSkills, distinctSkills: Object.keys(skillMap).length,
+    };
+  }, [members, tasks, memberStatsMap]);
+
+  /* ─────────── Form handling ─────────── */
   const formErrors = useMemo(() => ({
     name: validators.name(form.name),
     role: validators.role(form.role),
@@ -389,17 +495,17 @@ export default function LeadTeamMembers() {
 
   const handleAdd = async () => {
     setFormSubmitAttempted(true);
+    if (!isFormValid) { toast.error('Please fix the highlighted errors before saving'); return; }
 
-    if (!isFormValid) {
-      toast.error('Please fix the highlighted errors before saving');
+    const addedBy = user?.id ?? user?.u_id;
+    if (addedBy == null) {
+      toast.error('Could not identify your account. Please re-login.');
       return;
     }
 
     try {
       setSavingForm(true);
-
       const { name, role, email, qualification, experience, skills, description } = form;
-
       const response = await teamService.addTeamMember({
         name: name.trim(),
         role: role.trim(),
@@ -408,16 +514,15 @@ export default function LeadTeamMembers() {
         experience: parseInt(experience) || 0,
         skills: skills.trim(),
         description: description.trim(),
-        added_by: user?.id || user?.u_id || 1,
+        added_by: addedBy,
       });
 
       const newMember = response?.data || response;
-
       if (newMember && newMember.id) {
         setMembers(prev => [newMember, ...prev]);
         setMemberStatsMap(prev => ({
           ...prev,
-          [newMember.id]: computeTaskStatsForMember(newMember.id, tasks),
+          [Number(newMember.id)]: computeTaskStatsForMember(newMember.id, tasks),
         }));
         setShowAdd(false);
         resetFormState();
@@ -427,11 +532,8 @@ export default function LeadTeamMembers() {
       }
     } catch (error) {
       console.error('Error adding member:', error);
-      const rawMsg = error?.response?.data?.message ||
-                     error?.response?.data?.detail ||
-                     error?.message;
-      const errorMsg = typeof rawMsg === 'string' ? rawMsg : 'Failed to add team member';
-      toast.error(errorMsg);
+      const rawMsg = error?.response?.data?.message || error?.response?.data?.detail || error?.message;
+      toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to add team member');
     } finally {
       setSavingForm(false);
     }
@@ -443,10 +545,10 @@ export default function LeadTeamMembers() {
       name: member.name || '',
       role: member.role || '',
       email: member.email || '',
-      qualification: member.qualitifcation || member.qualification || '',
+      qualification: member.qualification || member.qualitifcation || '',
       experience: member.experience ?? '',
       skills: member.skills || '',
-      description: member.desc || member.description || ''
+      description: member.description || member.desc || ''
     });
     setFormTouched({});
     setFormSubmitAttempted(false);
@@ -455,17 +557,11 @@ export default function LeadTeamMembers() {
 
   const handleUpdate = async () => {
     setFormSubmitAttempted(true);
-
-    if (!isFormValid) {
-      toast.error('Please fix the highlighted errors before saving');
-      return;
-    }
+    if (!isFormValid) { toast.error('Please fix the highlighted errors before saving'); return; }
 
     try {
       setSavingForm(true);
-
       const { name, role, email, qualification, experience, skills, description } = form;
-
       const response = await teamService.updateTeamMember(selected.id, {
         name: name.trim(),
         role: role.trim(),
@@ -475,21 +571,16 @@ export default function LeadTeamMembers() {
         skills: skills.trim(),
         description: description.trim()
       });
-
       const updatedMember = response?.data || response;
-
-      setMembers(members.map(m => (m.id) === (selected.id) ? updatedMember : m));
+      setMembers(members.map(m => Number(m.id) === Number(selected.id) ? updatedMember : m));
       setShowEdit(false);
       setSelected(null);
       resetFormState();
       toast.success('Member updated successfully');
     } catch (error) {
       console.error('Error updating member:', error);
-      const rawMsg = error?.response?.data?.message ||
-                     error?.response?.data?.detail ||
-                     error?.message;
-      const errorMsg = typeof rawMsg === 'string' ? rawMsg : 'Failed to update member';
-      toast.error(errorMsg);
+      const rawMsg = error?.response?.data?.message || error?.response?.data?.detail || error?.message;
+      toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to update member');
     } finally {
       setSavingForm(false);
     }
@@ -499,71 +590,54 @@ export default function LeadTeamMembers() {
     const { name, value } = e.target;
     setForm(prev => ({ ...prev, [name]: value }));
   };
-
   const handleFormBlur = (field) => markFormTouched(field);
 
-  const closeAddModal = () => {
-    setShowAdd(false);
-    resetFormState();
-  };
+  const closeAddModal = () => { setShowAdd(false); resetFormState(); };
+  const closeEditModal = () => { setShowEdit(false); setSelected(null); resetFormState(); };
 
-  const closeEditModal = () => {
-    setShowEdit(false);
-    setSelected(null);
-    resetFormState();
-  };
-
+  /* ─────────── Delete flow ─────────── */
   const handleDeleteClick = (member) => {
-    const memberTasks = getTasksForMember(member.id);
     setMemberToDelete(member);
-    setAssignedTasks(memberTasks);
+    setAssignedTasks(getTasksForMember(member.id));
     setReassignTarget('');
     setDeleteOption('reassign');
     setShowDeleteConfirm(true);
   };
 
-  const handleDeleteWithReassign = async () => {
-    if (!memberToDelete) return;
+  const deleteMemberEverywhere = async () => {
+    await removeMemberFromAllProjects(memberToDelete.id);
+    await teamService.deleteTeamMember(memberToDelete.id);
+    setMembers(prev => prev.filter(m => Number(m.id) !== Number(memberToDelete.id)));
+    setMemberStatsMap(prev => {
+      const newMap = { ...prev };
+      delete newMap[Number(memberToDelete.id)];
+      return newMap;
+    });
+  };
 
+  const handleDeleteWithReassign = async () => {
     setIsDeleting(true);
     try {
       if (deleteOption === 'reassign' && reassignTarget) {
         const targetMemberId = parseInt(reassignTarget);
         for (const task of assignedTasks) {
           await taskService.updateTask(task.t_id || task.id, {
-            title: task.title,
-            description: task.desc,
-            status: task.status,
-            priority: task.priority,
-            progress: task.progress,
-            assignTo: targetMemberId,
+            title: task.title, description: task.desc, status: task.status,
+            priority: task.priority, progress: task.progress, assignTo: targetMemberId,
           });
         }
         toast.success(`Reassigned ${assignedTasks.length} tasks to ${getMemberName(targetMemberId)}`);
       } else if (deleteOption === 'park') {
         for (const task of assignedTasks) {
           await taskService.updateTask(task.t_id || task.id, {
-            title: task.title,
-            description: task.desc,
-            status: task.status,
-            priority: task.priority,
-            progress: task.progress,
-            assignTo: null,
+            title: task.title, description: task.desc, status: task.status,
+            priority: task.priority, progress: task.progress, assignTo: null,
           });
         }
         toast.success(`Unassigned ${assignedTasks.length} tasks (parked)`);
       }
 
-      await removeMemberFromAllProjects(memberToDelete.id);
-      await teamService.deleteTeamMember(memberToDelete.id);
-
-      setMembers(prev => prev.filter(m => (m.id) !== memberToDelete.id));
-      setMemberStatsMap(prev => {
-        const newMap = { ...prev };
-        delete newMap[memberToDelete.id];
-        return newMap;
-      });
-
+      await deleteMemberEverywhere();
       await fetchData();
       setShowDeleteConfirm(null);
       const deletedName = memberToDelete.name;
@@ -573,11 +647,8 @@ export default function LeadTeamMembers() {
       toast.success(`Member "${deletedName}" removed successfully`);
     } catch (error) {
       console.error('Error during deletion/reassignment:', error);
-      const rawMsg = error?.response?.data?.message ||
-                     error?.response?.data?.detail ||
-                     error?.message;
-      const errorMsg = typeof rawMsg === 'string' ? rawMsg : 'Failed to process member deletion';
-      toast.error(errorMsg);
+      const rawMsg = error?.response?.data?.message || error?.response?.data?.detail || error?.message;
+      toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to process member deletion');
     } finally {
       setIsDeleting(false);
     }
@@ -587,16 +658,7 @@ export default function LeadTeamMembers() {
     if (assignedTasks.length === 0) {
       try {
         setIsDeleting(true);
-        await removeMemberFromAllProjects(memberToDelete.id);
-        await teamService.deleteTeamMember(memberToDelete.id);
-
-        setMembers(prev => prev.filter(m => (m.id) !== memberToDelete.id));
-        setMemberStatsMap(prev => {
-          const newMap = { ...prev };
-          delete newMap[memberToDelete.id];
-          return newMap;
-        });
-
+        await deleteMemberEverywhere();
         await fetchData();
         setShowDeleteConfirm(null);
         const deletedName = memberToDelete.name;
@@ -604,11 +666,8 @@ export default function LeadTeamMembers() {
         toast.success(`Member "${deletedName}" removed successfully`);
       } catch (error) {
         console.error('Error deleting member:', error);
-        const rawMsg = error?.response?.data?.message ||
-                       error?.response?.data?.detail ||
-                       error?.message;
-        const errorMsg = typeof rawMsg === 'string' ? rawMsg : 'Failed to delete member';
-        toast.error(errorMsg);
+        const rawMsg = error?.response?.data?.message || error?.response?.data?.detail || error?.message;
+        toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to delete member');
       } finally {
         setIsDeleting(false);
       }
@@ -631,17 +690,16 @@ export default function LeadTeamMembers() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showDeleteConfirm, showEdit, showAdd, drawer, isDeleting]);
 
+  /* ─────────── Filtering / sorting ─────────── */
   const filtered = members.filter(m => {
-    const skills = m.skills || '';
-    const name = m.name || '';
-    const role = m.role || '';
+    const skills = (m.skills || '').toLowerCase();
+    const name = (m.name || '').toLowerCase();
+    const role = (m.role || '').toLowerCase();
     const experience = m.experience || 0;
+    const q = search.toLowerCase();
 
-    const searchMatch = name.toLowerCase().includes(search.toLowerCase()) ||
-      role.toLowerCase().includes(search.toLowerCase()) ||
-      skills.toLowerCase().includes(search.toLowerCase());
-
-    const roleMatch = filterRole === 'all' || role.toLowerCase() === filterRole.toLowerCase();
+    const searchMatch = name.includes(q) || role.includes(q) || skills.includes(q);
+    const roleMatch = filterRole === 'all' || role.includes(filterRole.toLowerCase());
 
     let expMatch = true;
     if (filterExperience === '0-1') expMatch = experience >= 0 && experience <= 1;
@@ -656,9 +714,12 @@ export default function LeadTeamMembers() {
     if (sortBy === 'role') return a.role?.localeCompare(b.role || '') || 0;
     if (sortBy === 'experience') return (b.experience || 0) - (a.experience || 0);
     if (sortBy === 'tasks') {
-      const statsA = getMemberStats(a.id);
-      const statsB = getMemberStats(b.id);
-      return (statsB.totalTasks || 0) - (statsA.totalTasks || 0);
+      return (getMemberStats(b.id).totalTasks || 0) - (getMemberStats(a.id).totalTasks || 0);
+    }
+    if (sortBy === 'performance') {
+      const sa = getMemberStats(a.id), sb = getMemberStats(b.id);
+      return (sb.completionRate || 0) - (sa.completionRate || 0) ||
+             (sb.onTimeRate || 0) - (sa.onTimeRate || 0);
     }
     return 0;
   });
@@ -668,6 +729,10 @@ export default function LeadTeamMembers() {
     (currentPage - 1) * itemsPerPage,
     currentPage * itemsPerPage
   );
+
+  const otherMembers = memberToDelete
+    ? members.filter(m => Number(m.id) !== Number(memberToDelete.id))
+    : [];
 
   if (loading) {
     return (
@@ -694,22 +759,142 @@ export default function LeadTeamMembers() {
         title="Team Members"
         onMenuClick={onMenuClick}
         actions={
-          <button
-            className="btn btn-secondary btn-sm refresh-btn"
-            onClick={handleRefresh}
-            disabled={refreshing}
-          >
-            <RefreshCw size={14} className={refreshing ? 'spin' : ''} />
-            {refreshing ? 'Refreshing...' : 'Refresh'}
-          </button>
+          <>
+            <button className="btn btn-secondary btn-sm refresh-btn" onClick={handleRefresh} disabled={refreshing}>
+              <RefreshCw size={14} className={refreshing ? 'spin' : ''} />
+              {refreshing ? 'Refreshing...' : 'Refresh'}
+            </button>
+            <button className="btn btn-primary btn-sm" onClick={() => setShowAdd(true)}>
+              <UserPlus size={14} /> Add Member
+            </button>
+          </>
         }
       />
 
       <div className="page-container">
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
-          <button className="btn btn-primary btn-sm" onClick={() => setShowAdd(true)}>
-            <UserPlus size={14} /> Add Member
-          </button>
+
+        {/* ═══════════ LIVE TEAM INSIGHTS ═══════════ */}
+        <div className="lt-insights">
+          <div className="lt-insights-header">
+            <span className="lt-live-dot" />
+            <span className="lt-insights-title"><Activity size={13} /> Team Insights</span>
+            <span className="lt-insights-sub">Live — computed from your team's real tasks</span>
+          </div>
+
+          <div className="lt-insight-grid">
+            <KpiCard
+              icon={<Users size={15} />} tint="#818cf8"
+              value={members.length} label="Team Members"
+              sub={`${teamInsights.membersWithTasks} with tasks · ${teamInsights.availableCount} idle`}
+            />
+            <KpiCard
+              icon={<ClipboardList size={15} />} tint="#2dd4bf"
+              value={teamInsights.totalTasks} label="Tasks Tracked"
+              sub={`${teamInsights.activeCount} active · ${teamInsights.todoCount} to do`}
+            />
+            <KpiCard
+              icon={<Target size={15} />} tint="#34d399"
+              value={`${teamInsights.completionRate}%`} label="Completion Rate"
+              sub={`${teamInsights.doneCount} completed`}
+              bar={teamInsights.completionRate} barColor="#34d399"
+            />
+            <KpiCard
+              icon={<Clock size={15} />} tint="#f59e0b"
+              value={teamInsights.onTimeSample ? `${teamInsights.onTimeRate}%` : '—'}
+              label="On-Time Delivery"
+              sub={teamInsights.onTimeSample
+                ? `based on ${teamInsights.onTimeSample} dated completion${teamInsights.onTimeSample > 1 ? 's' : ''}`
+                : 'no dated completions yet'}
+            />
+            <KpiCard
+              icon={<Flame size={15} />} tint={teamInsights.overdueTasks > 0 ? '#f87171' : '#34d399'}
+              value={teamInsights.overdueTasks} label="Overdue Tasks"
+              valueColor={teamInsights.overdueTasks > 0 ? '#f87171' : '#34d399'}
+              sub={teamInsights.overdueTasks > 0
+                ? `${teamInsights.dueSoonTasks} more due within 7 days`
+                : 'All clear'}
+            />
+          </div>
+
+          <div className="lt-insight-split">
+            {/* Task distribution — real counts */}
+            <div className="lt-panel">
+              <div className="lt-panel-title"><BarChart3 size={13} /> Task Distribution</div>
+              {teamInsights.totalTasks === 0 ? (
+                <div className="lt-empty-note">No tasks are assigned to team members yet.</div>
+              ) : (
+                <>
+                  <div className="lt-stackbar">
+                    {teamInsights.doneCount > 0 && <span style={{ flexGrow: teamInsights.doneCount, flexBasis: 0, background: '#34d399' }} />}
+                    {teamInsights.activeCount > 0 && <span style={{ flexGrow: teamInsights.activeCount, flexBasis: 0, background: '#818cf8' }} />}
+                    {teamInsights.todoCount > 0 && <span style={{ flexGrow: teamInsights.todoCount, flexBasis: 0, background: '#f59e0b' }} />}
+                  </div>
+                  <div className="lt-legend">
+                    <span className="lt-legend-item"><span className="lt-legend-dot" style={{ background: '#34d399' }} /> Done <b>{teamInsights.doneCount}</b></span>
+                    <span className="lt-legend-item"><span className="lt-legend-dot" style={{ background: '#818cf8' }} /> In Progress <b>{teamInsights.activeCount}</b></span>
+                    <span className="lt-legend-item"><span className="lt-legend-dot" style={{ background: '#f59e0b' }} /> To Do <b>{teamInsights.todoCount}</b></span>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Workload balance — real per-member counts */}
+            <div className="lt-panel">
+              <div className="lt-panel-title">
+                <Gauge size={13} /> Workload Balance
+                {teamInsights.topPerformer && (
+                  <span className="lt-top-performer">
+                    <Award size={11} /> Top: {teamInsights.topPerformer.name.split(' ')[0]} · {teamInsights.topPerformer.completionRate}%
+                  </span>
+                )}
+              </div>
+              {teamInsights.workload.length === 0 ? (
+                <div className="lt-empty-note">No members to show.</div>
+              ) : (
+                <div className="lt-workload-list">
+                  {teamInsights.workload.slice(0, 6).map(w => {
+                    const fillPct = Math.round((w.active / teamInsights.maxActive) * 100);
+                    const fillColor = w.active >= 5 ? '#f87171' : w.active >= 3 ? '#f59e0b' : '#34d399';
+                    return (
+                      <div className="lt-workload-row" key={`wl-${w.id}`}>
+                        <span className="lt-workload-name" title={w.name}>{w.name}</span>
+                        <div className="lt-workload-track">
+                          <span className="lt-workload-fill" style={{
+                            width: `${w.active > 0 ? Math.max(6, fillPct) : 0}%`,
+                            background: w.active > 0 ? fillColor : 'transparent',
+                          }} />
+                        </div>
+                        {w.active >= 5
+                          ? <span className="lt-load-badge danger">Overloaded</span>
+                          : w.active === 0
+                            ? <span className="lt-load-badge ok">Available</span>
+                            : <span className="lt-load-badge">{w.active} active</span>}
+                      </div>
+                    );
+                  })}
+                  {teamInsights.workload.length > 6 && (
+                    <div className="lt-empty-note">+{teamInsights.workload.length - 6} more members</div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {teamInsights.topSkills.length > 0 && (
+            <div className="lt-panel">
+              <div className="lt-panel-title">
+                <Award size={13} /> Skill Coverage
+                <span className="lt-panel-sub">{teamInsights.distinctSkills} distinct skills across the team</span>
+              </div>
+              <div className="lt-skill-coverage">
+                {teamInsights.topSkills.map(s => (
+                  <span key={s.name.toLowerCase()} className="lt-skill-chip">
+                    {s.name}<span className="lt-skill-count">{s.count}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Filters */}
@@ -761,6 +946,7 @@ export default function LeadTeamMembers() {
                 <option value="role">By Role</option>
                 <option value="experience">By Experience</option>
                 <option value="tasks">By Tasks</option>
+                <option value="performance">By Performance</option>
               </select>
             </div>
 
@@ -789,12 +975,7 @@ export default function LeadTeamMembers() {
             {sortedMembers.length !== members.length && (
               <button
                 className="lt-clear-filters-btn"
-                onClick={() => {
-                  setSearch('');
-                  setFilterRole('all');
-                  setFilterExperience('all');
-                  setSortBy('name');
-                }}
+                onClick={() => { setSearch(''); setFilterRole('all'); setFilterExperience('all'); setSortBy('name'); }}
               >
                 Clear all filters
               </button>
@@ -816,16 +997,13 @@ export default function LeadTeamMembers() {
               const stats = getMemberStats(memberId);
               const color = member.avatar_color || colors[i % colors.length];
               const skills = member.skills || '';
-              const onTimeRate = stats?.onTimeRate || 0;
               const initials = getInitials(member.name);
-              const completionRate = stats?.completionRate || 0;
-              const totalTasks = stats?.totalTasks || 0;
-              const completedTasks = stats?.completedTasks || 0;
-              const inProgressTasks = stats?.inProgressTasks || 0;
-
-              // ✅ Show "—" when there's nothing to measure instead of a
-              // misleading 0%.
-              const hasCompletedWithDue = completedTasks > 0;
+              const completionRate = stats.completionRate || 0;
+              const totalTasks = stats.totalTasks || 0;
+              const completedTasks = stats.completedTasks || 0;
+              const inProgressTasks = stats.inProgressTasks || 0;
+              const overdue = stats.overdueTasks || 0;
+              const dueSoon = stats.dueSoonTasks || 0;
 
               return (
                 <motion.div
@@ -838,30 +1016,20 @@ export default function LeadTeamMembers() {
                   onClick={() => setDrawer(member)}
                 >
                   <div className="member-card-actions">
-                    <button
-                      className="member-action-btn"
-                      onClick={(e) => { e.stopPropagation(); openEdit(member); }}
-                      title="Edit"
-                    >
+                    <button className="member-action-btn" onClick={(e) => { e.stopPropagation(); openEdit(member); }} title="Edit">
                       <Pencil size={13} />
                     </button>
-                    <button
-                      className="member-action-btn danger"
-                      onClick={(e) => { e.stopPropagation(); handleDeleteClick(member); }}
-                      title="Delete"
-                    >
+                    <button className="member-action-btn danger" onClick={(e) => { e.stopPropagation(); handleDeleteClick(member); }} title="Delete">
                       <Trash2 size={13} />
                     </button>
                   </div>
 
                   <div className="member-avatar-wrapper">
-                    <div
-                      className="member-avatar"
-                      style={{ background: `${color}22`, borderColor: `${color}40`, color }}
-                    >
+                    <div className="member-avatar" style={{ background: `${color}22`, borderColor: `${color}40`, color }}>
                       {initials}
                     </div>
-                    <div className="member-status-dot" style={{ background: completionRate >= 50 ? '#34d399' : '#f59e0b' }} />
+                    {/* Status dot reflects real state: red if overdue, green if healthy */}
+                    <div className="member-status-dot" style={{ background: overdue > 0 ? '#f87171' : completionRate >= 50 ? '#34d399' : '#f59e0b' }} />
                   </div>
 
                   <div className="member-info">
@@ -870,16 +1038,26 @@ export default function LeadTeamMembers() {
                   </div>
 
                   <p className="member-qualification">
-                    {member.qualitifcation || member.qualification || ''} · {member.experience || 0} yrs exp
+                    {member.qualification || member.qualitifcation || 'Qualification not set'} · {member.experience || 0} yrs exp
                   </p>
 
                   <div className="member-skills">
                     {skills.split(',').filter(s => s.trim()).slice(0, 4).map((s, idx) => (
-                      <span key={`skill-${idx}`} className="member-skill">
-                        {s.trim()}
-                      </span>
+                      <span key={`skill-${idx}`} className="member-skill">{s.trim()}</span>
                     ))}
                   </div>
+
+                  {/* Real due-date signals */}
+                  {(overdue > 0 || dueSoon > 0) && (
+                    <div className="member-due-row">
+                      {overdue > 0 && (
+                        <span className="lt-due-chip overdue"><AlertCircle size={11} /> {overdue} overdue</span>
+                      )}
+                      {dueSoon > 0 && (
+                        <span className="lt-due-chip soon"><Clock size={11} /> {dueSoon} due soon</span>
+                      )}
+                    </div>
+                  )}
 
                   <div className="member-stats">
                     <div className="member-stat">
@@ -898,10 +1076,10 @@ export default function LeadTeamMembers() {
 
                   <div className="member-footer">
                     <div className="member-on-time">
-                      <ProgressRing progress={onTimeRate} size={36} strokeWidth={3} />
+                      <ProgressRing progress={stats.onTimeRate || 0} size={36} strokeWidth={3} />
                       <div>
                         <p className="member-on-time-value">
-                          {hasCompletedWithDue ? `${onTimeRate}%` : '—'}
+                          {stats.completedWithDue > 0 ? `${stats.onTimeRate}%` : '—'}
                         </p>
                         <p className="member-on-time-label">On-time</p>
                       </div>
@@ -909,7 +1087,7 @@ export default function LeadTeamMembers() {
                     <span className="member-completion" style={{
                       color: completionRate >= 70 ? '#34d399' : completionRate >= 40 ? '#f59e0b' : '#f87171'
                     }}>
-                      {totalTasks > 0 ? `${completionRate}% completion` : 'No tasks'}
+                      {totalTasks > 0 ? `${completionRate}% completion` : 'No tasks yet'}
                     </span>
                   </div>
                 </motion.div>
@@ -921,83 +1099,59 @@ export default function LeadTeamMembers() {
         {/* Pagination */}
         {totalPages > 1 && (
           <div className="pagination">
-            <button
-              className="pagination-btn"
-              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-              disabled={currentPage === 1}
-            >
+            <button className="pagination-btn" onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1}>
               Prev
             </button>
             {[...Array(totalPages)].map((_, i) => (
-              <button
-                key={`page-${i}`}
-                className={`pagination-btn ${currentPage === i + 1 ? 'active' : ''}`}
-                onClick={() => setCurrentPage(i + 1)}
-              >
+              <button key={`page-${i}`} className={`pagination-btn ${currentPage === i + 1 ? 'active' : ''}`} onClick={() => setCurrentPage(i + 1)}>
                 {i + 1}
               </button>
             ))}
-            <button
-              className="pagination-btn"
-              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-              disabled={currentPage === totalPages}
-            >
+            <button className="pagination-btn" onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}>
               Next
             </button>
           </div>
         )}
       </div>
 
-      {/* ─── MEMBER DETAIL MODAL ─── */}
+      {/* ═══════════ MEMBER DETAIL MODAL (real data only) ═══════════ */}
       <AnimatePresence>
         {drawer && (() => {
-          const memberId = drawer.id;
-          const stats = getMemberStats(memberId);
-          const onTimeRate = stats?.onTimeRate || 0;
+          const stats = getMemberStats(drawer.id);
           const initials = getInitials(drawer.name);
           const color = drawer.avatar_color || '#818cf8';
-          const addedBy = getUserById(drawer.added_by);
-          const completionRate = stats?.completionRate || 0;
-          const totalTasks = stats?.totalTasks || 0;
-          const completedTasks = stats?.completedTasks || 0;
-          const inProgressTasks = stats?.inProgressTasks || 0;
+          const addedBy = drawer.added_by ? getUserById(drawer.added_by) : null;
+          const memberTasks = stats.tasks || [];
 
-          const currentProjects = tasks
-            .filter(t => {
-              const assignTo = t.assign_to || t.assignedTo;
-              return Number(assignTo) === Number(memberId) && t.status !== 'done' && t.status !== 'completed';
-            })
-            .slice(0, 3)
-            .map(t => ({
-              name: t.title,
-              role: t.status || 'In Progress',
-              progress: t.progress || 0,
-              status: t.status || 'Active'
-            }));
+          const activeTasks = memberTasks.filter(t => !isDone(t)).sort((a, b) => {
+            const da = dueOf(a), db = dueOf(b);
+            if (!da && !db) return 0;
+            if (!da) return 1;
+            if (!db) return -1;
+            return new Date(da) - new Date(db);
+          });
+          const doneSorted = memberTasks.filter(isDone).sort((a, b) =>
+            new Date(updatedOf(b) || b.created_at || 0) - new Date(updatedOf(a) || a.created_at || 0));
 
-          const completedProjects = tasks
-            .filter(t => {
-              const assignTo = t.assign_to || t.assignedTo;
-              return Number(assignTo) === Number(memberId) && (t.status === 'done' || t.status === 'completed');
-            })
-            .slice(0, 3)
-            .map(t => ({
-              name: t.title,
-              duration: 'Completed',
-              performance: 'Done'
-            }));
+          const activeCount = activeTasks.length;
+          const overdue = stats.overdueTasks || 0;
 
-          const workHistory = [
-            { year: new Date().getFullYear(), text: `Working as ${drawer.role || 'Team Member'}` },
-            ...(completedTasks > 0 ? [{ year: new Date().getFullYear(), text: `Completed ${completedTasks} tasks` }] : [])
-          ];
+          // Real timeline — only entries we actually have data for
+          const timeline = [];
+          const joined = formatDate(drawer.created_at);
+          if (joined) timeline.push({ label: 'Joined', text: joined });
+          const lastAct = stats.lastActivity ? formatRelative(stats.lastActivity) : null;
+          if (lastAct) timeline.push({ label: 'Activity', text: `Last task update ${lastAct}` });
+          if (stats.completedThisMonth > 0) timeline.push({
+            label: 'This month',
+            text: `Completed ${stats.completedThisMonth} task${stats.completedThisMonth > 1 ? 's' : ''}`,
+          });
+          if (addedBy) timeline.push({ label: 'Added by', text: addedBy.u_name || addedBy.name || '—' });
 
           return (
             <motion.div
               className="member-modal-overlay"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               onClick={() => setDrawer(null)}
             >
               <motion.div
@@ -1016,49 +1170,53 @@ export default function LeadTeamMembers() {
                     <div className="mm-header-info">
                       <h2 className="mm-name">{drawer.name}</h2>
                       <div className="mm-badges">
-                        <span className="badge badge-purple">{drawer.role}</span>
-                        <span className="badge badge-green">Active</span>
+                        <span className="badge badge-purple">{drawer.role || 'Team Member'}</span>
+                        <span className="badge" style={{
+                          background: activeCount > 0 ? 'rgba(52,211,153,.15)' : 'rgba(148,163,184,.15)',
+                          color: activeCount > 0 ? '#34d399' : '#94a3b8',
+                        }}>
+                          {activeCount > 0 ? 'Active' : 'Idle'}
+                        </span>
                         <span className="badge badge-gray">{drawer.experience || 0} yrs exp</span>
                       </div>
                     </div>
                   </div>
-                  <button className="mm-close-btn" onClick={() => setDrawer(null)}>
-                    <X size={20} />
-                  </button>
+                  <button className="mm-close-btn" onClick={() => setDrawer(null)}><X size={20} /></button>
                 </div>
 
                 <div className="mm-body">
                   {(drawer.desc || drawer.description) ? (
                     <div className="mm-description">{drawer.desc || drawer.description}</div>
                   ) : (
-                    <div className="mm-description muted">
-                      A skilled team member contributing to the project.
-                    </div>
+                    <div className="mm-description muted">No description provided.</div>
                   )}
 
                   {drawer.email && (
-                    <div className="mm-email">
-                      <Mail size={14} />
-                      <span>{drawer.email}</span>
-                    </div>
+                    <div className="mm-email"><Mail size={14} /><span>{drawer.email}</span></div>
                   )}
 
                   <div className="mm-stats-row">
                     <div className="mm-stat-item">
-                      <span className="mm-stat-value">{totalTasks}</span>
+                      <span className="mm-stat-value">{stats.totalTasks}</span>
                       <span className="mm-stat-label">Total Tasks</span>
                     </div>
                     <div className="mm-stat-item">
-                      <span className="mm-stat-value" style={{ color: '#34d399' }}>{completedTasks}</span>
+                      <span className="mm-stat-value" style={{ color: '#34d399' }}>{stats.completedTasks}</span>
                       <span className="mm-stat-label">Completed</span>
                     </div>
                     <div className="mm-stat-item">
-                      <span className="mm-stat-value" style={{ color: '#818cf8' }}>{inProgressTasks}</span>
+                      <span className="mm-stat-value" style={{ color: '#818cf8' }}>{activeCount}</span>
                       <span className="mm-stat-label">Active</span>
                     </div>
                     <div className="mm-stat-item">
-                      <span className="mm-stat-value" style={{ color: completedTasks > 0 && onTimeRate >= 70 ? '#34d399' : '#f59e0b' }}>
-                        {completedTasks > 0 ? `${onTimeRate}%` : '—'}
+                      <span className="mm-stat-value" style={{ color: overdue > 0 ? '#f87171' : undefined }}>{overdue}</span>
+                      <span className="mm-stat-label">Overdue</span>
+                    </div>
+                    <div className="mm-stat-item">
+                      <span className="mm-stat-value" style={{
+                        color: stats.completedWithDue > 0 ? ((stats.onTimeRate || 0) >= 70 ? '#34d399' : '#f59e0b') : undefined
+                      }}>
+                        {stats.completedWithDue > 0 ? `${stats.onTimeRate}%` : '—'}
                       </span>
                       <span className="mm-stat-label">On-Time</span>
                     </div>
@@ -1076,61 +1234,93 @@ export default function LeadTeamMembers() {
                     </div>
                   </div>
 
+                  {/* Current tasks — real titles, statuses, due dates, progress */}
                   <div className="mm-section">
                     <h4 className="mm-section-title"><Briefcase size={14} /> Current Tasks</h4>
                     <div className="mm-project-list">
-                      {currentProjects.length === 0 ? (
+                      {activeTasks.length === 0 ? (
                         <div className="mm-no-data">No active tasks</div>
                       ) : (
-                        currentProjects.map((p, i) => (
-                          <div key={`proj-${i}`} className="mm-project-item">
-                            <div className="mm-project-info">
-                              <span className="mm-project-name">{p.name}</span>
-                              <span className="mm-project-role">{p.role}</span>
+                        activeTasks.slice(0, 4).map((t, i) => {
+                          const due = dueOf(t);
+                          const dl = daysUntil(due);
+                          const dueCls = dl !== null && dl < 0 ? 'overdue' : dl !== null && dl <= 7 ? 'soon' : '';
+                          return (
+                            <div className="mm-project-item" key={t.t_id || t.id || `ct-${i}`}>
+                              <div className="mm-project-info">
+                                <span className="mm-project-name">{t.title || 'Untitled task'}</span>
+                                <span className={`mm-task-due ${dueCls}`}>
+                                  {due ? `Due ${formatDate(due)}` : 'No due date'}
+                                  {dl !== null && dl < 0 ? ' · overdue' : ''}
+                                </span>
+                                <div className="mm-progress-track">
+                                  <span className="mm-progress-fill" style={{
+                                    width: `${clampProgress(t)}%`,
+                                    background: statusColor(t.status),
+                                  }} />
+                                </div>
+                              </div>
+                              <span className="badge badge-blue" style={{
+                                background: `${statusColor(t.status)}1f`, color: statusColor(t.status),
+                              }}>
+                                {statusLabel(t.status)}
+                              </span>
                             </div>
-                            <div className="mm-project-status">
-                              <span className="badge badge-blue">{p.status}</span>
-                              <span className="mm-project-progress">{p.progress}%</span>
-                            </div>
-                          </div>
-                        ))
+                          );
+                        })
                       )}
                     </div>
                   </div>
 
+                  {/* Completed tasks — real completion dates + on-time/late */}
                   <div className="mm-section">
                     <h4 className="mm-section-title"><CheckCircle2 size={14} /> Completed Tasks</h4>
                     <div className="mm-project-list">
-                      {completedProjects.length === 0 ? (
-                        <div className="mm-no-data">No completed tasks</div>
+                      {doneSorted.length === 0 ? (
+                        <div className="mm-no-data">No completed tasks yet</div>
                       ) : (
-                        completedProjects.map((p, i) => (
-                          <div key={`hist-${i}`} className="mm-project-item completed">
-                            <div className="mm-project-info">
-                              <span className="mm-project-name">{p.name}</span>
-                              <span className="mm-project-role">{p.duration}</span>
+                        doneSorted.slice(0, 4).map((t, i) => {
+                          const doneAt = updatedOf(t) || t.created_at;
+                          const due = dueOf(t);
+                          let punctuality = null;
+                          if (due && doneAt) punctuality = new Date(doneAt) <= new Date(due) ? 'On time' : 'Late';
+                          return (
+                            <div className="mm-project-item completed" key={t.t_id || t.id || `dt-${i}`}>
+                              <div className="mm-project-info">
+                                <span className="mm-project-name">{t.title || 'Untitled task'}</span>
+                                <span className="mm-task-due">
+                                  {doneAt ? `Completed ${formatDate(doneAt)}` : 'Completed'}
+                                </span>
+                              </div>
+                              {punctuality ? (
+                                <span className="badge badge-green" style={
+                                  punctuality === 'Late' ? { background: 'rgba(248,113,113,.15)', color: '#f87171' } : undefined
+                                }>
+                                  {punctuality}
+                                </span>
+                              ) : (
+                                <span className="mm-no-data">No due date</span>
+                              )}
                             </div>
-                            <span className="badge badge-green">{p.performance}</span>
-                          </div>
-                        ))
+                          );
+                        })
                       )}
                     </div>
                   </div>
 
+                  {/* Real timeline */}
                   <div className="mm-section">
-                    <h4 className="mm-section-title"><Clock size={14} /> Work Timeline</h4>
+                    <h4 className="mm-section-title"><Clock size={14} /> Timeline</h4>
                     <div className="mm-timeline">
-                      {workHistory.map((item, i) => (
-                        <div key={`tl-${i}`} className="mm-timeline-item">
-                          <span className="mm-tl-year">{item.year}</span>
-                          <span className="mm-tl-text">{item.text}</span>
-                        </div>
-                      ))}
-                      {addedBy && (
-                        <div className="mm-timeline-item">
-                          <span className="mm-tl-year">Added</span>
-                          <span className="mm-tl-text">by {addedBy.u_name || addedBy.name}</span>
-                        </div>
+                      {timeline.length === 0 ? (
+                        <div className="mm-no-data">No timeline data yet</div>
+                      ) : (
+                        timeline.map((item, i) => (
+                          <div className="mm-timeline-item" key={`tl-${i}`}>
+                            <span className="mm-tl-year">{item.label}</span>
+                            <span className="mm-tl-text">{item.text}</span>
+                          </div>
+                        ))
                       )}
                     </div>
                   </div>
@@ -1148,14 +1338,12 @@ export default function LeadTeamMembers() {
         })()}
       </AnimatePresence>
 
-      {/* ─── DELETE CONFIRM ─── */}
+      {/* ═══════════ DELETE CONFIRM ═══════════ */}
       <AnimatePresence>
         {showDeleteConfirm && memberToDelete && (
           <motion.div
             className="member-modal-overlay"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             onClick={() => !isDeleting && setShowDeleteConfirm(null)}
           >
             <motion.div
@@ -1168,21 +1356,13 @@ export default function LeadTeamMembers() {
             >
               <div className="mm-header">
                 <div className="mm-header-left">
-                  <div className="delete-icon-wrapper">
-                    <AlertCircle size={24} color="#f87171" />
-                  </div>
+                  <div className="delete-icon-wrapper"><AlertCircle size={24} color="#f87171" /></div>
                   <div className="mm-header-info">
                     <h2 className="mm-name">Delete Member</h2>
-                    <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-                      {memberToDelete.name} · {memberToDelete.role}
-                    </p>
+                    <p className="mm-sub">{memberToDelete.name} · {memberToDelete.role}</p>
                   </div>
                 </div>
-                <button
-                  className="mm-close-btn"
-                  onClick={() => !isDeleting && setShowDeleteConfirm(null)}
-                  disabled={isDeleting}
-                >
+                <button className="mm-close-btn" onClick={() => !isDeleting && setShowDeleteConfirm(null)} disabled={isDeleting}>
                   <X size={20} />
                 </button>
               </div>
@@ -1203,16 +1383,14 @@ export default function LeadTeamMembers() {
                         Assigned Tasks:
                       </p>
                       {assignedTasks.slice(0, 5).map((task, i) => (
-                        <div key={i} className="assigned-task-item">
+                        <div key={task.t_id || task.id || i} className="assigned-task-item">
                           <span className="task-dot" />
                           <span className="task-title">{task.title}</span>
                           <span className="task-status-badge" style={{
-                            background: task.status === 'done' || task.status === 'completed'
-                              ? 'rgba(52, 211, 153, 0.15)'
-                              : 'rgba(245, 158, 11, 0.15)',
-                            color: task.status === 'done' || task.status === 'completed' ? '#34d399' : '#f59e0b'
+                            background: isDone(task) ? 'rgba(52, 211, 153, 0.15)' : 'rgba(245, 158, 11, 0.15)',
+                            color: isDone(task) ? '#34d399' : '#f59e0b',
                           }}>
-                            {task.status || 'todo'}
+                            {statusLabel(task.status)}
                           </span>
                         </div>
                       ))}
@@ -1227,81 +1405,66 @@ export default function LeadTeamMembers() {
                       <div className="delete-option">
                         <label className="radio-label">
                           <input
-                            type="radio"
-                            name="deleteOption"
-                            value="reassign"
+                            type="radio" name="deleteOption" value="reassign"
                             checked={deleteOption === 'reassign'}
                             onChange={() => setDeleteOption('reassign')}
-                            disabled={isDeleting}
                           />
-                          <div>
-                            <strong>Reassign Tasks</strong>
-                            <span>Assign all tasks to another team member</span>
-                          </div>
+                          <span>Reassign tasks to another member</span>
                         </label>
                         {deleteOption === 'reassign' && (
-                          <select
-                            className="reassign-select"
-                            value={reassignTarget}
-                            onChange={(e) => setReassignTarget(e.target.value)}
-                            disabled={isDeleting}
-                          >
-                            <option value="">Select a team member...</option>
-                            {members
-                              .filter(m => Number(m.id) !== Number(memberToDelete.id))
-                              .map(m => (
-                                <option key={m.id} value={m.id}>
-                                  {m.name} ({m.role || 'Member'})
-                                </option>
+                          otherMembers.length > 0 ? (
+                            <select
+                              className="lt-select"
+                              value={reassignTarget}
+                              onChange={e => setReassignTarget(e.target.value)}
+                              style={{ marginTop: 8 }}
+                            >
+                              <option value="">Select a member…</option>
+                              {otherMembers.map(m => (
+                                <option key={m.id} value={m.id}>{m.name} ({m.role})</option>
                               ))}
-                          </select>
+                            </select>
+                          ) : (
+                            <p className="lt-empty-note" style={{ marginTop: 6 }}>
+                              No other members available — tasks will be unassigned instead.
+                            </p>
+                          )
                         )}
                       </div>
-
                       <div className="delete-option">
                         <label className="radio-label">
                           <input
-                            type="radio"
-                            name="deleteOption"
-                            value="park"
+                            type="radio" name="deleteOption" value="park"
                             checked={deleteOption === 'park'}
                             onChange={() => setDeleteOption('park')}
-                            disabled={isDeleting}
                           />
-                          <div>
-                            <strong>Park Tasks</strong>
-                            <span>Unassign all tasks (leave them without assignee)</span>
-                          </div>
+                          <span>Leave tasks unassigned (park them)</span>
                         </label>
                       </div>
                     </div>
                   </>
                 ) : (
-                  <div className="delete-warning" style={{ background: 'rgba(52, 211, 153, 0.08)', borderColor: 'rgba(52, 211, 153, 0.2)' }}>
-                    <CheckCircle2 size={18} color="#34d399" />
-                    <span>This member has no assigned tasks. They can be safely removed.</span>
+                  <div className="delete-warning">
+                    <AlertCircle size={18} />
+                    <span>
+                      Are you sure you want to delete <strong>{memberToDelete.name}</strong>?
+                      This member has no assigned tasks.
+                    </span>
                   </div>
                 )}
               </div>
 
-              <div className="mm-footer delete-footer">
-                <button
-                  className="mm-footer-btn secondary"
-                  onClick={() => setShowDeleteConfirm(null)}
-                  disabled={isDeleting}
-                >
+              <div className="mm-footer">
+                <button className="mm-footer-btn secondary" onClick={() => setShowDeleteConfirm(null)} disabled={isDeleting}>
                   Cancel
                 </button>
                 <button
                   className="mm-footer-btn danger"
                   onClick={handleDelete}
-                  disabled={isDeleting || (deleteOption === 'reassign' && assignedTasks.length > 0 && !reassignTarget)}
+                  disabled={isDeleting || (assignedTasks.length > 0 && deleteOption === 'reassign' && otherMembers.length > 0 && !reassignTarget)}
                 >
-                  {isDeleting ? (
-                    <><div className="spinner-small" /> Processing...</>
-                  ) : (
-                    <><Trash2 size={14} /> Confirm Delete</>
-                  )}
+                  {isDeleting ? <Loader2 size={14} className="spin" /> : <Trash2 size={14} />}
+                  {isDeleting ? 'Deleting…' : 'Delete Member'}
                 </button>
               </div>
             </motion.div>
@@ -1309,860 +1472,198 @@ export default function LeadTeamMembers() {
         )}
       </AnimatePresence>
 
-      {/* ADD MODAL */}
-      <Modal isOpen={showAdd} onClose={closeAddModal} title="Add New Team Member">
-        <form onSubmit={(e) => { e.preventDefault(); handleAdd(); }}>
-          <div style={{ marginBottom: 12 }}>
-            <label className="lt-form-label">Full Name <span className="lt-required">*</span></label>
-            <input
-              name="name"
-              className={`input ${showFormError('name') ? 'lt-input-error' : ''}`}
-              placeholder="John Doe"
-              value={form.name}
-              onChange={handleFormChange}
-              onBlur={() => handleFormBlur('name')}
-              maxLength={LIMITS.name.max}
-            />
-            <FieldError message={showFormError('name')} />
-          </div>
+      {/* ═══════════ ADD MEMBER ═══════════ */}
+      <AnimatePresence>
+        {showAdd && (
+          <motion.div
+            className="member-modal-overlay"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={closeAddModal}
+          >
+            <motion.div
+              className="member-modal wide"
+              initial={{ scale: 0.92, opacity: 0, y: 30 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.92, opacity: 0, y: 30 }}
+              transition={{ type: "spring", damping: 25, stiffness: 300 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="mm-header">
+                <div className="mm-header-left">
+                  <div className="delete-icon-wrapper" style={{ background: 'rgba(129,140,248,.12)' }}>
+                    <UserPlus size={22} color="#818cf8" />
+                  </div>
+                  <div className="mm-header-info">
+                    <h2 className="mm-name">Add Team Member</h2>
+                    <p className="mm-sub">Fields marked * are required</p>
+                  </div>
+                </div>
+                <button className="mm-close-btn" onClick={closeAddModal}><X size={20} /></button>
+              </div>
 
-          <div style={{ marginBottom: 12 }}>
-            <label className="lt-form-label">Role <span className="lt-required">*</span></label>
-            <input
-              name="role"
-              className={`input ${showFormError('role') ? 'lt-input-error' : ''}`}
-              placeholder="Frontend Developer"
-              value={form.role}
-              onChange={handleFormChange}
-              onBlur={() => handleFormBlur('role')}
-              maxLength={LIMITS.role.max}
-            />
-            <FieldError message={showFormError('role')} />
-          </div>
+              <div className="mm-body">
+                <div className="lt-form-grid">
+                  <div className="lt-form-field">
+                    <label className="lt-form-label">Name *</label>
+                    <input className={`lt-input ${showFormError('name') ? 'invalid' : ''}`} name="name"
+                      value={form.name} onChange={handleFormChange} onBlur={() => handleFormBlur('name')}
+                      placeholder="e.g. Priya Sharma" maxLength={LIMITS.name.max} />
+                    <FieldError message={showFormError('name')} />
+                  </div>
+                  <div className="lt-form-field">
+                    <label className="lt-form-label">Role *</label>
+                    <input className={`lt-input ${showFormError('role') ? 'invalid' : ''}`} name="role"
+                      value={form.role} onChange={handleFormChange} onBlur={() => handleFormBlur('role')}
+                      placeholder="e.g. Frontend Developer" maxLength={LIMITS.role.max} />
+                    <FieldError message={showFormError('role')} />
+                  </div>
+                  <div className="lt-form-field">
+                    <label className="lt-form-label">Email *</label>
+                    <input className={`lt-input ${showFormError('email') ? 'invalid' : ''}`} name="email" type="email"
+                      value={form.email} onChange={handleFormChange} onBlur={() => handleFormBlur('email')}
+                      placeholder="member@company.com" maxLength={LIMITS.email.max} />
+                    <FieldError message={showFormError('email')} />
+                  </div>
+                  <div className="lt-form-field">
+                    <label className="lt-form-label">Experience (years) *</label>
+                    <input className={`lt-input ${showFormError('experience') ? 'invalid' : ''}`} name="experience" type="number" min="0"
+                      value={form.experience} onChange={handleFormChange} onBlur={() => handleFormBlur('experience')}
+                      placeholder="e.g. 3" />
+                    <FieldError message={showFormError('experience')} />
+                  </div>
+                  <div className="lt-form-field">
+                    <label className="lt-form-label">Qualification *</label>
+                    <input className={`lt-input ${showFormError('qualification') ? 'invalid' : ''}`} name="qualification"
+                      value={form.qualification} onChange={handleFormChange} onBlur={() => handleFormBlur('qualification')}
+                      placeholder="e.g. B.Tech Computer Science" maxLength={LIMITS.qualification.max} />
+                    <FieldError message={showFormError('qualification')} />
+                  </div>
+                  <div className="lt-form-field">
+                    <label className="lt-form-label">Skills * <span className="lt-char-count">comma separated</span></label>
+                    <input className={`lt-input ${showFormError('skills') ? 'invalid' : ''}`} name="skills"
+                      value={form.skills} onChange={handleFormChange} onBlur={() => handleFormBlur('skills')}
+                      placeholder="e.g. React, Node.js, Figma" maxLength={LIMITS.skills.max} />
+                    <FieldError message={showFormError('skills')} />
+                  </div>
+                  <div className="lt-form-field full">
+                    <label className="lt-form-label">
+                      Description
+                      <span className="lt-char-count">{form.description.length}/{LIMITS.description.max}</span>
+                    </label>
+                    <textarea className={`lt-textarea ${showFormError('description') ? 'invalid' : ''}`} name="description"
+                      value={form.description} onChange={handleFormChange} onBlur={() => handleFormBlur('description')}
+                      placeholder="Short bio or notes about this member (optional)" maxLength={LIMITS.description.max} />
+                    <FieldError message={showFormError('description')} />
+                  </div>
+                </div>
+              </div>
 
-          <div style={{ marginBottom: 12 }}>
-            <label className="lt-form-label">Email Address <span className="lt-required">*</span></label>
-            <input
-              name="email"
-              type="email"
-              className={`input ${showFormError('email') ? 'lt-input-error' : ''}`}
-              placeholder="john@example.com"
-              value={form.email}
-              onChange={handleFormChange}
-              onBlur={() => handleFormBlur('email')}
-              maxLength={LIMITS.email.max}
-            />
-            <FieldError message={showFormError('email')} />
-          </div>
+              <div className="mm-footer">
+                <button className="mm-footer-btn secondary" onClick={closeAddModal} disabled={savingForm}>Cancel</button>
+                <button className="mm-footer-btn primary" onClick={handleAdd} disabled={savingForm}>
+                  {savingForm && <Loader2 size={14} className="spin" />}
+                  {savingForm ? 'Saving…' : 'Add Member'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
 
-          <div style={{ marginBottom: 12 }}>
-            <label className="lt-form-label">Qualification <span className="lt-required">*</span></label>
-            <input
-              name="qualification"
-              className={`input ${showFormError('qualification') ? 'lt-input-error' : ''}`}
-              placeholder="BS Computer Science"
-              value={form.qualification}
-              onChange={handleFormChange}
-              onBlur={() => handleFormBlur('qualification')}
-              maxLength={LIMITS.qualification.max}
-            />
-            <FieldError message={showFormError('qualification')} />
-          </div>
+        {/* ═══════════ EDIT MEMBER ═══════════ */}
+        {showEdit && selected && (
+          <motion.div
+            className="member-modal-overlay"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={closeEditModal}
+          >
+            <motion.div
+              className="member-modal wide"
+              initial={{ scale: 0.92, opacity: 0, y: 30 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.92, opacity: 0, y: 30 }}
+              transition={{ type: "spring", damping: 25, stiffness: 300 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="mm-header">
+                <div className="mm-header-left">
+                  <div className="delete-icon-wrapper" style={{ background: 'rgba(129,140,248,.12)' }}>
+                    <Pencil size={22} color="#818cf8" />
+                  </div>
+                  <div className="mm-header-info">
+                    <h2 className="mm-name">Edit Member</h2>
+                    <p className="mm-sub">{selected.name}</p>
+                  </div>
+                </div>
+                <button className="mm-close-btn" onClick={closeEditModal}><X size={20} /></button>
+              </div>
 
-          <div style={{ marginBottom: 12 }}>
-            <label className="lt-form-label">Years of Experience <span className="lt-required">*</span></label>
-            <input
-              name="experience"
-              type="number"
-              min={LIMITS.experience.min}
-              max={LIMITS.experience.max}
-              className={`input ${showFormError('experience') ? 'lt-input-error' : ''}`}
-              placeholder="3"
-              value={form.experience}
-              onChange={handleFormChange}
-              onBlur={() => handleFormBlur('experience')}
-            />
-            <FieldError message={showFormError('experience')} />
-          </div>
+              <div className="mm-body">
+                <div className="lt-form-grid">
+                  <div className="lt-form-field">
+                    <label className="lt-form-label">Name *</label>
+                    <input className={`lt-input ${showFormError('name') ? 'invalid' : ''}`} name="name"
+                      value={form.name} onChange={handleFormChange} onBlur={() => handleFormBlur('name')}
+                      maxLength={LIMITS.name.max} />
+                    <FieldError message={showFormError('name')} />
+                  </div>
+                  <div className="lt-form-field">
+                    <label className="lt-form-label">Role *</label>
+                    <input className={`lt-input ${showFormError('role') ? 'invalid' : ''}`} name="role"
+                      value={form.role} onChange={handleFormChange} onBlur={() => handleFormBlur('role')}
+                      maxLength={LIMITS.role.max} />
+                    <FieldError message={showFormError('role')} />
+                  </div>
+                  <div className="lt-form-field">
+                    <label className="lt-form-label">Email *</label>
+                    <input className={`lt-input ${showFormError('email') ? 'invalid' : ''}`} name="email" type="email"
+                      value={form.email} onChange={handleFormChange} onBlur={() => handleFormBlur('email')}
+                      maxLength={LIMITS.email.max} />
+                    <FieldError message={showFormError('email')} />
+                  </div>
+                  <div className="lt-form-field">
+                    <label className="lt-form-label">Experience (years) *</label>
+                    <input className={`lt-input ${showFormError('experience') ? 'invalid' : ''}`} name="experience" type="number" min="0"
+                      value={form.experience} onChange={handleFormChange} onBlur={() => handleFormBlur('experience')} />
+                    <FieldError message={showFormError('experience')} />
+                  </div>
+                  <div className="lt-form-field">
+                    <label className="lt-form-label">Qualification *</label>
+                    <input className={`lt-input ${showFormError('qualification') ? 'invalid' : ''}`} name="qualification"
+                      value={form.qualification} onChange={handleFormChange} onBlur={() => handleFormBlur('qualification')}
+                      maxLength={LIMITS.qualification.max} />
+                    <FieldError message={showFormError('qualification')} />
+                  </div>
+                  <div className="lt-form-field">
+                    <label className="lt-form-label">Skills * <span className="lt-char-count">comma separated</span></label>
+                    <input className={`lt-input ${showFormError('skills') ? 'invalid' : ''}`} name="skills"
+                      value={form.skills} onChange={handleFormChange} onBlur={() => handleFormBlur('skills')}
+                      maxLength={LIMITS.skills.max} />
+                    <FieldError message={showFormError('skills')} />
+                  </div>
+                  <div className="lt-form-field full">
+                    <label className="lt-form-label">
+                      Description
+                      <span className="lt-char-count">{form.description.length}/{LIMITS.description.max}</span>
+                    </label>
+                    <textarea className={`lt-textarea ${showFormError('description') ? 'invalid' : ''}`} name="description"
+                      value={form.description} onChange={handleFormChange} onBlur={() => handleFormBlur('description')}
+                      maxLength={LIMITS.description.max} />
+                    <FieldError message={showFormError('description')} />
+                  </div>
+                </div>
+              </div>
 
-          <div style={{ marginBottom: 12 }}>
-            <label className="lt-form-label">Skills <span className="lt-required">*</span></label>
-            <input
-              name="skills"
-              className={`input ${showFormError('skills') ? 'lt-input-error' : ''}`}
-              placeholder="React, Node.js, MongoDB"
-              value={form.skills}
-              onChange={handleFormChange}
-              onBlur={() => handleFormBlur('skills')}
-              maxLength={LIMITS.skills.max}
-            />
-            <FieldError message={showFormError('skills')} />
-          </div>
-
-          <div style={{ marginBottom: 20 }}>
-            <label className="lt-form-label">Short Description</label>
-            <textarea
-              name="description"
-              className={`input ${showFormError('description') ? 'lt-input-error' : ''}`}
-              placeholder="Brief description of the member's background"
-              value={form.description}
-              onChange={handleFormChange}
-              onBlur={() => handleFormBlur('description')}
-              maxLength={LIMITS.description.max}
-              style={{ minHeight: 80, resize: 'vertical' }}
-            />
-            <FieldError message={showFormError('description')} />
-          </div>
-
-          <div style={{ display: 'flex', gap: 10 }}>
-            <button type="button" className="btn btn-secondary flex-1" onClick={closeAddModal} disabled={savingForm}>
-              Cancel
-            </button>
-            <button type="submit" className="btn btn-primary flex-1" disabled={savingForm}>
-              {savingForm ? <><Loader2 size={14} className="spin" /> Adding...</> : 'Add Member'}
-            </button>
-          </div>
-        </form>
-      </Modal>
-
-      {/* EDIT MODAL */}
-      <Modal isOpen={showEdit} onClose={closeEditModal} title="Edit Team Member">
-        <form onSubmit={(e) => { e.preventDefault(); handleUpdate(); }}>
-          <div style={{ marginBottom: 12 }}>
-            <label className="lt-form-label">Full Name <span className="lt-required">*</span></label>
-            <input
-              name="name"
-              className={`input ${showFormError('name') ? 'lt-input-error' : ''}`}
-              value={form.name}
-              onChange={handleFormChange}
-              onBlur={() => handleFormBlur('name')}
-              maxLength={LIMITS.name.max}
-            />
-            <FieldError message={showFormError('name')} />
-          </div>
-
-          <div style={{ marginBottom: 12 }}>
-            <label className="lt-form-label">Role <span className="lt-required">*</span></label>
-            <input
-              name="role"
-              className={`input ${showFormError('role') ? 'lt-input-error' : ''}`}
-              value={form.role}
-              onChange={handleFormChange}
-              onBlur={() => handleFormBlur('role')}
-              maxLength={LIMITS.role.max}
-            />
-            <FieldError message={showFormError('role')} />
-          </div>
-
-          <div style={{ marginBottom: 12 }}>
-            <label className="lt-form-label">Email Address <span className="lt-required">*</span></label>
-            <input
-              name="email"
-              type="email"
-              className={`input ${showFormError('email') ? 'lt-input-error' : ''}`}
-              value={form.email}
-              onChange={handleFormChange}
-              onBlur={() => handleFormBlur('email')}
-              maxLength={LIMITS.email.max}
-            />
-            <FieldError message={showFormError('email')} />
-          </div>
-
-          <div style={{ marginBottom: 12 }}>
-            <label className="lt-form-label">Qualification <span className="lt-required">*</span></label>
-            <input
-              name="qualification"
-              className={`input ${showFormError('qualification') ? 'lt-input-error' : ''}`}
-              value={form.qualification}
-              onChange={handleFormChange}
-              onBlur={() => handleFormBlur('qualification')}
-              maxLength={LIMITS.qualification.max}
-            />
-            <FieldError message={showFormError('qualification')} />
-          </div>
-
-          <div style={{ marginBottom: 12 }}>
-            <label className="lt-form-label">Years of Experience <span className="lt-required">*</span></label>
-            <input
-              name="experience"
-              type="number"
-              min={LIMITS.experience.min}
-              max={LIMITS.experience.max}
-              className={`input ${showFormError('experience') ? 'lt-input-error' : ''}`}
-              value={form.experience}
-              onChange={handleFormChange}
-              onBlur={() => handleFormBlur('experience')}
-            />
-            <FieldError message={showFormError('experience')} />
-          </div>
-
-          <div style={{ marginBottom: 12 }}>
-            <label className="lt-form-label">Skills <span className="lt-required">*</span></label>
-            <input
-              name="skills"
-              className={`input ${showFormError('skills') ? 'lt-input-error' : ''}`}
-              value={form.skills}
-              onChange={handleFormChange}
-              onBlur={() => handleFormBlur('skills')}
-              maxLength={LIMITS.skills.max}
-            />
-            <FieldError message={showFormError('skills')} />
-          </div>
-
-          <div style={{ marginBottom: 16 }}>
-            <label className="lt-form-label">Short Description</label>
-            <textarea
-              name="description"
-              className={`input ${showFormError('description') ? 'lt-input-error' : ''}`}
-              value={form.description}
-              onChange={handleFormChange}
-              onBlur={() => handleFormBlur('description')}
-              maxLength={LIMITS.description.max}
-              style={{ minHeight: 60, resize: 'vertical' }}
-            />
-            <FieldError message={showFormError('description')} />
-          </div>
-
-          <div style={{ display: 'flex', gap: 10 }}>
-            <button type="button" className="btn btn-secondary flex-1" onClick={closeEditModal} disabled={savingForm}>
-              Cancel
-            </button>
-            <button type="submit" className="btn btn-primary flex-1" disabled={savingForm}>
-              {savingForm ? <><Loader2 size={14} className="spin" /> Saving...</> : 'Update Member'}
-            </button>
-          </div>
-        </form>
-      </Modal>
-
-      <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .spin { animation: spin 1s linear infinite; }
-
-        .lt-form-label {
-          font-size: 12px;
-          font-weight: 600;
-          color: var(--text-secondary);
-          display: block;
-          margin-bottom: 4px;
-        }
-
-        .lt-required { color: #f87171; margin-left: 2px; }
-
-        .lt-input-error {
-          border-color: #f87171 !important;
-          background: rgba(248, 113, 113, 0.04) !important;
-        }
-
-        .lt-input-error:focus {
-          box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.12) !important;
-        }
-
-        .lt-field-error {
-          display: flex;
-          align-items: center;
-          gap: 4px;
-          font-size: 11.5px;
-          font-weight: 500;
-          color: #f87171;
-          margin-top: 4px;
-        }
-
-        .refresh-btn {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-        }
-
-        /* ─── DELETE MODAL ─── */
-        .delete-modal { max-width: 520px !important; }
-        .delete-icon-wrapper {
-          width: 40px; height: 40px; border-radius: 50%;
-          background: rgba(248, 113, 113, 0.1);
-          display: flex; align-items: center; justify-content: center;
-          flex-shrink: 0;
-        }
-        .delete-warning {
-          display: flex; align-items: flex-start; gap: 10px;
-          padding: 12px 14px;
-          background: rgba(248, 113, 113, 0.06);
-          border: 1px solid rgba(248, 113, 113, 0.2);
-          border-radius: 10px;
-          font-size: 13px; color: var(--text-secondary);
-          line-height: 1.5;
-        }
-        .delete-warning svg { flex-shrink: 0; margin-top: 1px; }
-        .assigned-tasks-list {
-          background: var(--bg-secondary);
-          border-radius: 10px;
-          padding: 12px 14px;
-          border: 1px solid var(--border-subtle);
-        }
-        .assigned-task-item {
-          display: flex; align-items: center; gap: 8px;
-          padding: 4px 0;
-          border-bottom: 1px solid var(--border-subtle);
-        }
-        .assigned-task-item:last-child { border-bottom: none; }
-        .task-dot {
-          width: 6px; height: 6px; border-radius: 50%;
-          background: var(--accent-primary); flex-shrink: 0;
-        }
-        .task-title { font-size: 13px; color: var(--text-primary); flex: 1; }
-        .task-status-badge {
-          font-size: 10px; font-weight: 600;
-          padding: 1px 8px; border-radius: 12px;
-        }
-        .delete-options { display: flex; flex-direction: column; gap: 10px; }
-        .delete-option {
-          padding: 12px 14px;
-          background: var(--bg-secondary);
-          border: 1px solid var(--border-subtle);
-          border-radius: 10px;
-          transition: border-color 0.15s;
-        }
-        .delete-option:has(input:checked) {
-          border-color: var(--accent-primary);
-          background: color-mix(in srgb, var(--accent-primary) 4%, var(--bg-secondary));
-        }
-        .radio-label {
-          display: flex; align-items: flex-start; gap: 10px;
-          cursor: pointer;
-        }
-        .radio-label input[type="radio"] {
-          margin-top: 2px;
-          accent-color: var(--accent-primary);
-          cursor: pointer;
-        }
-        .radio-label div { display: flex; flex-direction: column; gap: 2px; }
-        .radio-label strong { font-size: 13px; color: var(--text-primary); }
-        .radio-label span { font-size: 12px; color: var(--text-muted); }
-        .reassign-select {
-          margin-top: 10px; width: 100%;
-          padding: 8px 12px; border-radius: 8px;
-          border: 1px solid var(--border-default);
-          background: var(--bg-card); color: var(--text-primary);
-          font-size: 13px; outline: none;
-        }
-        .reassign-select:focus { border-color: var(--accent-primary); }
-        .delete-footer { justify-content: space-between !important; }
-        .mm-footer-btn.danger {
-          background: rgba(248, 113, 113, 0.1);
-          color: #f87171;
-          border: 1px solid rgba(248, 113, 113, 0.3);
-        }
-        .mm-footer-btn.danger:hover:not(:disabled) { background: rgba(248, 113, 113, 0.2); }
-        .mm-footer-btn.danger:disabled { opacity: 0.5; cursor: not-allowed; }
-        .spinner-small {
-          width: 16px; height: 16px;
-          border: 2px solid rgba(255,255,255,0.3);
-          border-top-color: #fff;
-          border-radius: 50%;
-          animation: spin 0.8s linear infinite;
-          display: inline-block;
-        }
-
-        /* ─── MEMBER MODAL ─── */
-        .member-modal-overlay {
-          position: fixed; inset: 0;
-          background: rgba(0, 0, 0, 0.65);
-          backdrop-filter: blur(8px);
-          z-index: 99999;
-          display: flex; align-items: center; justify-content: center;
-          padding: 20px; overflow-y: auto;
-        }
-        .member-modal {
-          width: 100%; max-width: 620px; max-height: 90vh;
-          overflow-y: auto;
-          background: var(--bg-card);
-          border: 1px solid var(--border-default);
-          border-radius: 20px;
-          box-shadow: 0 24px 80px rgba(0, 0, 0, 0.4);
-          display: flex; flex-direction: column;
-        }
-        .member-modal::-webkit-scrollbar { width: 5px; }
-        .member-modal::-webkit-scrollbar-track { background: transparent; }
-        .member-modal::-webkit-scrollbar-thumb {
-          background: var(--border-default);
-          border-radius: 10px;
-        }
-        .mm-header {
-          display: flex; align-items: center; justify-content: space-between;
-          padding: 20px 24px 16px;
-          border-bottom: 1px solid var(--border-subtle);
-          position: sticky; top: 0;
-          background: var(--bg-card);
-          border-radius: 20px 20px 0 0;
-          z-index: 2;
-        }
-        .mm-header-left { display: flex; align-items: center; gap: 14px; }
-        .mm-avatar {
-          width: 56px; height: 56px; border-radius: 50%;
-          display: flex; align-items: center; justify-content: center;
-          font-weight: 800; font-size: 20px; flex-shrink: 0;
-        }
-        .mm-header-info { flex: 1; min-width: 0; }
-        .mm-name {
-          font-size: 18px; font-weight: 700;
-          color: var(--text-primary);
-          margin: 0 0 4px;
-        }
-        .mm-badges { display: flex; flex-wrap: wrap; gap: 4px; }
-        .mm-close-btn {
-          display: flex; align-items: center; justify-content: center;
-          width: 36px; height: 36px;
-          border-radius: 10px;
-          border: 1px solid var(--border-subtle);
-          background: var(--bg-secondary);
-          color: var(--text-secondary);
-          cursor: pointer;
-          transition: all 0.15s;
-          flex-shrink: 0;
-        }
-        .mm-close-btn:hover {
-          border-color: var(--accent-primary);
-          color: var(--accent-primary);
-          background: var(--bg-primary);
-        }
-        .mm-body {
-          padding: 20px 24px;
-          display: flex; flex-direction: column; gap: 16px;
-        }
-        .mm-description {
-          font-size: 13px; color: var(--text-secondary);
-          line-height: 1.6;
-          padding: 12px 16px;
-          background: var(--bg-secondary);
-          border-radius: 10px;
-          border: 1px solid var(--border-subtle);
-        }
-        .mm-description.muted { color: var(--text-muted); }
-        .mm-email {
-          display: flex; align-items: center; gap: 8px;
-          font-size: 13px; color: var(--text-secondary);
-          padding: 6px 0;
-        }
-        .mm-email svg { color: var(--text-muted); }
-        .mm-stats-row {
-          display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
-        }
-        .mm-stat-item {
-          display: flex; flex-direction: column; align-items: center;
-          padding: 12px 8px;
-          background: var(--bg-secondary);
-          border-radius: 10px;
-          border: 1px solid var(--border-subtle);
-        }
-        .mm-stat-value {
-          font-size: 20px; font-weight: 800;
-          color: var(--text-primary); line-height: 1.2;
-        }
-        .mm-stat-label {
-          font-size: 10px; color: var(--text-muted);
-          font-weight: 600; text-transform: uppercase;
-          letter-spacing: 0.4px;
-        }
-        .mm-section {
-          background: var(--bg-secondary);
-          border: 1px solid var(--border-subtle);
-          border-radius: 12px;
-          padding: 14px 16px;
-        }
-        .mm-section-title {
-          display: flex; align-items: center; gap: 6px;
-          font-size: 12px; font-weight: 700;
-          color: var(--text-secondary);
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-          margin: 0 0 10px;
-        }
-        .mm-section-title svg { color: var(--accent-primary); }
-        .mm-skills { display: flex; flex-wrap: wrap; gap: 6px; }
-        .mm-skill-tag {
-          font-size: 11px; font-weight: 500;
-          padding: 4px 12px; border-radius: 20px;
-          background: var(--bg-card);
-          border: 1px solid var(--border-subtle);
-          color: var(--text-secondary);
-        }
-        .mm-no-data { font-size: 12px; color: var(--text-muted); padding: 4px 0; }
-        .mm-project-list { display: flex; flex-direction: column; gap: 8px; }
-        .mm-project-item {
-          display: flex; justify-content: space-between; align-items: center;
-          padding: 10px 12px;
-          background: var(--bg-card);
-          border-radius: 8px;
-          border: 1px solid var(--border-subtle);
-          gap: 10px;
-        }
-        .mm-project-item.completed {
-          border-color: rgba(52, 211, 153, 0.2);
-          background: rgba(52, 211, 153, 0.05);
-        }
-        .mm-project-info { flex: 1; min-width: 0; }
-        .mm-project-name {
-          display: block;
-          font-size: 13px; font-weight: 600;
-          color: var(--text-primary);
-        }
-        .mm-project-role { display: block; font-size: 11px; color: var(--text-muted); }
-        .mm-project-status { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-        .mm-project-progress { font-size: 12px; font-weight: 700; color: var(--text-secondary); }
-        .mm-timeline { display: flex; flex-direction: column; gap: 6px; }
-        .mm-timeline-item { display: flex; gap: 10px; align-items: baseline; }
-        .mm-tl-year {
-          font-size: 11px; font-weight: 700;
-          color: var(--accent-primary);
-          flex-shrink: 0; min-width: 50px;
-        }
-        .mm-tl-text { font-size: 13px; color: var(--text-secondary); line-height: 1.4; }
-        .mm-footer {
-          display: flex; gap: 10px;
-          padding: 14px 24px 20px;
-          border-top: 1px solid var(--border-subtle);
-          justify-content: flex-end;
-          background: var(--bg-card);
-          border-radius: 0 0 20px 20px;
-        }
-        .mm-footer-btn {
-          display: inline-flex; align-items: center; gap: 6px;
-          padding: 8px 16px; border-radius: 8px;
-          font-size: 13px; font-weight: 600;
-          cursor: pointer; transition: all 0.15s; border: none;
-        }
-        .mm-footer-btn.primary {
-          background: var(--accent-primary); color: #fff;
-        }
-        .mm-footer-btn.primary:hover { opacity: 0.85; transform: translateY(-1px); }
-        .mm-footer-btn.secondary {
-          background: var(--bg-secondary);
-          color: var(--text-secondary);
-          border: 1px solid var(--border-default);
-        }
-        .mm-footer-btn.secondary:hover {
-          border-color: var(--accent-primary);
-          color: var(--accent-primary);
-        }
-
-        /* Badges */
-        .badge {
-          display: inline-flex; align-items: center; gap: 4px;
-          padding: 2px 10px; border-radius: 20px;
-          font-size: 11px; font-weight: 600;
-        }
-        .badge-purple { background: rgba(129, 140, 248, 0.15); color: #818cf8; }
-        .badge-green  { background: rgba(52, 211, 153, 0.15); color: #34d399; }
-        .badge-blue   { background: rgba(99, 102, 241, 0.15); color: #6366f1; }
-        .badge-gray   { background: var(--bg-secondary); color: var(--text-muted); border: 1px solid var(--border-subtle); }
-
-        /* Filters */
-        .lt-filters-container {
-          display: flex; flex-direction: column; gap: 14px;
-          margin-bottom: 24px;
-          background: var(--bg-card);
-          padding: 18px 20px;
-          border-radius: 14px;
-          border: 1px solid var(--border-subtle);
-          transition: all 0.2s ease;
-        }
-        .lt-filters-container:focus-within {
-          border-color: var(--accent-primary);
-          box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
-        }
-        .lt-search-wrapper {
-          position: relative; display: flex; align-items: center; width: 100%;
-        }
-        .lt-search-icon {
-          position: absolute; left: 14px;
-          color: var(--text-muted);
-          pointer-events: none; transition: color 0.2s;
-        }
-        .lt-search-wrapper:focus-within .lt-search-icon { color: var(--accent-primary); }
-        .lt-search-input {
-          width: 100%; padding: 11px 40px 11px 42px;
-          border-radius: 10px;
-          border: 1px solid var(--border-default);
-          background: var(--bg-secondary);
-          color: var(--text-primary);
-          font-size: 13px;
-          transition: all 0.2s ease; outline: none;
-        }
-        .lt-search-input:focus {
-          border-color: var(--accent-primary);
-          background: var(--bg-card);
-          box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
-        }
-        .lt-search-input::placeholder { color: var(--text-muted); }
-        .lt-search-clear {
-          position: absolute; right: 10px;
-          display: flex; align-items: center; justify-content: center;
-          width: 28px; height: 28px;
-          border: none; border-radius: 50%;
-          background: var(--bg-hover);
-          color: var(--text-muted);
-          cursor: pointer; transition: all 0.15s;
-        }
-        .lt-search-clear:hover { background: var(--border-default); color: var(--text-primary); }
-        .lt-filter-controls {
-          display: flex; align-items: center;
-          gap: 16px; flex-wrap: wrap;
-        }
-        .lt-filter-group {
-          display: flex; align-items: center; gap: 8px;
-          flex: 1; min-width: 140px;
-        }
-        .lt-filter-label {
-          display: flex; align-items: center; gap: 4px;
-          font-size: 11px; font-weight: 600;
-          color: var(--text-muted);
-          text-transform: uppercase;
-          letter-spacing: 0.04em;
-          white-space: nowrap;
-        }
-        .lt-filter-select {
-          flex: 1; padding: 8px 12px; border-radius: 8px;
-          border: 1px solid var(--border-default);
-          background: var(--bg-secondary);
-          color: var(--text-primary);
-          font-size: 12px; font-weight: 500;
-          cursor: pointer; outline: none;
-          transition: all 0.2s ease;
-          min-width: 120px; appearance: none;
-          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-          background-repeat: no-repeat;
-          background-position: right 10px center;
-          padding-right: 32px;
-        }
-        .lt-filter-select:hover { border-color: var(--border-strong); background-color: var(--bg-hover); }
-        .lt-filter-select:focus {
-          border-color: var(--accent-primary);
-          background-color: var(--bg-card);
-          box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
-        }
-        .lt-active-filters {
-          display: flex; align-items: center;
-          gap: 6px; flex-wrap: wrap; margin-left: auto;
-        }
-        .lt-filter-chip {
-          display: inline-flex; align-items: center; gap: 4px;
-          padding: 4px 10px 4px 12px; border-radius: 20px;
-          font-size: 11px; font-weight: 600;
-          background: var(--accent-muted);
-          color: var(--accent-primary);
-          border: 1px solid rgba(99, 102, 241, 0.2);
-          white-space: nowrap;
-        }
-        .lt-filter-chip button {
-          display: flex; align-items: center; justify-content: center;
-          padding: 2px; border: none; border-radius: 50%;
-          background: transparent;
-          color: var(--accent-primary);
-          cursor: pointer; transition: all 0.15s;
-        }
-        .lt-filter-chip button:hover { background: rgba(239, 68, 68, 0.1); color: #ef4444; }
-        .lt-results-count {
-          display: flex; align-items: center; gap: 8px;
-          padding-top: 12px;
-          border-top: 1px solid var(--border-subtle);
-          font-size: 12px; color: var(--text-muted);
-          flex-wrap: wrap;
-        }
-        .lt-results-count span { font-weight: 500; }
-        .lt-results-count .lt-results-total { color: var(--text-secondary); }
-        .lt-results-dot { color: var(--border-default); }
-        .lt-clear-filters-btn {
-          margin-left: auto; padding: 4px 12px;
-          border: none; border-radius: 6px;
-          background: var(--bg-secondary);
-          color: var(--text-secondary);
-          font-size: 11px; font-weight: 500;
-          cursor: pointer; transition: all 0.15s;
-        }
-        .lt-clear-filters-btn:hover { background: var(--bg-hover); color: var(--accent-primary); }
-
-        /* Members grid */
-        .members-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-          gap: 16px;
-        }
-        .member-card {
-          position: relative;
-          padding: 20px;
-          border-radius: 16px;
-          background: var(--bg-card);
-          border: 1px solid var(--border-subtle);
-          transition: all 0.2s ease;
-          cursor: pointer;
-        }
-        .member-card:hover {
-          border-color: var(--accent-primary);
-          box-shadow: var(--shadow-md);
-        }
-        .member-card-actions {
-          position: absolute; top: 12px; right: 12px;
-          display: flex; gap: 4px;
-        }
-        .member-action-btn {
-          display: inline-flex; align-items: center; justify-content: center;
-          padding: 4px; border-radius: 6px;
-          border: 1px solid var(--border-subtle);
-          background: var(--bg-card);
-          color: var(--text-secondary);
-          cursor: pointer; transition: all 0.14s;
-        }
-        .member-action-btn:hover {
-          background: var(--bg-primary);
-          color: var(--accent-primary);
-          border-color: var(--accent-primary);
-        }
-        .member-action-btn.danger:hover {
-          color: #f87171;
-          border-color: #f87171;
-          background: rgba(248, 113, 113, 0.06);
-        }
-        .member-avatar-wrapper {
-          position: relative; display: inline-block; margin-bottom: 12px;
-        }
-        .member-avatar {
-          width: 56px; height: 56px; border-radius: 50%;
-          display: flex; align-items: center; justify-content: center;
-          font-size: 20px; font-weight: 800;
-          border: 2px solid;
-        }
-        .member-status-dot {
-          position: absolute; bottom: 2px; right: 2px;
-          width: 12px; height: 12px; border-radius: 50%;
-          border: 2px solid var(--bg-card);
-        }
-        .member-info { margin-bottom: 6px; }
-        .member-name {
-          font-size: 15px; font-weight: 700;
-          color: var(--text-primary); margin: 0;
-          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        }
-        .member-role {
-          font-size: 12px; font-weight: 500;
-          color: var(--accent-primary);
-          background: var(--accent-muted);
-          padding: 2px 10px; border-radius: 12px;
-          display: inline-block;
-        }
-        .member-qualification {
-          font-size: 12px; color: var(--text-secondary);
-          margin: 6px 0 8px;
-        }
-        .member-skills {
-          display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px;
-        }
-        .member-skill {
-          font-size: 10.5px; padding: 2px 8px;
-          border-radius: 6px;
-          background: var(--bg-secondary);
-          border: 1px solid var(--border-subtle);
-          color: var(--text-secondary);
-        }
-        .member-stats {
-          display: flex;
-          background: var(--bg-secondary);
-          border-radius: 10px;
-          border: 1px solid var(--border-subtle);
-          margin-bottom: 12px;
-        }
-        .member-stat {
-          flex: 1; text-align: center; padding: 8px;
-        }
-        .member-stat:not(:last-child) { border-right: 1px solid var(--border-subtle); }
-        .member-stat-value {
-          display: block; font-weight: 700;
-          font-size: 16px; color: var(--text-primary);
-        }
-        .member-stat-label {
-          font-size: 9px; color: var(--text-muted);
-          text-transform: uppercase; letter-spacing: 0.3px;
-        }
-        .member-footer {
-          display: flex; justify-content: space-between; align-items: center;
-          padding-top: 10px;
-          border-top: 1px solid var(--border-subtle);
-        }
-        .member-on-time { display: flex; align-items: center; gap: 8px; }
-        .member-on-time-value {
-          font-size: 13px; font-weight: 700;
-          color: var(--text-primary); margin: 0;
-        }
-        .member-on-time-label {
-          font-size: 10px; color: var(--text-muted); margin: 0;
-        }
-        .member-completion { font-size: 12px; font-weight: 600; }
-        .members-empty {
-          grid-column: 1 / -1; text-align: center;
-          padding: 60px 20px; color: var(--text-muted);
-        }
-        .members-empty h3 {
-          font-size: 18px; font-weight: 700;
-          color: var(--text-primary); margin: 8px 0 4px;
-        }
-
-        /* Pagination */
-        .pagination {
-          display: flex; justify-content: center; gap: 8px;
-          margin-top: 24px; flex-wrap: wrap;
-        }
-        .pagination-btn {
-          padding: 6px 14px; border-radius: 8px;
-          border: 1px solid var(--border-default);
-          background: var(--bg-secondary);
-          color: var(--text-secondary);
-          font-size: 13px; font-weight: 500;
-          cursor: pointer; transition: all 0.15s;
-        }
-        .pagination-btn:hover:not(:disabled):not(.active) {
-          border-color: var(--accent-primary);
-          color: var(--accent-primary);
-        }
-        .pagination-btn.active {
-          background: var(--accent-primary);
-          color: #fff;
-          border-color: var(--accent-primary);
-        }
-        .pagination-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-        /* Responsive */
-        @media (max-width: 768px) {
-          .lt-filters-container { padding: 14px 16px; gap: 12px; }
-          .lt-filter-controls { flex-direction: column; align-items: stretch; gap: 10px; }
-          .lt-filter-group { min-width: 0; }
-          .lt-filter-select { min-width: 0; }
-          .lt-active-filters { margin-left: 0; justify-content: flex-start; }
-          .lt-results-count { padding-top: 10px; flex-wrap: wrap; }
-          .lt-clear-filters-btn { margin-left: 0; }
-          .members-grid { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
-          .member-modal { max-width: 100%; border-radius: 16px; max-height: 95vh; }
-          .mm-stats-row { grid-template-columns: repeat(2, 1fr); }
-          .mm-header { padding: 16px 18px; }
-          .mm-body { padding: 16px 18px; }
-          .mm-footer { padding: 12px 18px 16px; }
-          .mm-avatar { width: 44px; height: 44px; font-size: 16px; }
-          .mm-name { font-size: 16px; }
-          .delete-modal { max-width: 100% !important; }
-        }
-        @media (max-width: 480px) {
-          .lt-filters-container { padding: 12px; gap: 10px; }
-          .lt-search-input { padding: 10px 36px 10px 38px; font-size: 12px; }
-          .lt-filter-group { flex-direction: column; align-items: stretch; gap: 4px; }
-          .lt-filter-label { font-size: 10px; }
-          .lt-filter-select { padding: 7px 10px; font-size: 11px; }
-          .members-grid { grid-template-columns: 1fr; }
-          .member-card { padding: 16px; }
-          .member-modal { border-radius: 12px; }
-          .mm-header-left { gap: 10px; }
-          .mm-stat-value { font-size: 17px; }
-          .mm-project-item { flex-wrap: wrap; }
-          .mm-project-status { width: 100%; justify-content: flex-start; }
-          .delete-option { padding: 10px 12px; }
-          .radio-label { font-size: 12px; }
-        }
-      `}</style>
+              <div className="mm-footer">
+                <button className="mm-footer-btn secondary" onClick={closeEditModal} disabled={savingForm}>Cancel</button>
+                <button className="mm-footer-btn primary" onClick={handleUpdate} disabled={savingForm}>
+                  {savingForm && <Loader2 size={14} className="spin" />}
+                  {savingForm ? 'Saving…' : 'Save Changes'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
