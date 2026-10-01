@@ -6,9 +6,8 @@ class TaskService {
    * GET /api/task
    *
    * Returns the raw task list, enriched with full detail from each task's
-   * detail endpoint. We ONLY fetch details when the list is missing the
-   * fields we need (assign_to, assign_to_name, progress). This keeps the
-   * page fast when the backend list serializer already returns them.
+   * detail endpoint when the list is missing critical fields
+   * (assign_to, assign_to_name, progress).
    */
   async getTasks() {
     try {
@@ -29,12 +28,7 @@ class TaskService {
           const taskId = task.t_id ?? task.id;
 
           if (!needsEnrichment(task)) {
-            // Already good — normalize a couple of numeric fields.
-            //
-            // NOTE: even here, we leave `assign_to_name` alone. We DON'T
-            // trust a cached name if we can resolve it later from
-            // `allTeamMembers` by `assign_to` id. The UI's `getMemberName`
-            // will prefer the id-based lookup.
+            // Already good — normalize numeric fields only.
             return {
               ...task,
               t_id: taskId ? Number(taskId) : null,
@@ -48,15 +42,11 @@ class TaskService {
             const detailResponse = await this.getTask(taskId);
             const detailData = detailResponse?.data || detailResponse || {};
 
-            // ─────────────────────────────────────────────────────────
-            // Assignee-change detection.
-            //
-            // If the list's `assign_to` differs from the detail's
-            // `assign_to`, then the task was reassigned since the list
-            // was cached. In that case the list's `assign_to_name` is
-            // STALE and must NOT be trusted — only the detail's name is
-            // authoritative.
-            // ─────────────────────────────────────────────────────────
+            // Assignee-change detection:
+            // If the list's `assign_to` differs from the detail's `assign_to`,
+            // the task was reassigned since the list was cached. In that case
+            // the list's `assign_to_name` is STALE and must NOT be trusted —
+            // only the detail's name is authoritative.
             const listAssignee   = task.assign_to != null ? Number(task.assign_to) : null;
             const detailAssignee = detailData?.assign_to != null ? Number(detailData.assign_to) : null;
             const assigneeChanged = listAssignee !== detailAssignee;
@@ -66,7 +56,7 @@ class TaskService {
               : (task.assign_to != null ? Number(task.assign_to) : null);
 
             const resolvedAssignToName = assigneeChanged
-              ? (detailData?.assign_to_name ?? null)               // trust the detail only
+              ? (detailData?.assign_to_name ?? null)
               : (detailData?.assign_to_name ?? task.assign_to_name ?? null);
 
             return {
@@ -81,9 +71,6 @@ class TaskService {
                 : (Number.isFinite(Number(task.progress)) ? Number(task.progress) : 0),
             };
           } catch (err) {
-            // Detail fetch failed — keep the task as-is but normalized.
-            // We deliberately DO NOT trust `task.assign_to_name` here
-            // beyond passing it through; the UI resolves by id anyway.
             return {
               ...task,
               t_id: taskId ? Number(taskId) : null,
@@ -108,7 +95,6 @@ class TaskService {
       const response = await api.get(endpoints.tasks.byId(id));
       const data = response.data;
 
-      // Normalize numeric fields on the response (either shape).
       const target = data?.data ?? data;
       if (target) {
         target.assign_to = target.assign_to != null ? Number(target.assign_to) : null;
@@ -128,8 +114,6 @@ class TaskService {
 
   async createTask(taskData) {
     try {
-      // assignTo may arrive as a number, a string, or an array. Normalize
-      // to a single integer TeamMember id (or null).
       const rawAssign = Array.isArray(taskData.assignTo)
         ? taskData.assignTo[0]
         : taskData.assignTo;

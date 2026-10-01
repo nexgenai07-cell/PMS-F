@@ -24,7 +24,7 @@ import NotificationHelper from '../../services/notificationHelper';
 const PRIORITY_OPTIONS = ["low", "medium", "high", "critical"];
 const STATUS_OPTIONS = ["todo", "in_progress", "review", "done", "cancelled"];
 const SUPERVISOR_ROLES = ['manager', 'admin', 'supervisor'];
-const LEAD_ROLES = ['lead', 'member']; // treat 'member' as Lead for now (matches User.ROLE_CHOICES)
+const LEAD_ROLES = ['lead', 'member'];
 
 /* ─────────── Safe array helper ─────────── */
 const asArray = (v) => (Array.isArray(v) ? v : []);
@@ -46,8 +46,8 @@ function resolveTeamMemberId(tmId, usersList, membersList) {
       return uName && mName && uName === mName;
     });
     return {
-      id: tm.id,
-      userId: userObj?.id ?? tm.id,
+      id: tm.id,                                 // ← TeamMember.id
+      userId: userObj?.id ?? tm.id,              // ← User.id (or tm.id fallback)
       name: tm.name || userObj?.u_name || `User ${tm.id}`,
       email: tm.email || userObj?.email || '',
       role: ((userObj?.role) || tm.role || '').toLowerCase(),
@@ -88,11 +88,26 @@ function computeTaskProgress(task) {
   return 0;
 }
 
-/* ─────────── Find real TeamMember id from a user id ─────────── */
+/* ═══════════════════════════════════════════════════════════════
+   🔧 FIX: findRealTeamMemberId
+
+   The original preferred `userIdOrObj.userId` (User.id) over
+   `userIdOrObj.id` (TeamMember.id). But Task.assign_to is a
+   TeamMember FK — so given { id: 8, userId: 11 } for Alii, the old
+   code looked up TeamMember #11 = "Admin" instead of TeamMember #8 = "alii".
+   That's why picking Alii showed "Admin" on the task card.
+
+   Fix: prefer `id` (TeamMember.id) when the input is an object.
+   ═══════════════════════════════════════════════════════════════ */
 function findRealTeamMemberId(userIdOrObj, teamMembersList, usersList) {
   if (!userIdOrObj) return null;
+
+  // Task.assign_to is a TeamMember FK. Given an object:
+  //   - `id`     = TeamMember.id   ← the one the backend wants
+  //   - `userId` = User.id
+  // Prefer `id` when present.
   const id = typeof userIdOrObj === 'object'
-    ? (userIdOrObj.userId ?? userIdOrObj.id)
+    ? (userIdOrObj.id ?? userIdOrObj.userId)     // 🔧 FIX: was (userId ?? id)
     : userIdOrObj;
   const numId = Number(id);
   if (!Number.isFinite(numId)) return null;
@@ -100,9 +115,12 @@ function findRealTeamMemberId(userIdOrObj, teamMembersList, usersList) {
   const safeMembers = asArray(teamMembersList);
   const safeUsers = asArray(usersList);
 
+  // 1. Direct TeamMember.id match
   const direct = safeMembers.find(m => !m._placeholder && Number(m.id) === numId);
   if (direct) return Number(direct.id);
 
+  // 2. Fall back to matching by name/email (only useful when the caller
+  //    handed us a plain User id).
   const userObj = safeUsers.find(u => Number(u.id) === numId);
   if (userObj) {
     const name = (userObj.u_name || userObj.name || '').toLowerCase().trim();
@@ -281,13 +299,11 @@ export default function SupervisorProjectDetail() {
      DERIVED DATA
      ═══════════════════════════════════════════════════════════ */
 
-  // Set of User.ids for supervisors.
   const supervisorIdSet = useMemo(
     () => new Set(asArray(projectSupervisors).map(s => Number(s.userId))),
     [projectSupervisors]
   );
 
-  // Leads = project members whose role is lead/member, excluding creator + supervisors.
   const projectLeadsDerived = useMemo(() => {
     if (!project) return [];
     const creatorId = Number(project.created_by);
@@ -304,7 +320,6 @@ export default function SupervisorProjectDetail() {
     ? asArray(projectLeads)
     : projectLeadsDerived;
 
-  // Regular members = project members that are neither supervisors nor leads.
   const regularMembers = useMemo(
     () => asArray(projectMembers).filter(m => {
       const role = (m.role || '').toLowerCase();
@@ -321,7 +336,6 @@ export default function SupervisorProjectDetail() {
     [projectMembers]
   );
 
-  /* ─── Project progress ─── */
   const projectProgress = useMemo(() => {
     const backendProgress = Number(stats?.avgProgress);
     if (Number.isFinite(backendProgress) && backendProgress > 0) return Math.round(backendProgress);
@@ -451,7 +465,6 @@ export default function SupervisorProjectDetail() {
         avgProgress:     Number(statsResponse.avgProgress) || 0,
       });
 
-      // Filter tasks for this project
       const projectTasks = allTasks.filter(t => {
         const taskProjectId = t.p_id ?? t.p ?? t.project ?? t.project_id;
         return Number(taskProjectId) === Number(projectId);
@@ -480,13 +493,18 @@ export default function SupervisorProjectDetail() {
         }
       });
 
-      const memberEntries = Array.from(memberMap.values()).map(m => {
-        const realTmId = findRealTeamMemberId(m, membersList, usersList);
-        return { ...m, tmId: realTmId ?? null };
-      });
+      /* ═══════════════════════════════════════════════════════════
+         🔧 FIX: resolveTeamMemberId already put the real TeamMember.id
+         into `m.id`. Don't call findRealTeamMemberId again — that
+         second lookup used to prefer User.id and could return the
+         wrong TeamMember. We just take `m.id` directly.
+         ═══════════════════════════════════════════════════════════ */
+      const memberEntries = Array.from(memberMap.values()).map(m => ({
+        ...m,
+        tmId: Number.isFinite(Number(m.id)) ? Number(m.id) : null,
+      }));
       console.log('✅ [Supervisor] memberEntries:', memberEntries.length, memberEntries);
 
-      // Parse supervisors from backend M2M (source of truth)
       const supervisorIds = asArray(projectItem?.supervisors).map(Number);
       const supervisorNames = asArray(projectItem?.supervisor_names);
 
@@ -507,7 +525,6 @@ export default function SupervisorProjectDetail() {
       console.log('✅ [Supervisor] supervisorEntries:', supervisorEntries);
       setProjectSupervisors(supervisorEntries);
 
-      // Build projectMembers
       const supUserIdSet = new Set(supervisorEntries.map(s => Number(s.userId)));
       const membersWithoutSupervisors = memberEntries.filter(
         m => !supUserIdSet.has(Number(m.userId))
@@ -516,7 +533,6 @@ export default function SupervisorProjectDetail() {
       setProjectMembers(allMembers);
       console.log('✅ [Supervisor] projectMembers:', allMembers.length);
 
-      // Extract leads
       const creatorId = Number(projectItem?.created_by);
       const leadEntries = memberEntries.filter(m => {
         const role = (m.role || '').toLowerCase();
@@ -528,7 +544,6 @@ export default function SupervisorProjectDetail() {
       setProjectLeads(leadEntries);
       console.log('✅ [Supervisor] projectLeads:', leadEntries);
 
-      // Map tasks with computed progress
       const mappedTasks = projectTasks.map(t => ({
         ...t,
         progress: computeTaskProgress(t),
@@ -538,7 +553,6 @@ export default function SupervisorProjectDetail() {
       setTasks(mappedTasks);
       console.log('✅ [Supervisor] mappedTasks:', mappedTasks.length);
 
-      // Load comments (non-blocking)
       loadCommentsForTasks(mappedTasks);
 
     } catch (error) {
@@ -1051,7 +1065,6 @@ export default function SupervisorProjectDetail() {
                   <PriorityBadge priority={selectedTask.priority} />
                 </div>
 
-                {/* Assigned To — always resolved from the FK id */}
                 <div style={{ marginBottom: 12 }}>
                   <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 4 }}>
                     Assigned To
@@ -1221,6 +1234,9 @@ export default function SupervisorProjectDetail() {
                   </div>
                 </div>
 
+                {/* 🔧 FIX: m.id is the TeamMember.id (what the backend wants).
+                    m.tmId should equal m.id, but we defensively prefer m.id
+                    if they somehow diverge. */}
                 <div className="form-group">
                   <label className="form-label">Assign To</label>
                   <select
@@ -1229,11 +1245,14 @@ export default function SupervisorProjectDetail() {
                     onChange={(e) => setEditTask({ ...editTask, assign_to: e.target.value ? parseInt(e.target.value) : null })}
                   >
                     <option value="">Unassigned</option>
-                    {assignableMembers.map((m) => (
-                      <option key={m.id} value={m.tmId}>
-                        {m.name} {supervisorIdSet.has(Number(m.userId)) ? '👑' : ''}
-                      </option>
-                    ))}
+                    {assignableMembers.map((m) => {
+                      const value = Number.isFinite(Number(m.id)) ? Number(m.id) : m.tmId;
+                      return (
+                        <option key={m.id} value={value}>
+                          {m.name} {supervisorIdSet.has(Number(m.userId)) ? '👑' : ''}
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
 
@@ -1321,11 +1340,14 @@ export default function SupervisorProjectDetail() {
                     onChange={(e) => setNewTask({ ...newTask, assignedTo: e.target.value ? parseInt(e.target.value) : null })}
                   >
                     <option value="">Select Member</option>
-                    {assignableMembers.map((mem) => (
-                      <option key={mem.id} value={mem.tmId}>
-                        {mem.name} {supervisorIdSet.has(Number(mem.userId)) ? '👑' : ''}
-                      </option>
-                    ))}
+                    {assignableMembers.map((m) => {
+                      const value = Number.isFinite(Number(m.id)) ? Number(m.id) : m.tmId;
+                      return (
+                        <option key={m.id} value={value}>
+                          {m.name} {supervisorIdSet.has(Number(m.userId)) ? '👑' : ''}
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
 
@@ -1400,7 +1422,10 @@ export default function SupervisorProjectDetail() {
                       <option value="">— Leave unassigned —</option>
                       {assignableMembers
                         .filter(m => Number(m.id) !== Number(removeMemberInfo.member.id))
-                        .map(m => <option key={m.id} value={m.tmId}>{m.name}</option>)}
+                        .map(m => {
+                          const value = Number.isFinite(Number(m.id)) ? Number(m.id) : m.tmId;
+                          return <option key={m.id} value={value}>{m.name}</option>;
+                        })}
                     </select>
                   </>
                 ) : (
@@ -1587,7 +1612,6 @@ export default function SupervisorProjectDetail() {
             </h4>
 
             <div className="team-sections">
-              {/* ─── PROJECT LEAD (creator) ─── */}
               <div className="team-section team-section-lead">
                 <div className="team-section-header">
                   <div className="team-section-title">
@@ -1644,7 +1668,6 @@ export default function SupervisorProjectDetail() {
                 </div>
               </div>
 
-              {/* ─── SUPERVISORS ─── */}
               <div className="team-section team-section-supervisors">
                 <div className="team-section-header">
                   <div className="team-section-title">
@@ -1692,7 +1715,6 @@ export default function SupervisorProjectDetail() {
                 )}
               </div>
 
-              {/* ─── TEAM MEMBERS ─── */}
               <div className="team-section team-section-members">
                 <div className="team-section-header">
                   <div className="team-section-title">
