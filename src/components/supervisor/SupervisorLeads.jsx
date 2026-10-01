@@ -54,27 +54,31 @@ function getPteamTmId(entry) {
   );
 }
 
-/* ─────────── Compute a lead's full stats from raw data ─────────── */
+/* ─────────── Compute a lead's OWN stats from raw data ─────────── */
 /*
- * A lead's projects = any project where:
+ * A lead's PROJECTS = projects where:
  *   - created_by === lead's user id, OR
  *   - lead's user id is in project.supervisors, OR
  *   - lead's TeamMember profile appears in a PTeam entry for that project
  *
- * A lead's tasks = any task whose project is in the above set OR
- * that is directly assigned to the lead's TeamMember profile.
+ * A lead's TASKS = ONLY tasks directly assigned to the lead's TeamMember
+ * profile (via Task.assign_to). We do NOT count every task inside the
+ * project — that would wrongly credit leads for their team's work.
+ *
+ * A lead's TEAM SIZE = other TeamMembers who share at least one project
+ * with this lead (via PTeam).
  */
 function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntries) {
   const leadUser = users.find(u => Number(u.id ?? u.u_id) === Number(leadId));
 
-  // 1. Find the lead's TeamMember profile by matching name
+  // ─── 1. Find this lead's TeamMember profile (by name match) ───
   const leadName = norm(leadUser?.u_name);
   const leadMember = leadName
     ? asArray(teamMembers).find(m => norm(m.name) === leadName)
     : null;
   const teamMemberId = leadMember ? Number(leadMember.id) : null;
 
-  // 2. Project IDs from PTeam where this lead's TeamMember appears
+  // ─── 2. Project IDs from PTeam where this lead's TeamMember appears ───
   const pteamProjectIds = new Set();
   if (teamMemberId != null) {
     asArray(pteamEntries).forEach(entry => {
@@ -85,14 +89,13 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntri
     });
   }
 
-  // 3. Build the lead's project set:
-  //    created_by OR supervised OR PTeam membership
+  // ─── 3. Build the lead's project set (creator OR supervisor OR PTeam) ───
   const projectMap = new Map();
   asArray(projects).forEach(p => {
     const id = Number(p.p_id ?? p.id);
     if (!Number.isFinite(id)) return;
 
-    const isCreator = Number(p.created_by) === Number(leadId);
+    const isCreator    = Number(p.created_by) === Number(leadId);
     const isSupervisor = asArray(p.supervisors).map(Number).includes(Number(leadId));
     const isPteamMember = pteamProjectIds.has(id);
 
@@ -103,36 +106,22 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntri
   const leadProjects = Array.from(projectMap.values());
   const leadProjectIds = leadProjects.map(p => Number(p.p_id ?? p.id));
 
-  // 4. Tasks in those projects
-  const projectTasks = asArray(tasks).filter(t => {
-    const tpid = Number(t.p_id ?? t.p);
-    return leadProjectIds.includes(tpid);
-  });
-
-  // 5. Tasks directly assigned to the lead's TeamMember (may be in other
-  //    projects the lead isn't yet credited with — include them too)
-  const directAssignedTasks = teamMemberId != null
+  // ─── 4. ⭐ TASKS = ONLY tasks assigned directly to this lead ───
+  // This is the key fix. We do NOT count other members' tasks.
+  const ownTasks = teamMemberId != null
     ? asArray(tasks).filter(t => Number(t.assign_to ?? t.assignedTo) === teamMemberId)
     : [];
 
-  // Combine (dedupe by task id)
-  const taskMap = new Map();
-  [...projectTasks, ...directAssignedTasks].forEach(t => {
-    const id = Number(t.t_id ?? t.id);
-    if (Number.isFinite(id)) taskMap.set(id, t);
-  });
-  const allLeadTasks = Array.from(taskMap.values());
-
-  const totalTasks = allLeadTasks.length;
-  const completedTasks = allLeadTasks.filter(t => {
+  const totalTasks = ownTasks.length;
+  const completedTasks = ownTasks.filter(t => {
     const s = norm(t.status);
     return s === 'done' || s === 'completed';
   }).length;
-  const inProgressTasks = allLeadTasks.filter(t => {
+  const inProgressTasks = ownTasks.filter(t => {
     const s = norm(t.status);
     return s === 'in_progress' || s === 'in-progress' || s === 'review';
   }).length;
-  const todoTasks = allLeadTasks.filter(t => {
+  const todoTasks = ownTasks.filter(t => {
     const s = norm(t.status);
     return s === 'todo' || s === 'pending' || s === 'planning';
   }).length;
@@ -143,7 +132,7 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntri
 
   const avgProgress = totalTasks > 0
     ? Math.round(
-        allLeadTasks.reduce((sum, t) => {
+        ownTasks.reduce((sum, t) => {
           const p = Number(t.progress);
           if (Number.isFinite(p)) return sum + p;
           const s = norm(t.status);
@@ -155,7 +144,7 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntri
       )
     : 0;
 
-  const completedWithDue = allLeadTasks.filter(t => {
+  const completedWithDue = ownTasks.filter(t => {
     const s = norm(t.status);
     return (s === 'done' || s === 'completed') && (t.due_date || t.deadline);
   });
@@ -170,14 +159,24 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntri
     ? Math.round((onTimeCount / completedWithDue.length) * 100)
     : 0;
 
-  // Unique members on the lead's projects
-  const memberIdSet = new Set();
-  projectTasks.forEach(t => {
-    const a = t.assign_to ?? t.assignedTo;
-    if (a != null) memberIdSet.add(Number(a));
-  });
-  const teamSize = memberIdSet.size;
+  // ─── 5. Team size = OTHER TeamMembers sharing a project with this lead ───
+  // Look at every PTeam entry for the lead's projects; collect unique tm IDs,
+  // then exclude the lead themselves.
+  const otherMembersOnLeadProjects = new Set();
+  if (leadProjectIds.length > 0) {
+    const leadProjectSet = new Set(leadProjectIds);
+    asArray(pteamEntries).forEach(entry => {
+      const pid = getPteamProjectId(entry);
+      const tmId = getPteamTmId(entry);
+      if (!leadProjectSet.has(pid)) return;
+      if (!Number.isFinite(tmId)) return;
+      if (tmId === teamMemberId) return;   // skip self
+      otherMembersOnLeadProjects.add(tmId);
+    });
+  }
+  const teamSize = otherMembersOnLeadProjects.size;
 
+  // ─── 6. Performance band — keyed off the lead's own completionRate ───
   const performance =
     totalTasks === 0 ? 'New' :
     completionRate >= 80 ? 'Excellent' :
@@ -195,8 +194,7 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntri
   return {
     user: leadUser,
     projects: leadProjects,
-    tasks: allLeadTasks,
-    directAssignedTasks,
+    tasks: ownTasks,                    // only the lead's own tasks
     completed: completedTasks,
     inProgress: inProgressTasks,
     todo: todoTasks,
@@ -205,7 +203,7 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntri
     avgProgress,
     onTimeRate,
     hasCompletedWithDue: completedWithDue.length > 0,
-    teamSize,
+    teamSize,                           // other members, not including self
     performance,
     perfColor,
     teamMemberId,
