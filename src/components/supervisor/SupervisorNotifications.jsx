@@ -1,5 +1,5 @@
 // components/supervisor/SupervisorNotifications.jsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useOutletContext } from 'react-router-dom';
 import {
   Bell, CheckCheck, RefreshCw, Trash2,
@@ -22,17 +22,17 @@ const NOTIFICATION_ICONS = {
   project_created: { icon: FolderKanban, color: '#818cf8' },
   project_updated: { icon: FolderKanban, color: '#818cf8' },
   project_deleted: { icon: FolderKanban, color: '#f87171' },
-  task_created: { icon: PlusCircle, color: '#34d399' },
-  task_updated: { icon: CheckCircle2, color: '#34d399' },
-  task_deleted: { icon: Trash2, color: '#f87171' },
-  task_assigned: { icon: UserCheck, color: '#34d399' },
-  task_completed: { icon: CheckCircle2, color: '#34d399' },
-  comment_added: { icon: MessageSquare, color: '#f59e0b' },
-  comment_pinned: { icon: MessageSquare, color: '#f59e0b' },
-  member_added: { icon: UserPlus, color: '#34d399' },
-  team_updated: { icon: Users, color: '#2dd4bf' },
-  lead_assigned: { icon: UserCheck, color: '#34d399' },
-  default: { icon: Bell, color: '#94a3b8' }
+  task_created:    { icon: PlusCircle,  color: '#34d399' },
+  task_updated:    { icon: CheckCircle2, color: '#34d399' },
+  task_deleted:    { icon: Trash2,      color: '#f87171' },
+  task_assigned:   { icon: UserCheck,   color: '#34d399' },
+  task_completed:  { icon: CheckCircle2, color: '#34d399' },
+  comment_added:   { icon: MessageSquare, color: '#f59e0b' },
+  comment_pinned:  { icon: MessageSquare, color: '#f59e0b' },
+  member_added:    { icon: UserPlus,    color: '#34d399' },
+  team_updated:    { icon: Users,       color: '#2dd4bf' },
+  lead_assigned:   { icon: UserCheck,   color: '#34d399' },
+  default:         { icon: Bell,        color: '#94a3b8' },
 };
 
 export default function SupervisorNotifications() {
@@ -50,7 +50,8 @@ export default function SupervisorNotifications() {
   const [filterType, setFilterType] = useState('all');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
 
-  const fetchData = async () => {
+  /* ─────────── Data fetch ─────────── */
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true);
       const userId = user?.id || user?.u_id;
@@ -65,15 +66,16 @@ export default function SupervisorNotifications() {
       ]);
 
       const projectsList = projectsData?.data || projectsData || [];
-      const tasksList = tasksData?.data || tasksData || [];
-      const membersList = membersData?.data || membersData || [];
-      const usersList = usersData?.data || usersData || [];
-      let notificationsList = notificationsData?.data || [];
+      const tasksList    = tasksData?.data || tasksData || [];
+      const membersList  = membersData?.data || membersData || [];
+      const usersList    = usersData?.data || usersData || [];
+      const rawNotifs    = notificationsData?.data || [];
 
-      const readItems = JSON.parse(localStorage.getItem('read_notifications') || '[]');
+      // Filter out locally-deleted + locally-read notifications
+      const readItems    = JSON.parse(localStorage.getItem('read_notifications') || '[]');
       const deletedItems = JSON.parse(localStorage.getItem('deleted_notifications') || '[]');
 
-      notificationsList = notificationsList
+      const notificationsList = (Array.isArray(rawNotifs) ? rawNotifs : [])
         .filter(n => !deletedItems.includes(n.n_id || n.id))
         .map(n => ({
           ...n,
@@ -85,24 +87,32 @@ export default function SupervisorNotifications() {
       setTeamMembers(membersList);
       setUsers(usersList);
       setNotifications(notificationsList);
+
+      console.log('📬 [SupervisorNotifications] fetched:', {
+        projects: projectsList.length,
+        tasks: tasksList.length,
+        notifications: notificationsList.length,
+        sample: notificationsList[0],
+      });
     } catch (error) {
-      console.error('Error fetching data:', error);
+      console.error('Error fetching notifications:', error);
       toast.error('Failed to load notifications');
+      setNotifications([]);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [user?.id, user?.u_id, user?.role]);
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  useEffect(() => { fetchData(); }, [fetchData]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
     await fetchData();
     toast.success('Notifications refreshed');
   };
+
+  /* ─────────── Actions ─────────── */
 
   const markAllRead = async () => {
     try {
@@ -111,9 +121,10 @@ export default function SupervisorNotifications() {
       const readItems = JSON.parse(localStorage.getItem('read_notifications') || '[]');
       const merged = [...new Set([...readItems, ...ids])];
       localStorage.setItem('read_notifications', JSON.stringify(merged));
-      setNotifications(notifications.map(n => ({ ...n, is_read: true })));
+      setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
       toast.success('All notifications marked as read');
     } catch (error) {
+      console.error('markAllRead failed:', error);
       toast.error('Failed to mark all as read');
     }
   };
@@ -121,46 +132,30 @@ export default function SupervisorNotifications() {
   const markAsRead = async (id) => {
     try {
       await notificationService.markAsRead(id);
-      setNotifications(notifications.map(n =>
+      setNotifications(prev => prev.map(n =>
         (n.n_id || n.id) === id ? { ...n, is_read: true } : n
       ));
     } catch (error) {
-      toast.error('Failed to mark as read');
+      console.error('markAsRead failed:', error);
     }
   };
 
   const deleteNotification = async (id) => {
     try {
       await notificationService.deleteNotification(id);
-      setNotifications(notifications.filter(n => (n.n_id || n.id) !== id));
+      setNotifications(prev => prev.filter(n => (n.n_id || n.id) !== id));
       setShowDeleteConfirm(null);
       toast.success('Notification deleted');
     } catch (error) {
+      console.error('delete failed:', error);
       toast.error('Failed to delete notification');
     }
   };
 
-  const getNotificationIcon = (type) => NOTIFICATION_ICONS[type] || NOTIFICATION_ICONS.default;
+  /* ─────────── Helpers ─────────── */
 
-  const getEntityName = (entityId, entityType) => {
-    if (entityType === 'project') {
-      const project = projects.find(p => Number(p.p_id || p.id) === Number(entityId));
-      return project?.p_name || project?.name || 'Unknown Project';
-    }
-    if (entityType === 'task') {
-      const task = tasks.find(t => Number(t.t_id || t.id) === Number(entityId));
-      return task?.title || 'Unknown Task';
-    }
-    if (entityType === 'user') {
-      const userObj = users.find(u => Number(u.id || u.u_id) === Number(entityId));
-      return userObj?.u_name || userObj?.name || 'Unknown User';
-    }
-    if (entityType === 'team_member') {
-      const member = teamMembers.find(m => Number(m.id) === Number(entityId));
-      return member?.name || 'Unknown Member';
-    }
-    return 'Unknown';
-  };
+  const getNotificationIcon = (type) =>
+    NOTIFICATION_ICONS[type] || NOTIFICATION_ICONS.default;
 
   const getTimeAgo = (date) => {
     if (!date) return '';
@@ -175,64 +170,129 @@ export default function SupervisorNotifications() {
     return past.toLocaleDateString();
   };
 
-  const getNotificationRoute = (notification) => {
-    const { entity_type, entity_id } = notification;
-
-    if (!entity_type || !entity_id) return null;
-
-    if (entity_type === 'project') {
-      return `/supervisor/projects/${entity_id}`;
-    }
-
-    if (entity_type === 'task') {
-      const task = tasks.find(t => Number(t.t_id || t.id) === Number(entity_id));
-      const projectId = task ? (task.p_id || task.p || task.project || task.project_id) : null;
-      if (!projectId) return null;
-      return `/supervisor/projects/${projectId}/tasks/${entity_id}`;
-    }
-
-    if (entity_type === 'team_member') {
-      return null;
-    }
-
-    return null;
-  };
-
-  const handleNotificationClick = async (notification) => {
-    const id = notification.n_id || notification.id;
-    if (!notification.is_read) {
-      markAsRead(id);
-    }
-    const route = getNotificationRoute(notification);
-    if (route) navigate(route);
-  };
-
-  const filteredNotifications = notifications.filter(n => {
-    if (filterType === 'all') return true;
-    return n.type === filterType;
-  });
-
-  const notificationTypes = ['all', ...new Set(notifications.map(n => n.type))];
-
   const getTypeLabel = (type) => {
     const labels = {
       project_created: 'Project Created',
       project_updated: 'Project Updated',
       project_deleted: 'Project Deleted',
-      task_created: 'Task Created',
-      task_updated: 'Task Updated',
-      task_deleted: 'Task Deleted',
-      task_assigned: 'Task Assigned',
-      task_completed: 'Task Completed',
-      comment_added: 'Comment Added',
-      comment_pinned: 'Comment Pinned',
-      member_added: 'Member Added',
-      team_updated: 'Team Updated',
-      lead_assigned: 'Lead Assigned',
+      task_created:    'Task Created',
+      task_updated:    'Task Updated',
+      task_deleted:    'Task Deleted',
+      task_assigned:   'Task Assigned',
+      task_completed:  'Task Completed',
+      comment_added:   'Comment Added',
+      comment_pinned:  'Comment Pinned',
+      member_added:    'Member Added',
+      team_updated:    'Team Updated',
+      lead_assigned:   'Lead Assigned',
     };
-    return labels[type] || type || 'Notification';
+    return labels[type] || (type ? type.replace(/_/g, ' ') : 'Notification');
   };
 
+  /**
+   * Resolve the target route for a notification.
+   *
+   * Because notificationService builds these client-side, every item
+   * already has `entity_type` and `entity_id`:
+   *   - entity_type = 'project' → route to project detail
+   *   - entity_type = 'task'    → route to task detail (nested under project)
+   *   - entity_type = 'team_member' → route to team members page
+   *
+   * For tasks we need the parent project ID. If the notification doesn't
+   * already carry it, look it up from the fetched tasks list.
+   */
+  const getNotificationRoute = (notification) => {
+    const type = notification.type || '';
+    const entityType = notification.entity_type;
+    const entityId = notification.entity_id;
+
+    // ── Project ──
+    if (entityType === 'project' && entityId) {
+      return `/supervisor/projects/${entityId}`;
+    }
+
+    // ── Task / Comment (both link to the task) ──
+    if ((entityType === 'task' || type.startsWith('task_') || type.startsWith('comment_')) && entityId) {
+      const taskObj = tasks.find(t => Number(t.t_id || t.id) === Number(entityId));
+      const projectId =
+        taskObj?.p_id ?? taskObj?.p ?? taskObj?.project ?? taskObj?.project_id ?? null;
+      if (projectId) {
+        return `/supervisor/projects/${projectId}/tasks/${entityId}`;
+      }
+      // Fallback: some task-related notifications may carry project in `u`
+      // or we can go to the project page if we can find one
+      return null;
+    }
+
+    // ── Team member ──
+    if (entityType === 'team_member' || type === 'member_added' || type === 'team_updated') {
+      return `/supervisor/team-members`;
+    }
+
+    // ── Lead assigned ──
+    if (type === 'lead_assigned') {
+      return `/supervisor/leads`;
+    }
+
+    return null;
+  };
+
+  /**
+   * Human-readable name of the entity the notification refers to.
+   */
+  const getEntityName = (notification) => {
+    const entityType = notification.entity_type;
+    const entityId = notification.entity_id;
+    if (!entityId) return '';
+
+    if (entityType === 'project') {
+      const p = projects.find(x => Number(x.p_id || x.id) === Number(entityId));
+      return p?.p_name || p?.name || '';
+    }
+    if (entityType === 'task') {
+      const t = tasks.find(x => Number(x.t_id || x.id) === Number(entityId));
+      return t?.title || '';
+    }
+    if (entityType === 'team_member') {
+      const m = teamMembers.find(x => Number(x.id) === Number(entityId));
+      return m?.name || '';
+    }
+    return '';
+  };
+
+  const getEntityType = (notification) => {
+    if (notification.entity_type) return notification.entity_type;
+    const type = notification.type || '';
+    if (type.startsWith('task_') || type.startsWith('comment_')) return 'task';
+    if (type.startsWith('project_')) return 'project';
+    if (type === 'member_added' || type === 'team_updated') return 'team_member';
+    return null;
+  };
+
+  const handleNotificationClick = (notification) => {
+    const id = notification.n_id || notification.id;
+    if (!notification.is_read) {
+      markAsRead(id);
+    }
+
+    const route = getNotificationRoute(notification);
+    if (route) {
+      navigate(route);
+    } else {
+      // No route — subtle hint so users know why nothing happened
+      toast('This activity has no linked page', { icon: 'ℹ️' });
+    }
+  };
+
+  /* ─────────── Derived ─────────── */
+
+  const filteredNotifications = notifications.filter(n =>
+    filterType === 'all' ? true : n.type === filterType
+  );
+
+  const notificationTypes = ['all', ...new Set(notifications.map(n => n.type).filter(Boolean))];
+
+  /* ─────────── Loading ─────────── */
   if (loading) {
     return (
       <div>
@@ -324,9 +384,8 @@ export default function SupervisorNotifications() {
                 const typeLabel = getTypeLabel(notification.type);
                 const route = getNotificationRoute(notification);
                 const isClickable = !!route;
-                const entityName = notification.entity_type && notification.entity_id
-                  ? getEntityName(notification.entity_id, notification.entity_type)
-                  : '';
+                const entityName = getEntityName(notification);
+                const entityType = getEntityType(notification);
 
                 return (
                   <motion.div
@@ -346,7 +405,7 @@ export default function SupervisorNotifications() {
                         handleNotificationClick(notification);
                       }
                     }}
-                    title={isClickable ? `Open ${entityName}` : undefined}
+                    title={isClickable ? `Open ${entityName || 'linked page'}` : undefined}
                   >
                     <div className="notification-icon" style={{ background: `${color}20`, color }}>
                       <Icon size={18} />
@@ -359,15 +418,11 @@ export default function SupervisorNotifications() {
                         <span className="notification-time">{timeAgo}</span>
                       </div>
                       <p className="notification-message" title={message}>{message}</p>
-                      {notification.entity_type && notification.entity_id && (
-                        <span
-                          className="notification-entity-tag"
-                          title={entityName}
-                        >
-                          {notification.entity_type === 'project' && <FolderKanban size={12} />}
-                          {notification.entity_type === 'task' && <CheckCircle2 size={12} />}
-                          {notification.entity_type === 'user' && <Users size={12} />}
-                          {notification.entity_type === 'team_member' && <UserPlus size={12} />}
+                      {entityName && (
+                        <span className="notification-entity-tag" title={entityName}>
+                          {entityType === 'project' && <FolderKanban size={12} />}
+                          {entityType === 'task' && <CheckCircle2 size={12} />}
+                          {entityType === 'team_member' && <UserPlus size={12} />}
                           <span className="notification-entity-name">{entityName}</span>
                         </span>
                       )}
@@ -481,7 +536,6 @@ export default function SupervisorNotifications() {
           box-sizing: border-box;
         }
 
-        /* ─── Clickable cursor + hover ─── */
         .notification-item.clickable { cursor: pointer; }
         .notification-item.clickable:hover {
           border-color: var(--accent-primary);
@@ -506,7 +560,6 @@ export default function SupervisorNotifications() {
           display: flex; align-items: center; justify-content: center; flex-shrink: 0;
         }
 
-        /* ─── Content column: constrain width, allow wrapping ─── */
         .notification-content {
           flex: 1;
           min-width: 0;
@@ -521,7 +574,6 @@ export default function SupervisorNotifications() {
         .notification-type { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; }
         .notification-time { font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
 
-        /* ─── Break long words/URLs in messages ─── */
         .notification-message {
           font-size: 13px;
           color: var(--text-secondary);
@@ -533,7 +585,6 @@ export default function SupervisorNotifications() {
           max-width: 100%;
         }
 
-        /* ─── Constrain entity tag, ellipsize name ─── */
         .notification-entity-tag {
           display: inline-flex;
           align-items: center;
