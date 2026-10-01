@@ -18,7 +18,6 @@ const ROLE_COLORS = {
   member: '#10b981',
 };
 
-// 🆕 Issue #2 fix — human-readable labels.
 // Backend stores "manager"; UI shows "Supervisor" (matches portal).
 const ROLE_LABELS = {
   admin: 'Admin',
@@ -38,7 +37,6 @@ const ROLE_BASE_PATH = {
 const getRoleColor = (role) => ROLE_COLORS[role?.toLowerCase()] || '#6366f1';
 const getBasePath = (role) => ROLE_BASE_PATH[role?.toLowerCase()] || 'dashboard';
 
-// 🆕 Issue #2 fix — convert raw role to a display label
 const getRoleLabel = (role) =>
   ROLE_LABELS[role?.toLowerCase()] || (role ? role.charAt(0).toUpperCase() + role.slice(1) : 'User');
 
@@ -49,6 +47,17 @@ const withAlpha = (hex, alpha) => {
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+};
+
+/* ─────────── localStorage helpers (per-user) ─────────── */
+// Same keys the notifications pages use, so badge stays in sync when the
+// user reads/deletes notifications on the notification page.
+const readKeyFor    = (userId) => `read_notifications_${userId ?? 'anon'}`;
+const deletedKeyFor = (userId) => `deleted_notifications_${userId ?? 'anon'}`;
+
+const readLocalSet = (key) => {
+  try { return new Set(JSON.parse(localStorage.getItem(key) || '[]')); }
+  catch { return new Set(); }
 };
 
 export default function Topbar({ title, actions, onMenuClick, searchBar, actionButtons }) {
@@ -62,13 +71,13 @@ export default function Topbar({ title, actions, onMenuClick, searchBar, actionB
   const firstMenuItemRef = useRef(null);
   const menuId = useId();
 
-  // 🆕 Issue #4 fix — local unread count, fetched from API.
-  // We use this instead of relying on AuthContext (which never fetches).
+  // Local unread count — derived from the same client-side activity list
+  // the notification pages use, minus locally-read and locally-deleted ones.
   const [unreadCount, setUnreadCount] = useState(authUnreadCount || 0);
 
   const userName = user?.u_name || user?.name || 'User';
   const userRole = user?.role || 'User';
-  const userRoleLabel = getRoleLabel(userRole);   // 🆕 label (not raw value)
+  const userRoleLabel = getRoleLabel(userRole);
   const userId = user?.id || user?.u_id;
 
   const initials = useMemo(() => {
@@ -82,35 +91,132 @@ export default function Topbar({ title, actions, onMenuClick, searchBar, actionB
   const roleColor = useMemo(() => getRoleColor(userRole), [userRole]);
 
   // ---------------------------------------------------------------------
-  // 🆕 Issue #4 fix — fetch unread count on mount + poll every 30s
+  // Fetch unread count from the API + fallback to local activity list.
+  //
+  // We try the backend endpoint first (works if you ever wire up the
+  // `Notification` table). If it returns 0 or fails, we compute the
+  // count client-side from the same activity feed the notification page
+  // uses — that guarantees the badge matches what the user sees.
   // ---------------------------------------------------------------------
   useEffect(() => {
-    if (!user) return;   // don't poll when logged out
+    if (!user) {
+      setUnreadCount(0);
+      return;
+    }
 
     let cancelled = false;
 
+    const computeLocalUnread = () => {
+      try {
+        const readSet    = readLocalSet(readKeyFor(userId));
+        const deletedSet = readLocalSet(deletedKeyFor(userId));
+
+        // Pull the same activity stream the notification page renders.
+        // Cache it in sessionStorage so we don't spam the network every 30s.
+        const CACHE_KEY = `activities_cache_${userId}`;
+        const CACHE_TTL = 25 * 1000; // 25s < poll interval
+
+        let activities = null;
+        try {
+          const raw = sessionStorage.getItem(CACHE_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Date.now() - parsed.ts < CACHE_TTL) {
+              activities = parsed.data;
+            }
+          }
+        } catch { /* ignore */ }
+
+        return { activities, readSet, deletedSet, CACHE_KEY };
+      } catch {
+        return { activities: null, readSet: new Set(), deletedSet: new Set(), CACHE_KEY: null };
+      }
+    };
+
     const fetchUnread = async () => {
+      // 1) Try backend endpoint
       try {
         const { data } = await api.get(endpoints.notifications.unreadCount);
-        // Handle several possible response shapes
         const count =
-          data?.count ?? data?.unread_count ?? data?.unreadCount ?? 0;
-        if (!cancelled) setUnreadCount(Number(count) || 0);
+          data?.count ?? data?.unread_count ?? data?.unreadCount ?? data?.data?.count ?? 0;
+        const n = Number(count);
+        if (!cancelled && Number.isFinite(n) && n > 0) {
+          setUnreadCount(n);
+          return;
+        }
       } catch (err) {
-        // Silent — don't spam toast for a background poll
-        console.debug('Unread count fetch failed:', err?.message);
+        console.debug('Backend unread fetch failed, falling back to local:', err?.message);
+      }
+
+      // 2) Fallback: compute from the local activity feed
+      try {
+        const { readSet, deletedSet, CACHE_KEY } = computeLocalUnread();
+
+        // Use the cached activity list if still fresh; otherwise fetch it.
+        const CACHE_TTL = 25 * 1000;
+        let activities = null;
+        if (CACHE_KEY) {
+          try {
+            const raw = sessionStorage.getItem(CACHE_KEY);
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              if (Date.now() - parsed.ts < CACHE_TTL) activities = parsed.data;
+            }
+          } catch { /* ignore */ }
+        }
+
+        if (!activities) {
+          // Use the notificationService to regenerate. Lazy import so we
+          // don't pull it into the initial bundle.
+          const { default: notificationService } = await import('../../services/notificationService');
+          const res = await notificationService.getNotifications(userId, userRole);
+          activities = res?.data || [];
+          if (CACHE_KEY) {
+            try {
+              sessionStorage.setItem(
+                CACHE_KEY,
+                JSON.stringify({ ts: Date.now(), data: activities })
+              );
+            } catch { /* quota exceeded — ignore */ }
+          }
+        }
+
+        const unread = (activities || []).filter((n) => {
+          const id = n.n_id || n.id;
+          if (!id) return false;
+          if (deletedSet.has(id)) return false;
+          if (readSet.has(id)) return false;
+          return !n.is_read;
+        }).length;
+
+        if (!cancelled) setUnreadCount(unread);
+      } catch (err) {
+        console.debug('Local unread compute failed:', err?.message);
+        if (!cancelled) setUnreadCount(0);
       }
     };
 
     fetchUnread();
     const interval = setInterval(fetchUnread, 30000);
+
+    // Also listen for storage events so if the user reads a notification
+    // on the notification page in another tab, the badge updates instantly.
+    const onStorage = (e) => {
+      if (!e.key) return;
+      if (e.key === readKeyFor(userId) || e.key === deletedKeyFor(userId)) {
+        fetchUnread();
+      }
+    };
+    window.addEventListener('storage', onStorage);
+
     return () => {
       cancelled = true;
       clearInterval(interval);
+      window.removeEventListener('storage', onStorage);
     };
-  }, [user?.id]);
+  }, [user?.id, userId, userRole]);
 
-  // If AuthContext eventually fetches, prefer its value when it's higher
+  // Prefer the AuthContext value when it's higher (in case it ever fetches).
   useEffect(() => {
     if (typeof authUnreadCount === 'number' && authUnreadCount > unreadCount) {
       setUnreadCount(authUnreadCount);
@@ -173,6 +279,10 @@ export default function Topbar({ title, actions, onMenuClick, searchBar, actionB
     onMenuClick?.();
   };
 
+  // Cap the display at 99+
+  const displayCount = unreadCount > 99 ? '99+' : String(unreadCount);
+  const hasUnread = unreadCount > 0;
+
   return (
     <header className="tb-root">
       {/* LEFT */}
@@ -203,22 +313,36 @@ export default function Topbar({ title, actions, onMenuClick, searchBar, actionB
             {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
           </button>
 
-          {/* 🆕 Issue #4 fix — show NUMBER badge, not just a dot */}
+          {/* ─── NOTIFICATIONS with numbered red badge ─── */}
           <button
             className="tb-icon-btn tb-notif"
             onClick={handleNotificationClick}
             aria-label={
-              unreadCount > 0
+              hasUnread
                 ? `Notifications, ${unreadCount} unread`
                 : 'Notifications'
             }
           >
             <Bell size={16} />
-            {unreadCount > 0 && (
-              <span className="tb-badge" aria-hidden="true">
-                {unreadCount > 99 ? '99+' : unreadCount}
-              </span>
-            )}
+
+            <AnimatePresence>
+              {hasUnread && (
+                <motion.span
+                  key="badge"
+                  className="tb-badge"
+                  initial={{ scale: 0.4, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  exit={{ scale: 0.4, opacity: 0 }}
+                  transition={{ type: 'spring', stiffness: 500, damping: 22 }}
+                  aria-hidden="true"
+                >
+                  {displayCount}
+                </motion.span>
+              )}
+            </AnimatePresence>
+
+            {/* Soft pulsing ring to draw attention (only when unread) */}
+            {hasUnread && <span className="tb-notif-pulse" aria-hidden="true" />}
           </button>
 
           {/* PROFILE DROPDOWN */}
@@ -240,7 +364,6 @@ export default function Topbar({ title, actions, onMenuClick, searchBar, actionB
               </div>
               <div className="tb-profile-text">
                 <span className="tb-name">{userName?.split(' ')[0] || 'User'}</span>
-                {/* 🆕 Issue #2 fix — display label instead of raw role */}
                 <span className="tb-role" style={{ color: roleColor }}>
                   {userRoleLabel}
                 </span>
@@ -284,7 +407,6 @@ export default function Topbar({ title, actions, onMenuClick, searchBar, actionB
                       </div>
                       <div className="tb-menu-user">
                         <span className="tb-menu-name">{userName}</span>
-                        {/* 🆕 Issue #2 fix — same label here */}
                         <span className="tb-menu-role" style={{ color: roleColor }}>
                           <Shield size={10} aria-hidden="true" /> {userRoleLabel}
                         </span>
@@ -397,7 +519,6 @@ export default function Topbar({ title, actions, onMenuClick, searchBar, actionB
           flex: 1 1 160px;
         }
 
-        .tb-actions :global(button),
         .tb-actions button {
           min-width: 0;
         }
@@ -432,27 +553,52 @@ export default function Topbar({ title, actions, onMenuClick, searchBar, actionB
           outline-offset: 2px;
         }
 
+        /* ─── NOTIFICATIONS ─── */
         .tb-notif { position: relative; }
 
-        /* 🆕 Issue #4 fix — numbered badge */
+        /* ─── Numbered red badge ─── */
         .tb-badge {
           position: absolute;
-          top: -4px;
-          right: -4px;
-          min-width: 16px;
-          height: 16px;
-          padding: 0 4px;
-          border-radius: 8px;
+          top: -5px;
+          right: -5px;
+          min-width: 17px;
+          height: 17px;
+          padding: 0 5px;
+          border-radius: 9px;
           background: #f43f5e;
           color: #fff;
           font-size: 10px;
-          font-weight: 700;
-          line-height: 16px;
+          font-weight: 800;
+          line-height: 17px;
           text-align: center;
-          border: 1.5px solid var(--bg-secondary);
-          box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+          border: 2px solid var(--bg-secondary);
+          box-shadow: 0 2px 6px rgba(244, 63, 94, 0.4);
           pointer-events: none;
           font-variant-numeric: tabular-nums;
+          z-index: 2;
+          box-sizing: border-box;
+        }
+
+        /* ─── Subtle pulse ring when unread ─── */
+        .tb-notif-pulse {
+          position: absolute;
+          inset: -2px;
+          border-radius: 10px;
+          border: 2px solid #f43f5e;
+          opacity: 0.55;
+          pointer-events: none;
+          animation: tbPulse 1.8s ease-out infinite;
+          z-index: 1;
+        }
+        @keyframes tbPulse {
+          0%   { transform: scale(1);   opacity: 0.6; }
+          70%  { transform: scale(1.4); opacity: 0;   }
+          100% { transform: scale(1.4); opacity: 0;   }
+        }
+
+        /* Respect reduced motion */
+        @media (prefers-reduced-motion: reduce) {
+          .tb-notif-pulse { animation: none; opacity: 0; }
         }
 
         /* Legacy dot class kept for backward-compat (unused). */
@@ -651,6 +797,7 @@ export default function Topbar({ title, actions, onMenuClick, searchBar, actionB
           .tb-profile-text { display: none; }
           .tb-profile-btn { padding: 0 6px; gap: 4px; }
           .tb-icon-btn { width: 30px; height: 30px; }
+          .tb-badge { top: -4px; right: -4px; min-width: 16px; height: 16px; line-height: 16px; font-size: 9.5px; }
         }
 
         @media (max-width: 480px) {
