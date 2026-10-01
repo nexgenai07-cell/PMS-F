@@ -22,6 +22,8 @@ import projectTeamService from "../../services/projectTeamService";
 
 const asArray = (v) => (Array.isArray(v) ? v : []);
 
+const norm = (s) => (s || '').toLowerCase().trim();
+
 const getInitials = (name) => {
   if (!name) return '?';
   return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
@@ -36,89 +38,115 @@ const getRoleColor = (role) => {
     member:     { bg: 'rgba(148, 163, 184, 0.15)', color: '#94a3b8' },
     developer:  { bg: 'rgba(45, 212, 191, 0.15)',  color: '#2dd4bf' },
   };
-  return colors[role?.toLowerCase()] || colors.member;
+  return colors[norm(role)] || colors.member;
 };
+
+/* PTeam field getters (defensive) */
+function getPteamProjectId(entry) {
+  return Number(
+    entry?.p ?? entry?.p_id ?? entry?.project ?? entry?.projectId ?? entry?.project_id
+  );
+}
+function getPteamTmId(entry) {
+  return Number(
+    entry?.tm ?? entry?.tm_id ?? entry?.team_member ??
+    entry?.member ?? entry?.member_id ?? entry?.teamMember
+  );
+}
 
 /* ─────────── Compute a lead's full stats from raw data ─────────── */
 /*
- * A lead's "scope" for this page is:
- *   1. Projects they created (created_by === lead's user id)
- *   2. Projects they're listed as a supervisor on (rare, but possible)
- *   3. Tasks they're explicitly assigned to (via their TeamMember profile,
- *      matched by name — since TeamMember has no FK to User)
+ * A lead's projects = any project where:
+ *   - created_by === lead's user id, OR
+ *   - lead's user id is in project.supervisors, OR
+ *   - lead's TeamMember profile appears in a PTeam entry for that project
  *
- * We deliberately do NOT count "any task inside a project the lead created"
- * as the lead's own task — that would inflate every card with the entire
- * team's work and make the numbers meaningless.
+ * A lead's tasks = any task whose project is in the above set OR
+ * that is directly assigned to the lead's TeamMember profile.
  */
-function computeLeadData(leadId, projects, tasks, teamMembers, users) {
+function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntries) {
   const leadUser = users.find(u => Number(u.id ?? u.u_id) === Number(leadId));
 
-  // Projects the lead created
-  const createdProjects = asArray(projects).filter(
-    p => Number(p.created_by) === Number(leadId)
-  );
+  // 1. Find the lead's TeamMember profile by matching name
+  const leadName = norm(leadUser?.u_name);
+  const leadMember = leadName
+    ? asArray(teamMembers).find(m => norm(m.name) === leadName)
+    : null;
+  const teamMemberId = leadMember ? Number(leadMember.id) : null;
 
-  // Projects the lead is a listed supervisor on
-  const supervisedProjects = asArray(projects).filter(p =>
-    asArray(p.supervisors).map(Number).includes(Number(leadId))
-  );
+  // 2. Project IDs from PTeam where this lead's TeamMember appears
+  const pteamProjectIds = new Set();
+  if (teamMemberId != null) {
+    asArray(pteamEntries).forEach(entry => {
+      if (getPteamTmId(entry) === teamMemberId) {
+        const pid = getPteamProjectId(entry);
+        if (Number.isFinite(pid)) pteamProjectIds.add(pid);
+      }
+    });
+  }
 
-  // Deduped list of projects
+  // 3. Build the lead's project set:
+  //    created_by OR supervised OR PTeam membership
   const projectMap = new Map();
-  [...createdProjects, ...supervisedProjects].forEach(p => {
+  asArray(projects).forEach(p => {
     const id = Number(p.p_id ?? p.id);
-    if (Number.isFinite(id)) projectMap.set(id, p);
+    if (!Number.isFinite(id)) return;
+
+    const isCreator = Number(p.created_by) === Number(leadId);
+    const isSupervisor = asArray(p.supervisors).map(Number).includes(Number(leadId));
+    const isPteamMember = pteamProjectIds.has(id);
+
+    if (isCreator || isSupervisor || isPteamMember) {
+      projectMap.set(id, p);
+    }
   });
   const leadProjects = Array.from(projectMap.values());
   const leadProjectIds = leadProjects.map(p => Number(p.p_id ?? p.id));
 
-  // Find the lead's TeamMember profile (matched by name)
-  const leadName = (leadUser?.u_name || '').toLowerCase().trim();
-  const teamMember = asArray(teamMembers).find(m => {
-    const memberName = (m.name || '').toLowerCase().trim();
-    return leadName && memberName && memberName === leadName;
-  });
-  const teamMemberId = teamMember ? Number(teamMember.id) : null;
-
-  // Tasks explicitly assigned to the lead's TeamMember profile
-  const assignedTasks = asArray(tasks).filter(t => {
-    if (!teamMemberId) return false;
-    const assignTo = Number(t.assign_to ?? t.assignedTo);
-    return assignTo === teamMemberId;
-  });
-
-  // Tasks inside the lead's projects (counts as their portfolio)
+  // 4. Tasks in those projects
   const projectTasks = asArray(tasks).filter(t => {
     const tpid = Number(t.p_id ?? t.p);
     return leadProjectIds.includes(tpid);
   });
 
-  const totalTasks = projectTasks.length;
-  const completedTasks = projectTasks.filter(t => {
-    const s = (t.status || '').toLowerCase();
+  // 5. Tasks directly assigned to the lead's TeamMember (may be in other
+  //    projects the lead isn't yet credited with — include them too)
+  const directAssignedTasks = teamMemberId != null
+    ? asArray(tasks).filter(t => Number(t.assign_to ?? t.assignedTo) === teamMemberId)
+    : [];
+
+  // Combine (dedupe by task id)
+  const taskMap = new Map();
+  [...projectTasks, ...directAssignedTasks].forEach(t => {
+    const id = Number(t.t_id ?? t.id);
+    if (Number.isFinite(id)) taskMap.set(id, t);
+  });
+  const allLeadTasks = Array.from(taskMap.values());
+
+  const totalTasks = allLeadTasks.length;
+  const completedTasks = allLeadTasks.filter(t => {
+    const s = norm(t.status);
     return s === 'done' || s === 'completed';
   }).length;
-  const inProgressTasks = projectTasks.filter(t => {
-    const s = (t.status || '').toLowerCase();
+  const inProgressTasks = allLeadTasks.filter(t => {
+    const s = norm(t.status);
     return s === 'in_progress' || s === 'in-progress' || s === 'review';
   }).length;
-  const todoTasks = projectTasks.filter(t => {
-    const s = (t.status || '').toLowerCase();
-    return s === 'todo' || s === 'pending';
+  const todoTasks = allLeadTasks.filter(t => {
+    const s = norm(t.status);
+    return s === 'todo' || s === 'pending' || s === 'planning';
   }).length;
 
   const completionRate = totalTasks > 0
     ? Math.round((completedTasks / totalTasks) * 100)
     : 0;
 
-  // Average per-task progress (0-100), trusting the stored field first
   const avgProgress = totalTasks > 0
     ? Math.round(
-        projectTasks.reduce((sum, t) => {
+        allLeadTasks.reduce((sum, t) => {
           const p = Number(t.progress);
           if (Number.isFinite(p)) return sum + p;
-          const s = (t.status || '').toLowerCase();
+          const s = norm(t.status);
           if (s === 'done' || s === 'completed') return sum + 100;
           if (s === 'review') return sum + 75;
           if (s === 'in_progress' || s === 'in-progress') return sum + 50;
@@ -127,10 +155,8 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users) {
       )
     : 0;
 
-  // On-time rate: completed tasks that had a due date and were finished
-  // by it. Falls back to zero only when there's nothing to measure.
-  const completedWithDue = projectTasks.filter(t => {
-    const s = (t.status || '').toLowerCase();
+  const completedWithDue = allLeadTasks.filter(t => {
+    const s = norm(t.status);
     return (s === 'done' || s === 'completed') && (t.due_date || t.deadline);
   });
   const onTimeCount = completedWithDue.filter(t => {
@@ -144,7 +170,7 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users) {
     ? Math.round((onTimeCount / completedWithDue.length) * 100)
     : 0;
 
-  // Unique members working on the lead's projects
+  // Unique members on the lead's projects
   const memberIdSet = new Set();
   projectTasks.forEach(t => {
     const a = t.assign_to ?? t.assignedTo;
@@ -152,8 +178,6 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users) {
   });
   const teamSize = memberIdSet.size;
 
-  // Performance band — unchanged logic, but keyed off the real completion
-  // rate (0 for a lead with no tasks, which reads as "Needs Attention").
   const performance =
     totalTasks === 0 ? 'New' :
     completionRate >= 80 ? 'Excellent' :
@@ -171,8 +195,8 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users) {
   return {
     user: leadUser,
     projects: leadProjects,
-    tasks: projectTasks,
-    assignedTasks,      // tasks directly assigned to this lead
+    tasks: allLeadTasks,
+    directAssignedTasks,
     completed: completedTasks,
     inProgress: inProgressTasks,
     todo: todoTasks,
@@ -201,6 +225,7 @@ export default function SupervisorLeads() {
   const [tasks, setTasks] = useState([]);
   const [teamMembers, setTeamMembers] = useState([]);
   const [users, setUsers] = useState([]);
+  const [pteamEntries, setPteamEntries] = useState([]);
   const [leadList, setLeadList] = useState([]);
 
   const [selectedLead, setSelectedLead] = useState(null);
@@ -211,27 +236,30 @@ export default function SupervisorLeads() {
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      const [projectsData, tasksData, membersData, usersData] = await Promise.all([
+      const [projectsData, tasksData, membersData, usersData, pteamData] = await Promise.all([
         projectService.getProjects(),
         taskService.getTasks(),
         teamService.getTeamMembers(),
         userService.getUsers(),
+        projectTeamService.getProjectTeams(),
       ]);
 
       const projectsList = asArray(projectsData?.data || projectsData);
       const tasksList = asArray(tasksData?.data || tasksData);
       const membersList = asArray(membersData?.data || membersData);
       const usersList = asArray(usersData?.data || usersData);
+      const pteamList = asArray(pteamData?.data || pteamData);
 
       setProjects(projectsList);
       setTasks(tasksList);
       setTeamMembers(membersList);
       setUsers(usersList);
+      setPteamEntries(pteamList);
 
       // Leads = users whose role is lead-ish (member / developer / *lead*)
       const leads = usersList
         .filter(u => {
-          const role = (u.role || '').toLowerCase();
+          const role = norm(u.role);
           return role === 'member' || role === 'developer' || role.includes('lead');
         })
         .map(u => Number(u.id ?? u.u_id))
@@ -243,6 +271,23 @@ export default function SupervisorLeads() {
       console.log('📊 [SupervisorLeads] leads:', leads.length);
       console.log('📊 [SupervisorLeads] projects:', projectsList.length);
       console.log('📊 [SupervisorLeads] tasks:', tasksList.length);
+      console.log('📊 [SupervisorLeads] pteam entries:', pteamList.length);
+      console.log(
+        '📊 [SupervisorLeads] pteam sample:',
+        pteamList.slice(0, 5).map(e => ({
+          pt_id: e.pt_id,
+          p: getPteamProjectId(e),
+          tm: getPteamTmId(e),
+        }))
+      );
+      console.log(
+        '📊 [SupervisorLeads] project.created_by values:',
+        projectsList.map(p => ({ id: p.p_id ?? p.id, created_by: p.created_by, supervisors: p.supervisors }))
+      );
+      console.log(
+        '📊 [SupervisorLeads] task assign_to values:',
+        tasksList.map(t => ({ id: t.t_id ?? t.id, assign_to: t.assign_to, p: t.p_id ?? t.p }))
+      );
     } catch (error) {
       console.error('Error fetching leads data:', error);
       toast.error('Failed to load leads data');
@@ -250,6 +295,7 @@ export default function SupervisorLeads() {
       setTasks([]);
       setTeamMembers([]);
       setUsers([]);
+      setPteamEntries([]);
       setLeadList([]);
     } finally {
       setLoading(false);
@@ -265,20 +311,23 @@ export default function SupervisorLeads() {
     toast.success('Leads refreshed');
   };
 
-  /* ─── Derived leads (memoized so we don't recompute per render) ─── */
+  /* ─── Derived leads (memoized) ─── */
   const leadsData = useMemo(() => {
     return leadList
-      .map(id => ({ leadId: id, data: computeLeadData(id, projects, tasks, teamMembers, users) }))
+      .map(id => ({
+        leadId: id,
+        data: computeLeadData(id, projects, tasks, teamMembers, users, pteamEntries),
+      }))
       .filter(x => x.data.user);
-  }, [leadList, projects, tasks, teamMembers, users]);
+  }, [leadList, projects, tasks, teamMembers, users, pteamEntries]);
 
   const filteredLeads = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase();
+    const q = norm(searchTerm);
     return leadsData.filter(({ data }) => {
-      const nameMatch = !q || (data.user?.u_name || '').toLowerCase().includes(q);
+      const nameMatch = !q || norm(data.user?.u_name).includes(q);
       const perfMatch =
         filterPerformance === 'all' ||
-        data.performance.toLowerCase() === filterPerformance.toLowerCase();
+        norm(data.performance) === norm(filterPerformance);
       return nameMatch && perfMatch;
     });
   }, [leadsData, searchTerm, filterPerformance]);
@@ -502,7 +551,7 @@ export default function SupervisorLeads() {
       {/* ─── LEAD DETAIL MODAL ─── */}
       <AnimatePresence>
         {selectedLead && (() => {
-          const d = computeLeadData(selectedLead, projects, tasks, teamMembers, users);
+          const d = computeLeadData(selectedLead, projects, tasks, teamMembers, users, pteamEntries);
           const roleInfo = getRoleColor(d.user?.role);
           const initials = getInitials(d.user?.u_name);
 
@@ -596,7 +645,7 @@ export default function SupervisorLeads() {
                     <div className="modal-kpi">
                       <MessageSquare size={14} />
                       <div>
-                        <span className="modal-kpi-value">{d.assignedTasks.length}</span>
+                        <span className="modal-kpi-value">{d.directAssignedTasks.length}</span>
                         <span className="modal-kpi-label">Assigned to lead</span>
                       </div>
                     </div>
@@ -636,7 +685,6 @@ export default function SupervisorLeads() {
         @keyframes spin { to { transform: rotate(360deg); } }
         .spin { animation: spin 1s linear infinite; }
 
-        /* ─── STATS ─── */
         .leads-stats {
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -663,7 +711,6 @@ export default function SupervisorLeads() {
           display: block; font-size: 12px; color: var(--text-muted);
         }
 
-        /* ─── FILTERS ─── */
         .leads-filters {
           display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap;
         }
@@ -717,7 +764,6 @@ export default function SupervisorLeads() {
         }
         .leads-filter-select:focus { border-color: var(--accent-primary); }
 
-        /* ─── GRID ─── */
         .leads-grid {
           display: grid;
           grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -855,7 +901,6 @@ export default function SupervisorLeads() {
           margin: 12px 0 4px;
         }
 
-        /* ─── MODAL ─── */
         .modal-overlay {
           position: fixed; inset: 0;
           background: rgba(0,0,0,0.6);
@@ -1030,7 +1075,6 @@ export default function SupervisorLeads() {
           text-align: center; padding: 8px 0;
         }
 
-        /* ─── RESPONSIVE ─── */
         @media (max-width: 768px) {
           .leads-stats { grid-template-columns: 1fr 1fr 1fr; }
           .leads-grid { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
