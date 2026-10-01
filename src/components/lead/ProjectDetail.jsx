@@ -28,14 +28,21 @@ const STATUS_OPTIONS = ["todo", "in_progress", "review", "done", "cancelled"];
 const SUPERVISOR_ROLES = ['manager', 'admin', 'supervisor'];
 const LEAD_ROLES = ['member', 'lead'];
 
+/* ─────────── Safe array helper ─────────── */
+const asArray = (v) => (Array.isArray(v) ? v : []);
+
 /* ─────────── Resolve TeamMember id → user-like object ─────────── */
 function resolveTeamMemberId(tmId, usersList, membersList) {
   if (tmId == null) return null;
   const numId = Number(tmId);
+  if (!Number.isFinite(numId)) return null;
 
-  const tm = membersList.find(m => Number(m.id) === numId);
+  const safeUsers = asArray(usersList);
+  const safeMembers = asArray(membersList);
+
+  const tm = safeMembers.find(m => Number(m.id) === numId);
   if (tm) {
-    const userObj = usersList.find(u => {
+    const userObj = safeUsers.find(u => {
       const uName = (u.u_name || u.name || '').toLowerCase().trim();
       const mName = (tm.name || '').toLowerCase().trim();
       return uName && mName && uName === mName;
@@ -43,18 +50,18 @@ function resolveTeamMemberId(tmId, usersList, membersList) {
     return {
       id: tm.id,
       userId: userObj?.id ?? tm.id,
-      name: tm.name || userObj?.u_name || 'Unknown',
+      name: tm.name || userObj?.u_name || `User ${tm.id}`,
       email: tm.email || userObj?.email || '',
       role: ((userObj?.role) || tm.role || '').toLowerCase(),
     };
   }
 
-  const userObj = usersList.find(u => Number(u.id) === numId);
+  const userObj = safeUsers.find(u => Number(u.id) === numId);
   if (userObj) {
     return {
       id: userObj.id,
       userId: userObj.id,
-      name: userObj.u_name || userObj.name || 'Unknown',
+      name: userObj.u_name || userObj.name || `User ${userObj.id}`,
       email: userObj.email || '',
       role: (userObj.role || '').toLowerCase(),
     };
@@ -66,24 +73,28 @@ function resolveTeamMemberId(tmId, usersList, membersList) {
 function resolveUserId(userId, usersList, membersList) {
   if (userId == null) return null;
   const numId = Number(userId);
+  if (!Number.isFinite(numId)) return null;
 
-  const userObj = usersList.find(u => Number(u.id) === numId);
+  const safeUsers = asArray(usersList);
+  const safeMembers = asArray(membersList);
+
+  const userObj = safeUsers.find(u => Number(u.id) === numId);
   if (userObj) {
     return {
       id: userObj.id,
       userId: userObj.id,
-      name: userObj.u_name || userObj.name || 'Unknown',
+      name: userObj.u_name || userObj.name || `User ${userObj.id}`,
       email: userObj.email || '',
       role: (userObj.role || '').toLowerCase(),
     };
   }
 
-  const tm = membersList.find(m => Number(m.id) === numId);
+  const tm = safeMembers.find(m => Number(m.id) === numId);
   if (tm) {
     return {
       id: tm.id,
       userId: tm.id,
-      name: tm.name || 'Unknown',
+      name: tm.name || `User ${tm.id}`,
       email: tm.email || '',
       role: (tm.role || '').toLowerCase(),
     };
@@ -93,19 +104,19 @@ function resolveUserId(userId, usersList, membersList) {
 
 /* ─────────── PTeam field getters ─────────── */
 function getPteamProjectId(entry) {
-  return Number(entry.p ?? entry.p_id ?? entry.project ?? entry.projectId ?? entry.project_id);
+  return Number(entry?.p ?? entry?.p_id ?? entry?.project ?? entry?.projectId ?? entry?.project_id);
 }
 function getPteamTmId(entry) {
-  return Number(entry.tm ?? entry.tm_id ?? entry.team_member ?? entry.member ?? entry.member_id ?? entry.teamMember);
+  return Number(entry?.tm ?? entry?.tm_id ?? entry?.team_member ?? entry?.member ?? entry?.member_id ?? entry?.teamMember);
 }
 
 /* ─────────── Compute task progress ─────────── */
 function computeTaskProgress(task) {
-  if (task.progress !== undefined && task.progress !== null) {
+  if (task?.progress !== undefined && task?.progress !== null) {
     const raw = Number(task.progress);
     if (Number.isFinite(raw)) return raw;
   }
-  const status = (task.status || '').toLowerCase();
+  const status = (task?.status || '').toLowerCase();
   if (status === 'done' || status === 'completed') return 100;
   if (status === 'review') return 75;
   if (status === 'in_progress' || status === 'in-progress') return 50;
@@ -119,20 +130,24 @@ function findRealTeamMemberId(userIdOrObj, teamMembersList, usersList) {
     ? (userIdOrObj.userId ?? userIdOrObj.id)
     : userIdOrObj;
   const numId = Number(id);
+  if (!Number.isFinite(numId)) return null;
 
-  const direct = teamMembersList.find(m => !m._placeholder && Number(m.id) === numId);
+  const safeMembers = asArray(teamMembersList);
+  const safeUsers = asArray(usersList);
+
+  const direct = safeMembers.find(m => !m._placeholder && Number(m.id) === numId);
   if (direct) return Number(direct.id);
 
-  const userObj = usersList.find(u => Number(u.id) === numId);
+  const userObj = safeUsers.find(u => Number(u.id) === numId);
   if (userObj) {
     const name = (userObj.u_name || userObj.name || '').toLowerCase().trim();
     const email = (userObj.email || '').toLowerCase().trim();
-    const byName = teamMembersList.find(m =>
+    const byName = safeMembers.find(m =>
       !m._placeholder && (m.name || '').toLowerCase().trim() === name
     );
     if (byName) return Number(byName.id);
     if (email) {
-      const byEmail = teamMembersList.find(m =>
+      const byEmail = safeMembers.find(m =>
         !m._placeholder && (m.email || '').toLowerCase().trim() === email
       );
       if (byEmail) return Number(byEmail.id);
@@ -297,27 +312,49 @@ export default function LeadProjectDetail() {
   const isAddTaskValid = Object.values(addTaskErrors).every(e => e === '');
   const isEditTaskValid = Object.values(editTaskErrors).every(e => e === '');
 
-  /* ─── Team member categorization ─── */
-  // Regular members = everyone in the project who isn't a supervisor and isn't a Lead.
+  /* ─── Team categorization ─── */
+  const supervisorIdSet = useMemo(
+    () => new Set(asArray(projectSupervisors).map(s => Number(s.id))),
+    [projectSupervisors]
+  );
+
+  // Leads = project members (from PTeam) whose role is member/lead,
+  //         excluding the creator and excluding supervisors.
+  const projectLeadsDerived = useMemo(() => {
+    if (!project) return [];
+    const creatorId = Number(project.created_by);
+    return asArray(projectMembers).filter(m => {
+      const role = (m.role || '').toLowerCase();
+      if (!LEAD_ROLES.includes(role)) return false;
+      if (Number(m.id) === creatorId) return false;
+      if (supervisorIdSet.has(Number(m.id))) return false;
+      return true;
+    });
+  }, [projectMembers, project, supervisorIdSet]);
+
+  const projectLeadsFinal = asArray(projectLeads).length > 0 ? projectLeads : projectLeadsDerived;
+
+  // Regular Members = project members who aren't supervisors and aren't leads.
   const regularMembers = useMemo(
-    () => projectMembers.filter(m => {
+    () => asArray(projectMembers).filter(m => {
       const role = (m.role || '').toLowerCase();
       if (SUPERVISOR_ROLES.includes(role)) return false;
       if (LEAD_ROLES.includes(role)) return false;
-      return !projectSupervisors.some(s => Number(s.id) === Number(m.id));
+      if (supervisorIdSet.has(Number(m.id))) return false;
+      return true;
     }),
-    [projectMembers, projectSupervisors]
+    [projectMembers, supervisorIdSet]
   );
 
   const assignableMembers = useMemo(
-    () => projectMembers.filter(m => m.tmId != null),
+    () => asArray(projectMembers).filter(m => m.tmId != null),
     [projectMembers]
   );
 
   /* ─── Project progress ─── */
   const projectProgress = useMemo(() => {
     const backendProgress = Number(stats?.avgProgress);
-    if (Number.isFinite(backendProgress) && backendProgress > 0) return backendProgress;
+    if (Number.isFinite(backendProgress) && backendProgress > 0) return Math.round(backendProgress);
     if (!tasks || tasks.length === 0) return 0;
     const countable = tasks.filter(
       t => (t.status || '').toLowerCase() !== 'cancelled'
@@ -370,7 +407,7 @@ export default function LeadProjectDetail() {
 
   const getTaskComments = (taskId) => {
     if (!taskId) return [];
-    return comments.filter(c => Number(c.taskId || c.t) === Number(taskId));
+    return asArray(comments).filter(c => Number(c.taskId || c.t) === Number(taskId));
   };
 
   const modalTaskComments = selectedTask ? getTaskComments(selectedTask.t_id || selectedTask.id) : [];
@@ -378,161 +415,200 @@ export default function LeadProjectDetail() {
     (b.pin || b.pinned) === (a.pin || a.pinned) ? 0 : (b.pin || b.pinned) ? 1 : -1
   );
 
-
   useEffect(() => {
     fetchProjectData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
-const fetchProjectData = async () => {
-  console.log('🚀 fetchProjectData STARTED for projectId:', projectId);
-  try {
-    setLoading(true);
-    console.log('📡 Fetching: project, tasks, members, users, pteam, stats...');
-  
 
-      const safe = (promise, label) =>
-  promise.then(
-    (res) => { console.log(`✅ ${label}`); return res; },
-    (err) => { console.error(`❌ ${label} FAILED:`, err); throw err; },
-  );
+  /* ═══════════════════════════════════════════════════════════
+     FETCH — fully defensive
+     ═══════════════════════════════════════════════════════════ */
+  const fetchProjectData = async () => {
+    console.log('🚀 fetchProjectData STARTED for projectId:', projectId);
+    try {
+      setLoading(true);
 
-const [projectData, tasksData, membersData, usersData, pteamData, statsData] = await Promise.all([
-  safe(projectService.getProject(projectId), 'getProject'),
-  safe(taskService.getTasks(), 'getTasks'),
-  safe(teamService.getTeamMembers(), 'getTeamMembers'),
-  safe(userService.getUsers(), 'getUsers'),
-  safe(projectTeamService.getProjectTeams(), 'getPTeam'),
-  safe(projectService.getProjectStats(projectId), 'getProjectStats'),
-]);
-      const projectItem = projectData?.data || projectData;
-      const allTasks = tasksData?.data || tasksData || [];
-      const membersList = membersData?.data || membersData || [];
-      const usersList = usersData?.data || usersData || [];
-      const pteamList = pteamData?.data || pteamData || [];
+      // Step 1: fire all API calls individually (don't Promise.all so one
+      // failure doesn't blank the whole page).
+      console.log('📡 Fetching project, tasks, members, users, pteam, stats...');
+
+      const [
+        projectData,
+        tasksData,
+        membersData,
+        usersData,
+        pteamData,
+        statsData,
+      ] = await Promise.all([
+        projectService.getProject(projectId).catch(e => { console.error('❌ getProject:', e); return { data: null }; }),
+        taskService.getTasks().catch(e => { console.error('❌ getTasks:', e); return { data: [] }; }),
+        teamService.getTeamMembers().catch(e => { console.error('❌ getTeamMembers:', e); return { data: [] }; }),
+        userService.getUsers().catch(e => { console.error('❌ getUsers:', e); return { data: [] }; }),
+        projectTeamService.getProjectTeams().catch(e => { console.error('❌ getProjectTeams:', e); return { data: [] }; }),
+        projectService.getProjectStats(projectId).catch(e => { console.error('❌ getProjectStats:', e); return { data: {} }; }),
+      ]);
+
+      // Step 2: normalize responses.
+      const projectItem  = projectData?.data || projectData || null;
+      const allTasks     = asArray(tasksData?.data || tasksData);
+      const membersList  = asArray(membersData?.data || membersData);
+      const usersList    = asArray(usersData?.data || usersData);
+      const pteamList    = asArray(pteamData?.data || pteamData);
       const statsResponse = statsData?.data || statsData || {};
 
+      console.log('✅ Normalized:', {
+        project: projectItem?.p_name,
+        tasks: allTasks.length,
+        members: membersList.length,
+        users: usersList.length,
+        pteam: pteamList.length,
+        stats: statsResponse,
+      });
+
+      // Step 3: store the raw stuff.
       setProject(projectItem);
       setAllTeamMembers(membersList);
       setUsers(usersList);
       setPteamEntries(pteamList);
 
       setStats({
-        totalTasks: statsResponse.totalTasks || 0,
-        completedTasks: statsResponse.completedTasks || 0,
-        inProgressTasks: statsResponse.inProgressTasks || 0,
-        todoTasks: statsResponse.todoTasks || 0,
-        completionRate: statsResponse.completionRate || 0,
-        onTimeRate: statsResponse.onTimeRate || 0,
-        membersCount: statsResponse.membersCount || 0,
-        avgProgress: statsResponse.avgProgress || 0
+        totalTasks:      Number(statsResponse.totalTasks) || 0,
+        completedTasks:  Number(statsResponse.completedTasks) || 0,
+        inProgressTasks: Number(statsResponse.inProgressTasks) || 0,
+        todoTasks:       Number(statsResponse.todoTasks) || 0,
+        completionRate:  Number(statsResponse.completionRate) || 0,
+        onTimeRate:      Number(statsResponse.onTimeRate) || 0,
+        membersCount:    Number(statsResponse.membersCount) || 0,
+        avgProgress:     Number(statsResponse.avgProgress) || 0,
       });
 
+      // Step 4: filter tasks for this project.
       const projectTasks = allTasks.filter(t => {
-        const taskProjectId = t.p_id || t.p || t.project || t.project_id;
+        const taskProjectId = t.p_id ?? t.p ?? t.project ?? t.project_id;
         return Number(taskProjectId) === Number(projectId);
       });
+      console.log('✅ projectTasks filtered:', projectTasks.length);
 
-      // ─── Build member map from PTeam ───
+      // Step 5: build PTeam member map.
       const memberMap = new Map();
+      const projectPteamEntries = pteamList.filter(
+        entry => getPteamProjectId(entry) === Number(projectId)
+      );
+      console.log('✅ projectPteamEntries:', projectPteamEntries.length);
 
-      if (pteamList && Array.isArray(pteamList) && pteamList.length > 0) {
-        const projectPteamEntries = pteamList.filter(
-          entry => getPteamProjectId(entry) === Number(projectId)
-        );
+      projectPteamEntries.forEach(entry => {
+        const tmId = getPteamTmId(entry);
+        if (!Number.isFinite(tmId)) return;
+        if (memberMap.has(tmId)) return;
 
-        projectPteamEntries.forEach(entry => {
-          const tmId = getPteamTmId(entry);
-          if (memberMap.has(tmId)) return;
-          const resolved = resolveTeamMemberId(tmId, usersList, membersList);
-          if (resolved) {
-            memberMap.set(tmId, {
-              ...resolved,
-              pt_id: entry.pt_id || entry.id,
-              task_id: entry.t || entry.task_id || entry.task,
-            });
-          }
-        });
-      }
+        const resolved = resolveTeamMemberId(tmId, usersList, membersList);
+        if (resolved) {
+          memberMap.set(tmId, {
+            ...resolved,
+            pt_id: entry.pt_id ?? entry.id ?? null,
+            task_id: entry.t ?? entry.task_id ?? entry.task ?? null,
+          });
+        }
+      });
 
       const memberEntries = Array.from(memberMap.values()).map(m => {
         const realTmId = findRealTeamMemberId(m, membersList, usersList);
         return { ...m, tmId: realTmId ?? null };
       });
+      console.log('✅ memberEntries:', memberEntries.length, memberEntries);
 
-      // ─── Supervisors from API ───
-      const supervisorIds = Array.isArray(projectItem.supervisors)
-        ? projectItem.supervisors.map(Number)
-        : [];
-      const supervisorNames = Array.isArray(projectItem.supervisor_names)
-        ? projectItem.supervisor_names
-        : [];
+      // Step 6: parse supervisors.
+      const supervisorIds = asArray(projectItem?.supervisors).map(Number);
+      const supervisorNames = asArray(projectItem?.supervisor_names);
 
-      const supervisorEntries = supervisorIds.map((sid, idx) => {
-        const userObj = usersList.find(u => Number(u.id) === Number(sid));
-        return {
-          id: sid,
-          userId: sid,
-          name: supervisorNames[idx] || userObj?.u_name || userObj?.name || `User ${sid}`,
-          email: userObj?.email || '',
-          role: (userObj?.role || 'supervisor').toLowerCase(),
-        };
-      });
+      const supervisorEntries = supervisorIds
+        .map((sid, idx) => {
+          if (!Number.isFinite(sid)) return null;
+          const userObj = usersList.find(u => Number(u.id) === Number(sid));
+          return {
+            id: sid,
+            userId: sid,
+            name: supervisorNames[idx] || userObj?.u_name || userObj?.name || `User ${sid}`,
+            email: userObj?.email || '',
+            role: (userObj?.role || 'supervisor').toLowerCase(),
+          };
+        })
+        .filter(Boolean);
 
+      console.log('✅ supervisorEntries:', supervisorEntries);
       setProjectSupervisors(supervisorEntries);
 
-      // ─── Merge supervisors into member list (deduped) ───
-      const supervisorIdSet = new Set(supervisorEntries.map(s => Number(s.id)));
-      const membersWithoutSupervisors = memberEntries.filter(m => !supervisorIdSet.has(Number(m.id)));
+      // Step 7: build the flat projectMembers list (supervisors + members).
+      const supIdSet = new Set(supervisorEntries.map(s => Number(s.id)));
+      const membersWithoutSupervisors = memberEntries.filter(m => !supIdSet.has(Number(m.id)));
       const allMembers = [...supervisorEntries, ...membersWithoutSupervisors];
       setProjectMembers(allMembers);
+      console.log('✅ projectMembers:', allMembers.length);
 
-      // ─── Project Leads ───
-      // A Lead is a project member (via PTeam) whose role is 'member' or 'lead',
-      // and who is NOT the creator (the creator is shown separately) and NOT a supervisor.
-      const creatorId = Number(projectItem.created_by);
+      // Step 8: extract leads (project members with member/lead role,
+      //          excluding the creator and supervisors).
+      const creatorId = Number(projectItem?.created_by);
       const leadEntries = memberEntries.filter(m => {
         const role = (m.role || '').toLowerCase();
         if (!LEAD_ROLES.includes(role)) return false;
-        if (Number(m.id) === creatorId) return false; // creator is already Project Lead
-        if (supervisorIdSet.has(Number(m.id))) return false;
+        if (Number(m.id) === creatorId) return false;
+        if (supIdSet.has(Number(m.id))) return false;
         return true;
       });
-
       setProjectLeads(leadEntries);
+      console.log('✅ projectLeads:', leadEntries);
 
-      // ─── Map tasks ───
+      // Step 9: map tasks with computed progress.
       const mappedTasks = projectTasks.map(t => ({
         ...t,
         progress: computeTaskProgress(t),
-        milestones: t.milestones || [],
-        assigneeId: t.assign_to,
+        milestones: asArray(t.milestones),
+        assigneeId: t.assign_to ?? null,
       }));
-
       setTasks(mappedTasks);
+      console.log('✅ mappedTasks:', mappedTasks.length);
 
-      // ─── Load comments ───
-      if (mappedTasks.length > 0) {
-        const allComments = [];
-        for (const task of mappedTasks) {
-          try {
-            const commentsResponse = await commentService.getCommentsByTask(task.t_id || task.id);
-            const commentsList = commentsResponse?.data || commentsResponse || [];
-            commentsList.forEach(comment => {
-              allComments.push({ ...comment, taskId: task.t_id || task.id });
-            });
-          } catch (error) { /* silent */ }
-        }
-        setComments(allComments);
-      }
+      // Step 10: load comments (fire-and-forget; don't block render).
+      loadCommentsForTasks(mappedTasks);
 
     } catch (error) {
-      console.error('Error fetching project data:', error);
+      console.error('❌ Error fetching project data:', error);
       toast.error('Failed to load project details');
-      if (error.status === 404) {
+      if (error?.status === 404 || error?.response?.status === 404) {
         navigate('/lead/projects');
       }
     } finally {
       setLoading(false);
       setRefreshing(false);
+      console.log('✅ fetchProjectData COMPLETE');
+    }
+  };
+
+  const loadCommentsForTasks = async (taskList) => {
+    if (!Array.isArray(taskList) || taskList.length === 0) {
+      setComments([]);
+      return;
+    }
+    try {
+      const allComments = [];
+      for (const task of taskList) {
+        const tid = task.t_id ?? task.id;
+        if (!tid) continue;
+        try {
+          const commentsResponse = await commentService.getCommentsByTask(tid);
+          const commentsList = asArray(commentsResponse?.data || commentsResponse);
+          commentsList.forEach(comment => {
+            allComments.push({ ...comment, taskId: tid });
+          });
+        } catch (e) {
+          // silent — one task's comments failing shouldn't kill the page
+        }
+      }
+      setComments(allComments);
+      console.log('✅ comments loaded:', allComments.length);
+    } catch (e) {
+      console.error('❌ comments load failed:', e);
+      setComments([]);
     }
   };
 
@@ -545,13 +621,12 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
   const getAssigneeEmail = (assignee) => {
     if (!assignee) return null;
     if (assignee.email) return assignee.email;
-    const matchedUser = users.find(u => {
+    const matchedUser = asArray(users).find(u => {
       const userName = (u.u_name || u.name || '').toLowerCase().trim();
       const memberName = (assignee.name || '').toLowerCase().trim();
       return userName === memberName;
     });
-    if (matchedUser) return matchedUser.email;
-    return null;
+    return matchedUser?.email || null;
   };
 
   const handleAddTask = async () => {
@@ -579,20 +654,26 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
       });
 
       const createdTask = response?.data || response;
-      await NotificationHelper.taskCreated(createdTask, user);
+      try { await NotificationHelper.taskCreated(createdTask, user); } catch (e) { /* silent */ }
 
-      if (createdTask.assign_to) {
+      if (createdTask?.assign_to) {
         const assignee = allTeamMembers.find(m => Number(m.id) === Number(createdTask.assign_to));
         if (assignee) {
           const assigneeEmail = getAssigneeEmail(assignee);
           if (assigneeEmail) {
             const assigneeWithEmail = { ...assignee, email: assigneeEmail };
-            await NotificationHelper.taskAssigned(createdTask, assigneeWithEmail, user, project);
-            toast.success(`Task created and notification sent to ${assignee.name}`);
+            try {
+              await NotificationHelper.taskAssigned(createdTask, assigneeWithEmail, user, project);
+              toast.success(`Task created and notification sent to ${assignee.name}`);
+            } catch (e) {
+              toast.success('Task created successfully');
+            }
           } else {
             toast.success(`Task created but ${assignee.name} has no email on file`);
           }
         }
+      } else {
+        toast.success('Task created successfully');
       }
 
       setNewTask({
@@ -604,10 +685,9 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
 
       await fetchProjectData();
     } catch (error) {
-      console.error('Error adding task:', error);
+      console.error('❌ Error adding task:', error);
       const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
-      const errorMsg = typeof rawMsg === 'string' ? rawMsg : 'Failed to add task';
-      toast.error(errorMsg);
+      toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to add task');
     } finally {
       setIsSubmitting(false);
     }
@@ -634,10 +714,10 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
       });
 
       const updatedTask = response?.data || response;
-      await NotificationHelper.taskUpdated(updatedTask, user);
 
+      try { await NotificationHelper.taskUpdated(updatedTask, user); } catch (e) { /* silent */ }
       if (updated.status === 'done' || updated.status === 'completed') {
-        await NotificationHelper.taskCompleted(updatedTask, user);
+        try { await NotificationHelper.taskCompleted(updatedTask, user); } catch (e) { /* silent */ }
       }
 
       setTasks(prev => prev.map(t =>
@@ -653,10 +733,9 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
 
       await fetchProjectData();
     } catch (error) {
-      console.error('Error updating task:', error);
+      console.error('❌ Error updating task:', error);
       const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
-      const errorMsg = typeof rawMsg === 'string' ? rawMsg : 'Failed to update task';
-      toast.error(errorMsg);
+      toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to update task');
     }
   };
 
@@ -669,10 +748,9 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
       toast.success("Task deleted successfully");
       await fetchProjectData();
     } catch (error) {
-      console.error('Error deleting task:', error);
+      console.error('❌ Error deleting task:', error);
       const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
-      const errorMsg = typeof rawMsg === 'string' ? rawMsg : 'Failed to delete task';
-      toast.error(errorMsg);
+      toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to delete task');
     }
   };
 
@@ -696,10 +774,9 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
       setModalCommentTouched(false);
       toast.success("Comment added successfully");
     } catch (error) {
-      console.error('Error adding comment:', error);
+      console.error('❌ Error adding comment:', error);
       const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
-      const errorMsg = typeof rawMsg === 'string' ? rawMsg : 'Failed to add comment';
-      toast.error(errorMsg);
+      toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to add comment');
     } finally {
       setIsModalCommenting(false);
     }
@@ -707,12 +784,12 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
 
   const togglePin = async (commentId) => {
     try {
-      const comment = comments.find(c => (c.c_id || c.id) === commentId);
+      const comment = asArray(comments).find(c => (c.c_id || c.id) === commentId);
       if (comment) {
         const response = await commentService.togglePin(commentId);
         const updatedComment = response?.data || response;
         if (updatedComment.pin) {
-          await NotificationHelper.commentPinned(updatedComment, user);
+          try { await NotificationHelper.commentPinned(updatedComment, user); } catch (e) { /* silent */ }
         }
         setComments(prev =>
           prev.map(c => (c.c_id || c.id) === commentId ? { ...c, pin: updatedComment.pin || !c.pin } : c)
@@ -720,7 +797,7 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
         toast.success(updatedComment.pin ? "Comment pinned" : "Comment unpinned");
       }
     } catch (error) {
-      console.error('Error toggling pin:', error);
+      console.error('❌ Error toggling pin:', error);
       toast.error('Failed to update pin');
     }
   };
@@ -732,7 +809,7 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
       setComments(prev => prev.filter(c => (c.c_id || c.id) !== commentId));
       toast.success("Comment deleted successfully");
     } catch (error) {
-      console.error('Error deleting comment:', error);
+      console.error('❌ Error deleting comment:', error);
       toast.error('Failed to delete comment');
     }
   };
@@ -742,7 +819,7 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
   const promptRemoveMember = (member) => {
     const memberUserId = Number(member.userId ?? member.id);
 
-    const assignedTasks = tasks.filter(t => {
+    const assignedTasks = asArray(tasks).filter(t => {
       const belongsToProject = Number(t.p_id || t.p) === Number(projectId);
       if (!belongsToProject) return false;
       const ids = [];
@@ -780,7 +857,7 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
         }
       }
 
-      const currentPteam = pteamEntries.filter(entry => getPteamProjectId(entry) === Number(pId));
+      const currentPteam = asArray(pteamEntries).filter(entry => getPteamProjectId(entry) === Number(pId));
       const realTmId = findRealTeamMemberId(member, allTeamMembers, users);
       if (realTmId) {
         const entry = currentPteam.find(e => getPteamTmId(e) === realTmId);
@@ -800,7 +877,7 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
       setReassignTo('');
       await fetchProjectData();
     } catch (error) {
-      console.error('Error removing member:', error);
+      console.error('❌ Error removing member:', error);
       toast.error('Failed to remove member');
     } finally {
       setRemoveMemberSaving(false);
@@ -813,10 +890,14 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
     if (taskRef?.assign_to_name) return taskRef.assign_to_name;
     if (!memberId) return "Unassigned";
     const numId = Number(memberId);
-    const tm = allTeamMembers.find(m => Number(m.id) === numId);
+    if (!Number.isFinite(numId)) return "Unassigned";
+
+    const tm = asArray(allTeamMembers).find(m => Number(m.id) === numId);
     if (tm) return tm.name;
-    const u = users.find(x => Number(x.id) === numId);
+
+    const u = asArray(users).find(x => Number(x.id) === numId);
     if (u) return u.u_name || u.name || "Unassigned";
+
     return "Unassigned";
   };
 
@@ -826,7 +907,7 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
     if (!userId) return;
     setAddSupervisorSaving(true);
     try {
-      const currentIds = Array.isArray(project?.supervisors) ? project.supervisors.map(Number) : [];
+      const currentIds = asArray(project?.supervisors).map(Number);
       const nextIds = Array.from(new Set([...currentIds, Number(userId)]));
 
       await projectService.updateProject(projectId, {
@@ -843,7 +924,7 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
       setAddSupervisorOpen(false);
       await fetchProjectData();
     } catch (error) {
-      console.error('Error adding supervisor:', error);
+      console.error('❌ Error adding supervisor:', error);
       const rawMsg = error?.response?.data?.message ||
                      error?.response?.data?.detail ||
                      error?.response?.data?.supervisors?.[0];
@@ -851,23 +932,6 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
     } finally {
       setAddSupervisorSaving(false);
     }
-  };
-
-  const handleRemoveSupervisor = async (userId) => {
-    const currentIds = Array.isArray(project?.supervisors) ? project.supervisors.map(Number) : [];
-    const nextIds = currentIds.filter(id => Number(id) !== Number(userId));
-
-    await projectService.updateProject(projectId, {
-      name: project.p_name || project.name,
-      description: project.desc || '',
-      priority: project.priority,
-      status: project.status,
-      startDate: project.start_at || null,
-      deadline: project.deadline || null,
-      supervisors: nextIds,
-    });
-
-    await fetchProjectData();
   };
 
   const handleAddLead = async (teamMemberId) => {
@@ -879,7 +943,7 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
       setAddLeadOpen(false);
       await fetchProjectData();
     } catch (error) {
-      console.error('Error adding lead:', error);
+      console.error('❌ Error adding lead:', error);
       const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
       toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to add project lead');
     } finally {
@@ -896,7 +960,7 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
       setAddMemberOpen(false);
       await fetchProjectData();
     } catch (error) {
-      console.error('Error adding team member:', error);
+      console.error('❌ Error adding team member:', error);
       const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
       toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to add team member');
     } finally {
@@ -932,6 +996,11 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
       </div>
     );
   }
+
+  // Final safety net for the "Project Lead" section: the creator is always
+  // shown, even if we couldn't resolve their name.
+  const creatorName = project.created_by_name || 'Project Lead';
+  const totalLeadCount = 1 + projectLeadsFinal.length;
 
   return (
     <div className="project-detail-page">
@@ -978,11 +1047,11 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                   <PriorityBadge priority={selectedTask.priority} />
                 </div>
 
-                {selectedTask.milestones?.length > 0 && (
+                {asArray(selectedTask.milestones).length > 0 && (
                   <div className="modal-milestones">
                     <h4 className="modal-subtitle"><Milestone size={14} /> Milestones</h4>
-                    {selectedTask.milestones.map((m, i) => (
-                      <div key={`milestone-${i}-${m.id || Date.now()}`} className="milestone-box">
+                    {asArray(selectedTask.milestones).map((m, i) => (
+                      <div key={`milestone-${i}-${m.id || i}`} className="milestone-box">
                         <div className="milestone-title">{m.title}</div>
                         <div className="milestone-meta">
                           <Calendar size={12} /> {m.dueDate}
@@ -1035,8 +1104,8 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                         <p>No comments yet</p>
                       </div>
                     ) : (
-                      sortedModalComments.map((c) => {
-                        const commentKey = c.c_id || c.id || `comment-${Math.random().toString(36).substr(2, 9)}`;
+                      sortedModalComments.map((c, i) => {
+                        const commentKey = c.c_id || c.id || `comment-${i}`;
                         const isPinned = c.pin || c.pinned;
                         return (
                           <motion.div key={commentKey} className={`modal-comment-item ${isPinned ? 'pinned' : ''}`} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.15 }}>
@@ -1147,7 +1216,7 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                     <option value="">Unassigned</option>
                     {assignableMembers.map((m) => (
                       <option key={m.id} value={m.tmId}>
-                        {m.name} {projectSupervisors.some(s => Number(s.id) === Number(m.id)) ? '👑' : ''}
+                        {m.name} {supervisorIdSet.has(Number(m.id)) ? '👑' : ''}
                       </option>
                     ))}
                   </select>
@@ -1239,7 +1308,7 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                     <option value="">Select Member</option>
                     {assignableMembers.map((mem) => (
                       <option key={mem.id} value={mem.tmId}>
-                        {mem.name} {projectSupervisors.some(s => Number(s.id) === Number(mem.id)) ? '👑' : ''}
+                        {mem.name} {supervisorIdSet.has(Number(mem.id)) ? '👑' : ''}
                       </option>
                     ))}
                   </select>
@@ -1393,7 +1462,7 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
             <div className="tasks-header">
               <h3 className="tasks-title">
                 <BarChart2 size={16} /> Tasks
-                <span className="tasks-count">{tasks.length}</span>
+                <span className="tasks-count">{asArray(tasks).length}</span>
               </h3>
               <button className="btn btn-primary btn-sm" onClick={() => setShowAddTask(true)}>
                 <Plus size={14} /> Add Task
@@ -1402,15 +1471,15 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
 
             <div className="tasks-scroll">
               <div className="tasks-list">
-                {tasks.length === 0 ? (
+                {asArray(tasks).length === 0 ? (
                   <div className="tasks-empty">
                     <FileText size={32} style={{ opacity: 0.3 }} />
                     <p>No tasks yet</p>
                     <span>Create your first task to get started</span>
                   </div>
                 ) : (
-                  tasks.map((t) => {
-                    const taskKey = t.t_id || t.id || `task-${Math.random().toString(36).substr(2, 9)}`;
+                  asArray(tasks).map((t, idx) => {
+                    const taskKey = t.t_id || t.id || `task-${idx}`;
                     const taskStatusColor = getStatusColor(t.status);
                     const taskCommentCount = getTaskComments(t.t_id || t.id).length;
                     return (
@@ -1499,7 +1568,7 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
           <div className="info-card">
             <h4 className="info-card-title">
               <Users size={14} /> Team
-              <span className="info-badge">{projectMembers.length}</span>
+              <span className="info-badge">{asArray(projectMembers).length}</span>
             </h4>
 
             <div className="team-sections">
@@ -1511,7 +1580,7 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                     <span>Project Lead</span>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span className="team-section-count">{1 + projectLeads.length}</span>
+                    <span className="team-section-count">{totalLeadCount}</span>
                     <button
                       className="team-add-btn"
                       title="Add project lead"
@@ -1524,28 +1593,26 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
 
                 <div className="team-section-list">
                   {/* Creator is always the primary Project Lead */}
-                  {project?.created_by && (
-                    <div className="team-member-item lead-item">
-                      <Avatar name={project.created_by_name || 'Lead'} size="sm" />
-                      <div className="team-member-info">
-                        <span className="team-member-name">
-                          {project.created_by_name || 'Lead'}
-                          <span className="lead-badge" title="Project Lead (Creator)">
-                            <Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} />
-                          </span>
+                  <div className="team-member-item lead-item">
+                    <Avatar name={creatorName} size="sm" />
+                    <div className="team-member-info">
+                      <span className="team-member-name">
+                        {creatorName}
+                        <span className="lead-badge" title="Project Lead (Creator)">
+                          <Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} />
                         </span>
-                        <span className="team-member-role">Team Lead (Creator)</span>
-                      </div>
+                      </span>
+                      <span className="team-member-role">Team Lead (Creator)</span>
                     </div>
-                  )}
+                  </div>
 
                   {/* Additional leads added via the + button */}
-                  {projectLeads.map((m) => (
-                    <div key={m.id} className="team-member-item lead-item">
-                      <Avatar name={m.name} size="sm" />
+                  {projectLeadsFinal.map((m, idx) => (
+                    <div key={m.id || `lead-${idx}`} className="team-member-item lead-item">
+                      <Avatar name={m.name || 'Lead'} size="sm" />
                       <div className="team-member-info">
                         <span className="team-member-name">
-                          {m.name}
+                          {m.name || `User ${m.id}`}
                           <span className="lead-badge" title="Project Lead">
                             <Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} />
                           </span>
@@ -1554,17 +1621,13 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                       </div>
                       <button
                         className="task-action-btn danger"
-                        title={`Remove ${m.name}`}
+                        title={`Remove ${m.name || 'lead'}`}
                         onClick={() => promptRemoveMember(m)}
                       >
                         <UserMinus size={11} />
                       </button>
                     </div>
                   ))}
-
-                  {!project?.created_by && projectLeads.length === 0 && (
-                    <div className="team-section-empty">No project lead assigned</div>
-                  )}
                 </div>
               </div>
 
@@ -1576,7 +1639,7 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                     <span>Supervisors</span>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span className="team-section-count">{projectSupervisors.length}</span>
+                    <span className="team-section-count">{asArray(projectSupervisors).length}</span>
                     <button
                       className="team-add-btn"
                       title="Add supervisor"
@@ -1587,16 +1650,16 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                   </div>
                 </div>
 
-                {projectSupervisors.length === 0 ? (
+                {asArray(projectSupervisors).length === 0 ? (
                   <div className="team-section-empty">No supervisors assigned</div>
                 ) : (
                   <div className="team-section-list">
-                    {projectSupervisors.map((m) => (
-                      <div key={m.id} className="team-member-item supervisor-item">
-                        <Avatar name={m.name} size="sm" />
+                    {projectSupervisors.map((m, idx) => (
+                      <div key={m.id || `sup-${idx}`} className="team-member-item supervisor-item">
+                        <Avatar name={m.name || 'Supervisor'} size="sm" />
                         <div className="team-member-info">
                           <span className="team-member-name">
-                            {m.name}
+                            {m.name || `User ${m.id}`}
                             <span className="supervisor-badge" title="Supervisor">
                               <Crown size={12} style={{ color: '#f59e0b', marginLeft: 4 }} />
                             </span>
@@ -1605,7 +1668,7 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                         </div>
                         <button
                           className="task-action-btn danger"
-                          title={`Remove ${m.name}`}
+                          title={`Remove ${m.name || 'supervisor'}`}
                           onClick={() => promptRemoveMember(m)}
                         >
                           <UserMinus size={11} />
@@ -1639,16 +1702,16 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                   <div className="team-section-empty">No team members assigned</div>
                 ) : (
                   <div className="team-section-list">
-                    {regularMembers.map((m) => (
-                      <div key={m.id} className="team-member-item">
-                        <Avatar name={m.name} size="sm" />
+                    {regularMembers.map((m, idx) => (
+                      <div key={m.id || `member-${idx}`} className="team-member-item">
+                        <Avatar name={m.name || 'Member'} size="sm" />
                         <div className="team-member-info">
-                          <span className="team-member-name">{m.name}</span>
+                          <span className="team-member-name">{m.name || `User ${m.id}`}</span>
                           <span className="team-member-role">{m.role || 'Member'}</span>
                         </div>
                         <button
                           className="task-action-btn danger"
-                          title={`Remove ${m.name}`}
+                          title={`Remove ${m.name || 'member'}`}
                           onClick={() => promptRemoveMember(m)}
                         >
                           <UserMinus size={11} />
@@ -1664,11 +1727,11 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
           <div className="info-card comments-card">
             <h4 className="info-card-title">
               <MessageSquare size={14} /> Comments
-              <span className="info-badge">{comments.length}</span>
+              <span className="info-badge">{asArray(comments).length}</span>
             </h4>
 
             <div className="comment-list">
-              {comments.length === 0 ? (
+              {asArray(comments).length === 0 ? (
                 <div className="comment-empty">
                   <MessageSquare size={24} style={{ opacity: 0.3 }} />
                   <p>No comments yet</p>
@@ -1677,32 +1740,35 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                   </span>
                 </div>
               ) : (
-                [...comments].sort((a, b) => (b.pin || b.pinned) - (a.pin || a.pinned)).slice(0, 15).map((c) => {
-                  const commentKey = c.c_id || c.id || `comment-${Math.random().toString(36).substr(2, 9)}`;
-                  const isPinned = c.pin || c.pinned;
-                  const task = tasks.find(t => Number(t.t_id || t.id) === Number(c.taskId || c.t));
-                  return (
-                    <motion.div key={commentKey} className={`comment-item ${isPinned ? 'pinned' : ''}`} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.15 }}>
-                      {isPinned && <div className="comment-pin-badge"><Pin size={10} /> Pinned</div>}
-                      <p className="comment-text">{c.desc || c.content}</p>
-                      <div className="comment-meta-row">
-                        <span className="comment-meta">
-                          {c.u_name || c.user_name || 'User'} •
-                          {c.created_at ? new Date(c.created_at).toLocaleString() : 'Just now'}
-                        </span>
-                        {task && <span className="comment-task-tag">📋 {task.title}</span>}
-                      </div>
-                      <div className="comment-footer">
-                        <div className="comment-actions">
-                          <button className={`comment-action-btn ${isPinned ? 'active' : ''}`} title={isPinned ? "Unpin" : "Pin"} onClick={() => togglePin(c.c_id || c.id)}>
-                            {isPinned ? <PinOff size={11} /> : <Pin size={11} />}
-                          </button>
-                          <button className="comment-action-btn danger" title="Delete" onClick={() => deleteComment(c.c_id || c.id)}><Trash2 size={11} /></button>
+                [...asArray(comments)]
+                  .sort((a, b) => (b.pin || b.pinned) - (a.pin || a.pinned))
+                  .slice(0, 15)
+                  .map((c, idx) => {
+                    const commentKey = c.c_id || c.id || `comment-${idx}`;
+                    const isPinned = c.pin || c.pinned;
+                    const task = asArray(tasks).find(t => Number(t.t_id || t.id) === Number(c.taskId || c.t));
+                    return (
+                      <motion.div key={commentKey} className={`comment-item ${isPinned ? 'pinned' : ''}`} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.15 }}>
+                        {isPinned && <div className="comment-pin-badge"><Pin size={10} /> Pinned</div>}
+                        <p className="comment-text">{c.desc || c.content}</p>
+                        <div className="comment-meta-row">
+                          <span className="comment-meta">
+                            {c.u_name || c.user_name || 'User'} •
+                            {c.created_at ? new Date(c.created_at).toLocaleString() : 'Just now'}
+                          </span>
+                          {task && <span className="comment-task-tag">📋 {task.title}</span>}
                         </div>
-                      </div>
-                    </motion.div>
-                  );
-                })
+                        <div className="comment-footer">
+                          <div className="comment-actions">
+                            <button className={`comment-action-btn ${isPinned ? 'active' : ''}`} title={isPinned ? "Unpin" : "Pin"} onClick={() => togglePin(c.c_id || c.id)}>
+                              {isPinned ? <PinOff size={11} /> : <Pin size={11} />}
+                            </button>
+                            <button className="comment-action-btn danger" title="Delete" onClick={() => deleteComment(c.c_id || c.id)}><Trash2 size={11} /></button>
+                          </div>
+                        </div>
+                      </motion.div>
+                    );
+                  })
               )}
             </div>
           </div>
@@ -1734,9 +1800,9 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                   Select a user to add as a supervisor for this project.
                 </p>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
-                  {users
+                  {asArray(users)
                     .filter(u => SUPERVISOR_ROLES.includes((u.role || '').toLowerCase()))
-                    .filter(u => !projectSupervisors.some(s => Number(s.id) === Number(u.id)))
+                    .filter(u => !asArray(projectSupervisors).some(s => Number(s.id) === Number(u.id)))
                     .map(u => (
                       <button
                         key={u.id}
@@ -1744,21 +1810,22 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                         onClick={() => handleAddSupervisor(u.id)}
                         disabled={addSupervisorSaving}
                       >
-                        <Avatar name={u.u_name || u.name} size="sm" />
+                        <Avatar name={u.u_name || u.name || 'Supervisor'} size="sm" />
                         <div style={{ flex: 1, textAlign: 'left' }}>
                           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
-                            {u.u_name || u.name}
+                            {u.u_name || u.name || `User ${u.id}`}
                           </div>
                           <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                            {u.email}
+                            {u.email || ''}
                           </div>
                         </div>
                         <Plus size={14} style={{ color: 'var(--accent-primary)' }} />
                       </button>
                     ))
                   }
-                  {users.filter(u => SUPERVISOR_ROLES.includes((u.role || '').toLowerCase()))
-                    .filter(u => !projectSupervisors.some(s => Number(s.id) === Number(u.id)))
+                  {asArray(users)
+                    .filter(u => SUPERVISOR_ROLES.includes((u.role || '').toLowerCase()))
+                    .filter(u => !asArray(projectSupervisors).some(s => Number(s.id) === Number(u.id)))
                     .length === 0 && (
                     <div style={{
                       padding: '20px 16px', textAlign: 'center', fontSize: 13,
@@ -1800,10 +1867,10 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                   Select a Lead to add to this project. Leads must already exist as a Team Member profile.
                 </p>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
-                  {allTeamMembers
+                  {asArray(allTeamMembers)
                     .filter(m => m.is_deleted !== 1)
                     .filter(m => LEAD_ROLES.includes((m.role || '').toLowerCase()))
-                    .filter(m => !projectMembers.some(pm => Number(pm.id) === Number(m.id)))
+                    .filter(m => !asArray(projectMembers).some(pm => Number(pm.id) === Number(m.id)))
                     .map(m => (
                       <button
                         key={m.id}
@@ -1811,10 +1878,10 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                         onClick={() => handleAddLead(m.id)}
                         disabled={addLeadSaving}
                       >
-                        <Avatar name={m.name} size="sm" />
+                        <Avatar name={m.name || 'Lead'} size="sm" />
                         <div style={{ flex: 1, textAlign: 'left' }}>
                           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
-                            {m.name}
+                            {m.name || `User ${m.id}`}
                           </div>
                           <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                             {m.role || 'Lead'}
@@ -1824,10 +1891,10 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                       </button>
                     ))
                   }
-                  {allTeamMembers
+                  {asArray(allTeamMembers)
                     .filter(m => m.is_deleted !== 1)
                     .filter(m => LEAD_ROLES.includes((m.role || '').toLowerCase()))
-                    .filter(m => !projectMembers.some(pm => Number(pm.id) === Number(m.id)))
+                    .filter(m => !asArray(projectMembers).some(pm => Number(pm.id) === Number(m.id)))
                     .length === 0 && (
                     <div style={{
                       padding: '20px 16px', textAlign: 'center', fontSize: 13,
@@ -1869,11 +1936,11 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                   Select a team member to add to this project.
                 </p>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
-                  {allTeamMembers
+                  {asArray(allTeamMembers)
                     .filter(m => m.is_deleted !== 1)
                     .filter(m => !LEAD_ROLES.includes((m.role || '').toLowerCase()))
-                    .filter(m => !projectMembers.some(pm => Number(pm.id) === Number(m.id)))
-                    .filter(m => !projectSupervisors.some(s => Number(s.id) === Number(m.id)))
+                    .filter(m => !asArray(projectMembers).some(pm => Number(pm.id) === Number(m.id)))
+                    .filter(m => !asArray(projectSupervisors).some(s => Number(s.id) === Number(m.id)))
                     .map(m => (
                       <button
                         key={m.id}
@@ -1881,10 +1948,10 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                         onClick={() => handleAddTeamMember(m.id)}
                         disabled={addMemberSaving}
                       >
-                        <Avatar name={m.name} size="sm" />
+                        <Avatar name={m.name || 'Member'} size="sm" />
                         <div style={{ flex: 1, textAlign: 'left' }}>
                           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
-                            {m.name}
+                            {m.name || `User ${m.id}`}
                           </div>
                           <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                             {m.role || 'Member'}
@@ -1894,11 +1961,11 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
                       </button>
                     ))
                   }
-                  {allTeamMembers
+                  {asArray(allTeamMembers)
                     .filter(m => m.is_deleted !== 1)
                     .filter(m => !LEAD_ROLES.includes((m.role || '').toLowerCase()))
-                    .filter(m => !projectMembers.some(pm => Number(pm.id) === Number(m.id)))
-                    .filter(m => !projectSupervisors.some(s => Number(s.id) === Number(m.id)))
+                    .filter(m => !asArray(projectMembers).some(pm => Number(pm.id) === Number(m.id)))
+                    .filter(m => !asArray(projectSupervisors).some(s => Number(s.id) === Number(m.id)))
                     .length === 0 && (
                     <div style={{
                       padding: '20px 16px', textAlign: 'center', fontSize: 13,
@@ -1937,11 +2004,13 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
         .project-right { display: flex; flex-direction: column; gap: 16px; }
         .team-sections { display: flex; flex-direction: column; gap: 12px; }
         .team-section { border-radius: 10px; padding: 10px 12px; border: 1px solid var(--border-subtle); transition: all 0.15s; }
+        .team-section-lead { background: rgba(99, 102, 241, 0.05); border-color: rgba(99, 102, 241, 0.18); }
         .team-section-supervisors { background: rgba(245, 158, 11, 0.04); border-color: rgba(245, 158, 11, 0.18); }
         .team-section-members { background: rgba(99, 102, 241, 0.04); border-color: rgba(99, 102, 241, 0.15); }
         .team-section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-subtle); }
         .team-section-title { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
         .team-section-count { font-size: 10px; font-weight: 700; padding: 1px 8px; border-radius: 10px; background: var(--bg-secondary); color: var(--text-muted); border: 1px solid var(--border-subtle); }
+        .team-section-lead .team-section-count { background: rgba(99, 102, 241, 0.12); color: #6366f1; border-color: rgba(99, 102, 241, 0.25); }
         .team-section-supervisors .team-section-count { background: rgba(245, 158, 11, 0.12); color: #f59e0b; border-color: rgba(245, 158, 11, 0.25); }
         .team-section-members .team-section-count { background: rgba(99, 102, 241, 0.12); color: var(--accent-primary); border-color: rgba(99, 102, 241, 0.25); }
         .team-section-list { display: flex; flex-direction: column; gap: 4px; }
@@ -1949,6 +2018,9 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
         .supervisor-item { background: rgba(245, 158, 11, 0.05); border: 1px solid rgba(245, 158, 11, 0.15); border-radius: 8px; padding: 6px 10px; }
         .supervisor-item:hover { background: rgba(245, 158, 11, 0.1); }
         .supervisor-badge { display: inline-flex; align-items: center; margin-left: 4px; }
+        .lead-item { background: rgba(99, 102, 241, 0.05); border: 1px solid rgba(99, 102, 241, 0.15); border-radius: 8px; padding: 6px 10px; }
+        .lead-item:hover { background: rgba(99, 102, 241, 0.1); }
+        .lead-badge { display: inline-flex; align-items: center; margin-left: 4px; }
         .comment-meta-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
         .comment-task-tag { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 12px; font-size: 10px; color: var(--text-muted); background: var(--bg-secondary); border: 1px solid var(--border-subtle); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
         .task-comment-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 600; color: var(--text-muted); background: var(--bg-secondary); padding: 1px 8px; border-radius: 12px; border: 1px solid var(--border-subtle); }
@@ -2135,29 +2207,6 @@ const [projectData, tasksData, membersData, usersData, pteamData, statsData] = a
         .add-picker-row:disabled {
           opacity: 0.6;
           cursor: not-allowed;
-        }
-        .team-section-lead {
-          background: rgba(99, 102, 241, 0.05);
-          border-color: rgba(99, 102, 241, 0.18);
-        }
-        .team-section-lead .team-section-count {
-          background: rgba(99, 102, 241, 0.12);
-          color: var(--accent-primary);
-          border-color: rgba(99, 102, 241, 0.25);
-        }
-        .lead-item {
-          background: rgba(99, 102, 241, 0.05);
-          border: 1px solid rgba(99, 102, 241, 0.15);
-          border-radius: 8px;
-          padding: 6px 10px;
-        }
-        .lead-item:hover {
-          background: rgba(99, 102, 241, 0.1);
-        }
-        .lead-badge {
-          display: inline-flex;
-          align-items: center;
-          margin-left: 4px;
         }
         @media (max-width: 480px) {
           .project-body { padding: 10px 12px; gap: 12px; }
