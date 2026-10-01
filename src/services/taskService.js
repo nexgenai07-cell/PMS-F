@@ -2,49 +2,74 @@
 import api, { endpoints } from '../utils/api';
 
 class TaskService {
+  /**
+   * GET /api/task
+   *
+   * Returns the raw task list, enriched with full detail from each task's
+   * detail endpoint. We ONLY fetch details when the list is missing the
+   * fields we need (assign_to, assign_to_name, progress). This keeps the
+   * page fast when the backend list serializer already returns them.
+   */
   async getTasks() {
     try {
       const response = await api.get(endpoints.tasks.list);
       const data = response.data;
 
-      // ✅ Get the tasks list
       let tasksList = data?.data || data || [];
-
-      // ✅ For each task, fetch its details to get assign_to, due_date, update_last, etc.
-      if (Array.isArray(tasksList) && tasksList.length > 0) {
-        const detailedTasks = await Promise.all(
-          tasksList.map(async (task) => {
-            try {
-              const detailResponse = await this.getTask(task.t_id || task.id);
-              const detailData = detailResponse?.data || detailResponse;
-              // Merge the detail data with the list data
-              return {
-                ...task,
-                ...detailData,
-                assign_to: detailData?.assign_to ?? task.assign_to ?? null,
-                assign_to_name: detailData?.assign_to_name || task.assign_to_name || null,
-                progress: detailData?.progress ?? task.progress ?? 0,
-              };
-            } catch (error) {
-              // If detail fetch fails, return the task without assign_to
-              return {
-                ...task,
-                assign_to: task.assign_to ?? null,
-                assign_to_name: task.assign_to_name ?? null,
-                progress: task.progress ?? 0,
-              };
-            }
-          })
-        );
-
-        // Return the enriched data
-        if (data?.data) {
-          return { ...data, data: detailedTasks };
-        }
-        return detailedTasks;
+      if (!Array.isArray(tasksList) || tasksList.length === 0) {
+        return data;
       }
 
-      return data;
+      // Only enrich tasks that are missing critical fields.
+      const needsEnrichment = (t) =>
+        t.assign_to === undefined || t.assign_to === null;
+
+      const enriched = await Promise.all(
+        tasksList.map(async (task) => {
+          const taskId = task.t_id ?? task.id;
+
+          if (!needsEnrichment(task)) {
+            // Already good — normalize a couple of numeric fields
+            return {
+              ...task,
+              t_id: taskId ? Number(taskId) : null,
+              id: taskId ? Number(taskId) : null,
+              assign_to: task.assign_to != null ? Number(task.assign_to) : null,
+              progress: Number.isFinite(Number(task.progress)) ? Number(task.progress) : 0,
+            };
+          }
+
+          try {
+            const detailResponse = await this.getTask(taskId);
+            const detailData = detailResponse?.data || detailResponse || {};
+            return {
+              ...task,
+              ...detailData,
+              t_id: taskId ? Number(taskId) : null,
+              id: taskId ? Number(taskId) : null,
+              assign_to: detailData?.assign_to != null
+                ? Number(detailData.assign_to)
+                : (task.assign_to != null ? Number(task.assign_to) : null),
+              assign_to_name: detailData?.assign_to_name || task.assign_to_name || null,
+              progress: Number.isFinite(Number(detailData?.progress))
+                ? Number(detailData.progress)
+                : (Number.isFinite(Number(task.progress)) ? Number(task.progress) : 0),
+            };
+          } catch (err) {
+            // Keep the task as-is but normalize
+            return {
+              ...task,
+              t_id: taskId ? Number(taskId) : null,
+              id: taskId ? Number(taskId) : null,
+              assign_to: task.assign_to != null ? Number(task.assign_to) : null,
+              assign_to_name: task.assign_to_name || null,
+              progress: Number.isFinite(Number(task.progress)) ? Number(task.progress) : 0,
+            };
+          }
+        })
+      );
+
+      return data?.data ? { ...data, data: enriched } : enriched;
     } catch (error) {
       console.error('TaskService: Error fetching tasks:', error);
       return { data: [] };
@@ -56,17 +81,16 @@ class TaskService {
       const response = await api.get(endpoints.tasks.byId(id));
       const data = response.data;
 
-      // Normalize assign_to
-      if (data?.data) {
-        data.data.assign_to = data.data.assign_to ? Number(data.data.assign_to) : null;
-        data.data.t_id = data.data.t_id ? Number(data.data.t_id) : null;
-        data.data.id = data.data.id ? Number(data.data.id) : null;
-        data.data.p = data.data.p ? Number(data.data.p) : null;
-      } else if (data) {
-        data.assign_to = data.assign_to ? Number(data.assign_to) : null;
-        data.t_id = data.t_id ? Number(data.t_id) : null;
-        data.id = data.id ? Number(data.id) : null;
-        data.p = data.p ? Number(data.p) : null;
+      // Normalize numeric fields on the response (either shape).
+      const target = data?.data ?? data;
+      if (target) {
+        target.assign_to = target.assign_to != null ? Number(target.assign_to) : null;
+        target.t_id      = target.t_id != null ? Number(target.t_id) : null;
+        target.id        = target.id != null ? Number(target.id) : null;
+        target.p         = target.p != null ? Number(target.p) : null;
+        target.progress  = Number.isFinite(Number(target.progress))
+          ? Number(target.progress)
+          : 0;
       }
 
       return data;
@@ -77,16 +101,25 @@ class TaskService {
 
   async createTask(taskData) {
     try {
+      // assignTo may arrive as a number, a string, or an array. Normalize
+      // to a single integer TeamMember id (or null).
+      const rawAssign = Array.isArray(taskData.assignTo)
+        ? taskData.assignTo[0]
+        : taskData.assignTo;
+      const assignTo = rawAssign != null && rawAssign !== ''
+        ? Number(rawAssign)
+        : null;
+
       const payload = {
         title: taskData.title,
         desc: taskData.description || '',
         status: taskData.status || 'todo',
         priority: taskData.priority || 'medium',
-        p: taskData.projectId || taskData.p,        // Project ID (foreign key)
-        assign_to: taskData.assignTo || null,       // TeamMember ID
+        p: taskData.projectId || taskData.p,
+        assign_to: Number.isFinite(assignTo) ? assignTo : null,
         due_date: taskData.dueDate || null,
         start_date: taskData.startDate || null,
-        progress: taskData.progress ?? 0,           // ✅ FIX: send progress on create
+        progress: taskData.progress ?? 0,
       };
 
       console.log('📤 Creating task with payload:', payload);
@@ -94,18 +127,16 @@ class TaskService {
       const response = await api.post(endpoints.tasks.list, payload);
       const data = response.data;
 
-      // ✅ Normalize assign_to in response
-      if (data?.data) {
-        data.data.assign_to = data.data.assign_to ? Number(data.data.assign_to) : null;
-        data.data.t_id = data.data.t_id ? Number(data.data.t_id) : null;
-        data.data.id = data.data.id ? Number(data.data.id) : null;
-      } else if (data) {
-        data.assign_to = data.assign_to ? Number(data.assign_to) : null;
-        data.t_id = data.t_id ? Number(data.t_id) : null;
-        data.id = data.id ? Number(data.id) : null;
+      const target = data?.data ?? data;
+      if (target) {
+        target.assign_to = target.assign_to != null ? Number(target.assign_to) : null;
+        target.t_id      = target.t_id != null ? Number(target.t_id) : null;
+        target.id        = target.id != null ? Number(target.id) : null;
+        target.progress  = Number.isFinite(Number(target.progress))
+          ? Number(target.progress)
+          : 0;
       }
 
-      console.log('✅ Task created with progress:', data?.progress ?? data?.data?.progress);
       return data;
     } catch (error) {
       console.error('TaskService: Error creating task:', error);
@@ -115,13 +146,20 @@ class TaskService {
 
   async updateTask(id, taskData) {
     try {
+      const rawAssign = Array.isArray(taskData.assignTo)
+        ? taskData.assignTo[0]
+        : taskData.assignTo;
+      const assignTo = rawAssign != null && rawAssign !== ''
+        ? Number(rawAssign)
+        : null;
+
       const payload = {
         title: taskData.title,
-        desc: taskData.description || '',   // ✅ FIX: backend expects 'desc', not 'description'
+        desc: taskData.description || '',
         status: taskData.status,
         priority: taskData.priority,
         progress: taskData.progress ?? undefined,
-        assign_to: taskData.assignTo || null,
+        assign_to: Number.isFinite(assignTo) ? assignTo : null,
         due_date: taskData.dueDate || null,
         start_date: taskData.startDate || null,
       };
@@ -131,14 +169,14 @@ class TaskService {
       const response = await api.patch(endpoints.tasks.byId(id), payload);
       const data = response.data;
 
-      if (data?.data) {
-        data.data.assign_to = data.data.assign_to ? Number(data.data.assign_to) : null;
-        data.data.t_id = data.data.t_id ? Number(data.data.t_id) : null;
-        data.data.id = data.data.id ? Number(data.data.id) : null;
-      } else if (data) {
-        data.assign_to = data.assign_to ? Number(data.assign_to) : null;
-        data.t_id = data.t_id ? Number(data.t_id) : null;
-        data.id = data.id ? Number(data.id) : null;
+      const target = data?.data ?? data;
+      if (target) {
+        target.assign_to = target.assign_to != null ? Number(target.assign_to) : null;
+        target.t_id      = target.t_id != null ? Number(target.t_id) : null;
+        target.id        = target.id != null ? Number(target.id) : null;
+        target.progress  = Number.isFinite(Number(target.progress))
+          ? Number(target.progress)
+          : 0;
       }
 
       return data;
@@ -149,8 +187,11 @@ class TaskService {
 
   async assignTask(taskId, memberId) {
     try {
+      const assignTo = memberId != null && memberId !== ''
+        ? Number(memberId)
+        : null;
       const response = await api.patch(endpoints.tasks.byId(taskId), {
-        assign_to: memberId,
+        assign_to: Number.isFinite(assignTo) ? assignTo : null,
       });
       return response.data;
     } catch (error) {
@@ -193,7 +234,10 @@ class TaskService {
     if (error.response) {
       return {
         status: error.response.status,
-        message: error.response.data.message || error.response.data.detail || 'An error occurred',
+        message:
+          error.response.data?.message ||
+          error.response.data?.detail ||
+          'An error occurred',
         data: error.response.data,
       };
     }

@@ -21,7 +21,6 @@ import projectTeamService from "../../services/projectTeamService";
 /* ─────────── Helpers ─────────── */
 
 const asArray = (v) => (Array.isArray(v) ? v : []);
-
 const norm = (s) => (s || '').toLowerCase().trim();
 
 const getInitials = (name) => {
@@ -41,7 +40,6 @@ const getRoleColor = (role) => {
   return colors[norm(role)] || colors.member;
 };
 
-/* PTeam field getters (defensive) */
 function getPteamProjectId(entry) {
   return Number(
     entry?.p ?? entry?.p_id ?? entry?.project ?? entry?.projectId ?? entry?.project_id
@@ -54,50 +52,63 @@ function getPteamTmId(entry) {
   );
 }
 
-/* ─────────── Compute a lead's OWN stats from raw data ─────────── */
+/* ─────────── Find TeamMember profile(s) for a user ─────────── */
 /*
- * A lead's PROJECTS = projects where:
- *   - created_by === lead's user id, OR
- *   - lead's user id is in project.supervisors, OR
- *   - lead's TeamMember profile appears in a PTeam entry for that project
- *
- * A lead's TASKS = ONLY tasks directly assigned to the lead's TeamMember
- * profile (via Task.assign_to). This makes sure a lead is never credited
- * for work done by other members in the same project — only their own.
- *
- * A lead's TEAM SIZE = other TeamMembers who share at least one project
- * with this lead (via PTeam), excluding the lead themselves.
+ * TeamMember has no FK to User, so we guess. We try three strategies
+ * in order of reliability and collect ALL matches:
+ *   1. Exact name match (case-insensitive, trimmed)
+ *   2. Prefix match ("Ali" matches "Ali Raza")
+ *   3. `added_by` equals the lead's user id
  */
+function findTeamMemberIds(leadUser, teamMembers) {
+  const leadName = norm(leadUser?.u_name);
+  const leadUserId = Number(leadUser?.id ?? leadUser?.u_id);
+
+  const ids = new Set();
+  asArray(teamMembers).forEach(m => {
+    const mName = norm(m.name);
+    if (!mName) return;
+
+    if (leadName && mName === leadName) { ids.add(Number(m.id)); return; }
+    if (leadName && mName.startsWith(leadName)) { ids.add(Number(m.id)); return; }
+    if (Number.isFinite(leadUserId) && Number(m.added_by) === leadUserId) {
+      ids.add(Number(m.id));
+    }
+  });
+
+  return [...ids].filter(Number.isFinite);
+}
+
+/* ─────────── Compute a lead's OWN stats from raw data ─────────── */
 function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntries) {
   const leadUser = users.find(u => Number(u.id ?? u.u_id) === Number(leadId));
-
-  // 1. Find this lead's TeamMember profile by name match
+  const leadUserId = Number(leadId);
   const leadName = norm(leadUser?.u_name);
-  const leadMember = leadName
-    ? asArray(teamMembers).find(m => norm(m.name) === leadName)
-    : null;
-  const teamMemberId = leadMember ? Number(leadMember.id) : null;
 
-  // 2. Project IDs from PTeam where this lead's TeamMember appears
+  // 1. Collect all matching TeamMember ids
+  const teamMemberIds = new Set(findTeamMemberIds(leadUser, teamMembers));
+  const teamMemberId = teamMemberIds.size > 0 ? [...teamMemberIds][0] : null;
+
+  // 2. Projects the lead is linked to via PTeam
   const pteamProjectIds = new Set();
-  if (teamMemberId != null) {
+  if (teamMemberIds.size > 0) {
     asArray(pteamEntries).forEach(entry => {
-      if (getPteamTmId(entry) === teamMemberId) {
+      const tmId = getPteamTmId(entry);
+      if (teamMemberIds.has(tmId)) {
         const pid = getPteamProjectId(entry);
         if (Number.isFinite(pid)) pteamProjectIds.add(pid);
       }
     });
   }
 
-  // 3. Build the lead's project set:
-  //    created_by OR supervised OR PTeam membership
+  // 3. Build project set: created_by OR supervised OR PTeam
   const projectMap = new Map();
   asArray(projects).forEach(p => {
     const id = Number(p.p_id ?? p.id);
     if (!Number.isFinite(id)) return;
 
-    const isCreator     = Number(p.created_by) === Number(leadId);
-    const isSupervisor  = asArray(p.supervisors).map(Number).includes(Number(leadId));
+    const isCreator     = Number(p.created_by) === leadUserId;
+    const isSupervisor  = asArray(p.supervisors).map(Number).includes(leadUserId);
     const isPteamMember = pteamProjectIds.has(id);
 
     if (isCreator || isSupervisor || isPteamMember) {
@@ -107,14 +118,19 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntri
   const leadProjects = Array.from(projectMap.values());
   const leadProjectIds = leadProjects.map(p => Number(p.p_id ?? p.id));
 
-  // ═══════════════════════════════════════════════════════════════════
-  // 4. TASKS = ONLY tasks assigned directly to this lead's TeamMember.
-  //    We deliberately do NOT count other members' tasks — this is the
-  //    fix for leads being credited with their teammates' work.
-  // ═══════════════════════════════════════════════════════════════════
-  const ownTasks = teamMemberId != null
-    ? asArray(tasks).filter(t => Number(t.assign_to ?? t.assignedTo) === teamMemberId)
-    : [];
+  // 4. TASKS = only tasks assigned directly to one of the lead's TeamMembers
+  //    (with a name-based fallback in case assign_to is missing)
+  const ownTasks = asArray(tasks).filter(t => {
+    const assignTo = Number(t.assign_to ?? t.assignedTo);
+    if (Number.isFinite(assignTo) && teamMemberIds.has(assignTo)) return true;
+
+    const assigneeName = norm(t.assign_to_name || t.assignee_name);
+    if (assigneeName && leadName) {
+      if (assigneeName === leadName) return true;
+      if (assigneeName.startsWith(leadName)) return true;
+    }
+    return false;
+  });
 
   const totalTasks = ownTasks.length;
   const completedTasks = ownTasks.filter(t => {
@@ -163,10 +179,7 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntri
     ? Math.round((onTimeCount / completedWithDue.length) * 100)
     : 0;
 
-  // ═══════════════════════════════════════════════════════════════════
-  // 5. Team size = OTHER TeamMembers sharing a project with this lead
-  //    (does NOT include the lead themselves)
-  // ═══════════════════════════════════════════════════════════════════
+  // 5. Team size = OTHER TeamMembers on the lead's projects (exclude self)
   const otherMembersOnLeadProjects = new Set();
   if (leadProjectIds.length > 0) {
     const leadProjectSet = new Set(leadProjectIds);
@@ -175,13 +188,12 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntri
       const tmId = getPteamTmId(entry);
       if (!leadProjectSet.has(pid)) return;
       if (!Number.isFinite(tmId)) return;
-      if (tmId === teamMemberId) return;  // skip self
+      if (teamMemberIds.has(tmId)) return;
       otherMembersOnLeadProjects.add(tmId);
     });
   }
   const teamSize = otherMembersOnLeadProjects.size;
 
-  // 6. Performance band — keyed off the lead's own completionRate
   const performance =
     totalTasks === 0 ? 'New' :
     completionRate >= 80 ? 'Excellent' :
@@ -212,7 +224,8 @@ function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntri
     performance,
     perfColor,
     teamMemberId,
-    hasTeamMember: !!teamMemberId,
+    teamMemberIds: [...teamMemberIds],
+    hasTeamMember: teamMemberIds.size > 0,
   };
 }
 
@@ -259,7 +272,6 @@ export default function SupervisorLeads() {
       setUsers(usersList);
       setPteamEntries(pteamList);
 
-      // Leads = users whose role is lead-ish (member / developer / *lead*)
       const leads = usersList
         .filter(u => {
           const role = norm(u.role);
@@ -270,11 +282,35 @@ export default function SupervisorLeads() {
 
       setLeadList(leads);
 
+      // Diagnostics
       console.log('📊 [SupervisorLeads] users:', usersList.length);
       console.log('📊 [SupervisorLeads] leads:', leads.length);
       console.log('📊 [SupervisorLeads] projects:', projectsList.length);
       console.log('📊 [SupervisorLeads] tasks:', tasksList.length);
       console.log('📊 [SupervisorLeads] pteam entries:', pteamList.length);
+      console.log('🔍 [SupervisorLeads] tasks sample:',
+        tasksList.map(t => ({
+          id: t.t_id ?? t.id,
+          title: t.title,
+          assign_to: t.assign_to ?? t.assignedTo ?? null,
+          assign_to_name: t.assign_to_name ?? null,
+        }))
+      );
+      console.log('🔍 [SupervisorLeads] teamMembers:',
+        membersList.map(m => ({ id: m.id, name: m.name, added_by: m.added_by }))
+      );
+      console.log('🔍 [SupervisorLeads] lead diagnostics:',
+        leads.slice(0, 5).map(id => {
+          const d = computeLeadData(id, projectsList, tasksList, membersList, usersList, pteamList);
+          return {
+            id,
+            name: d.user?.u_name,
+            teamMemberIds: d.teamMemberIds,
+            totalTasks: d.totalTasks,
+            projectCount: d.projects.length,
+          };
+        })
+      );
     } catch (error) {
       console.error('Error fetching leads data:', error);
       toast.error('Failed to load leads data');
@@ -298,7 +334,6 @@ export default function SupervisorLeads() {
     toast.success('Leads refreshed');
   };
 
-  /* ─── Derived leads (memoized) ─── */
   const leadsData = useMemo(() => {
     return leadList
       .map(id => ({
