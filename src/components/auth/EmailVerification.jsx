@@ -9,6 +9,7 @@ import authService from '../../services/authService';
 
 const RESEND_COOLDOWN_SECONDS = 60;
 const REDIRECT_DELAY_MS = 4000;
+const EMAIL_STORAGE_KEY = 'verify_email';
 
 export default function EmailVerification() {
   const navigate = useNavigate();
@@ -24,16 +25,32 @@ export default function EmailVerification() {
   const verifyHandledRef = useRef(false);
   const redirectTimerRef = useRef(null);
 
-  // Load email from navigation state (from Register page)
+  // -------------------------------------------------------------
+  // 🆕 Load email from three sources (in order of priority):
+  //   1. Navigation state (from /register)
+  //   2. URL ?email=... query param
+  //   3. sessionStorage (persists across page reloads / direct visits)
+  // -------------------------------------------------------------
   useEffect(() => {
-    const email =
-      location.state?.email ||
-      new URLSearchParams(window.location.search).get('email') ||
-      '';
-    if (email) setUserEmail(email);
+    const stateEmail = location.state?.email;
+    const urlEmail = new URLSearchParams(window.location.search).get('email');
+    const storedEmail = sessionStorage.getItem(EMAIL_STORAGE_KEY) || '';
+
+    const email = stateEmail || urlEmail || storedEmail;
+
+    if (email) {
+      setUserEmail(email);
+      // Persist so it survives reloads
+      sessionStorage.setItem(EMAIL_STORAGE_KEY, email);
+      console.log('📧 [VerifyEmail] Email loaded:', email);
+    } else {
+      console.warn('📧 [VerifyEmail] No email found in state, URL, or storage');
+    }
   }, [location.state]);
 
-  // If the URL contains uid + token, verify on mount
+  // -------------------------------------------------------------
+  // Verify token if URL contains uid + token
+  // -------------------------------------------------------------
   useEffect(() => {
     const uid = searchParams.get('uid');
     const token = searchParams.get('token');
@@ -42,19 +59,24 @@ export default function EmailVerification() {
     if (verifyHandledRef.current) return;
     verifyHandledRef.current = true;
 
+    console.log('🔐 [VerifyEmail] Verifying uid + token...');
+
     (async () => {
       try {
         await authService.verifyEmail(uid, token);
+
+        // Clear persisted email — verification is done
+        sessionStorage.removeItem(EMAIL_STORAGE_KEY);
+
         setStatus('success');
-        setStatusMessage(
-          'Your email has been verified! Redirecting to login...'
-        );
+        setStatusMessage('Your email has been verified! Redirecting to login...');
         toast.success('Email verified! You can now log in.');
 
         redirectTimerRef.current = setTimeout(() => {
           navigate('/login', { replace: true, state: { email: userEmail } });
         }, REDIRECT_DELAY_MS);
       } catch (err) {
+        console.error('🔐 [VerifyEmail] Verification failed:', err);
         const detail =
           err?.data?.detail ||
           err?.data?.non_field_errors?.[0] ||
@@ -78,21 +100,42 @@ export default function EmailVerification() {
     return () => clearTimeout(t);
   }, [countdown]);
 
-  // Resend handler — calls the backend
+  // -------------------------------------------------------------
+  // 🆕 Resend handler with detailed logging
+  // -------------------------------------------------------------
   const handleResend = useCallback(async () => {
+    console.log('🔄 [Resend] Clicked. userEmail =', userEmail);
+
     if (!userEmail) {
-      toast.error('Email address is required');
+      console.warn('🔄 [Resend] No email available');
+      toast.error('Email address is required. Please log in or register first.');
       return;
     }
-    if (resendLoading || countdown > 0) return;
+    if (resendLoading) {
+      console.log('🔄 [Resend] Already sending, ignoring click');
+      return;
+    }
+    if (countdown > 0) {
+      console.log('🔄 [Resend] In cooldown:', countdown, 'seconds left');
+      return;
+    }
 
     setResendLoading(true);
     try {
-      await authService.resendVerification(userEmail);
+      console.log('🔄 [Resend] Calling API with:', userEmail);
+      const result = await authService.resendVerification(userEmail);
+      console.log('🔄 [Resend] API success:', result);
+
       setCountdown(RESEND_COOLDOWN_SECONDS);
-      toast.success(`Verification email sent to ${userEmail}`);
+      toast.success(`Verification email sent to ${userEmail}`, { duration: 5000 });
     } catch (err) {
-      toast.error(err?.message || 'Failed to resend verification email.');
+      console.error('🔄 [Resend] API error:', err);
+      const msg =
+        err?.message ||
+        err?.data?.detail ||
+        err?.data?.non_field_errors?.[0] ||
+        'Failed to resend verification email.';
+      toast.error(typeof msg === 'string' ? msg : 'Failed to resend verification email.');
     } finally {
       setResendLoading(false);
     }

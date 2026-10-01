@@ -119,8 +119,8 @@ export const endpoints = {
     logout: '/auth/logout',
     me: '/auth/me',
     refresh: '/auth/refresh',
-    verifyEmail: '/auth/verify-email',                 // 🆕
-    resendVerification: '/auth/resend-verification',   // 🆕
+    verifyEmail: '/auth/verify-email',                 
+    resendVerification: '/auth/resend-verification',   
   },
   users: {
     list: '/users',
