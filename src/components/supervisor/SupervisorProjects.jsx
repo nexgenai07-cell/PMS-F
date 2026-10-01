@@ -32,49 +32,21 @@ const TASK_STATUS_OPTIONS = ['todo', 'in_progress', 'review', 'done'];
 
 const SUPERVISOR_ROLES = ['manager', 'admin', 'supervisor'];
 
-/* ─────────── Local supervisor fallback (ONLY for supervisors) ─────────── */
-const SUPERVISOR_STORAGE_KEY = 'pms_project_supervisors';
-
-function readLocalSupervisors() {
-  try {
-    const raw = localStorage.getItem(SUPERVISOR_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch { return {}; }
-}
-
-function getLocalSupervisors(projectId) {
-  if (!projectId) return [];
-  const map = readLocalSupervisors();
-  const ids = map[String(projectId)];
-  return Array.isArray(ids) ? ids.map(Number) : [];
-}
-
-function setLocalSupervisors(projectId, ids) {
-  if (!projectId) return;
-  const map = readLocalSupervisors();
-  map[String(projectId)] = [...new Set((ids || []).map(Number))];
-  try { localStorage.setItem(SUPERVISOR_STORAGE_KEY, JSON.stringify(map)); }
-  catch (e) { console.warn('Could not persist supervisors locally:', e); }
-}
-
-function removeLocalSupervisors(projectId) {
-  if (!projectId) return;
-  const map = readLocalSupervisors();
-  delete map[String(projectId)];
-  try { localStorage.setItem(SUPERVISOR_STORAGE_KEY, JSON.stringify(map)); }
-  catch (e) { console.warn('Could not remove local supervisors:', e); }
-}
+/* ─────────── Safe array helper ─────────── */
+const asArray = (v) => (Array.isArray(v) ? v : []);
 
 /* ─────────── Resolve TeamMember id → user-like object ─────────── */
-// A PTeam entry's `tm` refers to a TeamMember, so we resolve against
-// team_members first, then map to user for role info.
 function resolveTeamMemberId(tmId, usersList, membersList) {
   if (tmId == null) return null;
   const numId = Number(tmId);
+  if (!Number.isFinite(numId)) return null;
 
-  const tm = membersList.find(m => Number(m.id) === numId);
+  const safeUsers = asArray(usersList);
+  const safeMembers = asArray(membersList);
+
+  const tm = safeMembers.find(m => Number(m.id) === numId);
   if (tm) {
-    const userObj = usersList.find(u => {
+    const userObj = safeUsers.find(u => {
       const uName = (u.u_name || u.name || '').toLowerCase().trim();
       const mName = (tm.name || '').toLowerCase().trim();
       return uName && mName && uName === mName;
@@ -82,18 +54,18 @@ function resolveTeamMemberId(tmId, usersList, membersList) {
     return {
       id: tm.id,
       userId: userObj?.id ?? tm.id,
-      name: tm.name || userObj?.u_name || 'Unknown',
+      name: tm.name || userObj?.u_name || `User ${tm.id}`,
       email: tm.email || userObj?.email || '',
       role: ((userObj?.role) || tm.role || '').toLowerCase(),
     };
   }
 
-  const userObj = usersList.find(u => Number(u.id) === numId);
+  const userObj = safeUsers.find(u => Number(u.id) === numId);
   if (userObj) {
     return {
       id: userObj.id,
       userId: userObj.id,
-      name: userObj.u_name || userObj.name || 'Unknown',
+      name: userObj.u_name || userObj.name || `User ${userObj.id}`,
       email: userObj.email || '',
       role: (userObj.role || '').toLowerCase(),
     };
@@ -105,24 +77,28 @@ function resolveTeamMemberId(tmId, usersList, membersList) {
 function resolveUserId(userId, usersList, membersList) {
   if (userId == null) return null;
   const numId = Number(userId);
+  if (!Number.isFinite(numId)) return null;
 
-  const userObj = usersList.find(u => Number(u.id) === numId);
+  const safeUsers = asArray(usersList);
+  const safeMembers = asArray(membersList);
+
+  const userObj = safeUsers.find(u => Number(u.id) === numId);
   if (userObj) {
     return {
       id: userObj.id,
       userId: userObj.id,
-      name: userObj.u_name || userObj.name || 'Unknown',
+      name: userObj.u_name || userObj.name || `User ${userObj.id}`,
       email: userObj.email || '',
       role: (userObj.role || '').toLowerCase(),
     };
   }
 
-  const tm = membersList.find(m => Number(m.id) === numId);
+  const tm = safeMembers.find(m => Number(m.id) === numId);
   if (tm) {
     return {
       id: tm.id,
       userId: tm.id,
-      name: tm.name || 'Unknown',
+      name: tm.name || `User ${tm.id}`,
       email: tm.email || '',
       role: (tm.role || '').toLowerCase(),
     };
@@ -132,17 +108,19 @@ function resolveUserId(userId, usersList, membersList) {
 
 /* ─────────── PTeam field getters ─────────── */
 function getPteamProjectId(entry) {
-  return Number(entry.p ?? entry.p_id ?? entry.project ?? entry.projectId ?? entry.project_id);
+  return Number(entry?.p ?? entry?.p_id ?? entry?.project ?? entry?.projectId ?? entry?.project_id);
 }
 function getPteamTmId(entry) {
-  return Number(entry.tm ?? entry.tm_id ?? entry.team_member ?? entry.member ?? entry.member_id ?? entry.teamMember);
+  return Number(entry?.tm ?? entry?.tm_id ?? entry?.team_member ?? entry?.member ?? entry?.member_id ?? entry?.teamMember);
 }
 
-/* ─────────── Compute task progress from status ─────────── */
+/* ─────────── Compute task progress ─────────── */
 function computeTaskProgress(task) {
-  const raw = Number(task.progress);
-  if (Number.isFinite(raw) && raw > 0) return raw;
-  const status = (task.status || '').toLowerCase();
+  if (task?.progress !== undefined && task?.progress !== null) {
+    const raw = Number(task.progress);
+    if (Number.isFinite(raw)) return raw;
+  }
+  const status = (task?.status || '').toLowerCase();
   if (status === 'done' || status === 'completed') return 100;
   if (status === 'review') return 75;
   if (status === 'in_progress' || status === 'in-progress') return 50;
@@ -156,20 +134,24 @@ function findRealTeamMemberId(userIdOrObj, teamMembersList, usersList) {
     ? (userIdOrObj.userId ?? userIdOrObj.id)
     : userIdOrObj;
   const numId = Number(id);
+  if (!Number.isFinite(numId)) return null;
 
-  const direct = teamMembersList.find(m => !m._placeholder && Number(m.id) === numId);
+  const safeMembers = asArray(teamMembersList);
+  const safeUsers = asArray(usersList);
+
+  const direct = safeMembers.find(m => !m._placeholder && Number(m.id) === numId);
   if (direct) return Number(direct.id);
 
-  const userObj = usersList.find(u => Number(u.id) === numId);
+  const userObj = safeUsers.find(u => Number(u.id) === numId);
   if (userObj) {
     const name = (userObj.u_name || userObj.name || '').toLowerCase().trim();
     const email = (userObj.email || '').toLowerCase().trim();
-    const byName = teamMembersList.find(m =>
+    const byName = safeMembers.find(m =>
       !m._placeholder && (m.name || '').toLowerCase().trim() === name
     );
     if (byName) return Number(byName.id);
     if (email) {
-      const byEmail = teamMembersList.find(m =>
+      const byEmail = safeMembers.find(m =>
         !m._placeholder && (m.email || '').toLowerCase().trim() === email
       );
       if (byEmail) return Number(byEmail.id);
@@ -288,7 +270,7 @@ function MemberPicker({ selected = [], onChange, label = 'Members', members = []
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', flex: 1 }}>
             {selectedMembers.map(m => {
-              const key = m.id || Math.random().toString();
+              const key = m.id || `m-${Math.random().toString(36).slice(2, 8)}`;
               return (
                 <span key={key} className="lp-member-chip">
                   <span className="lp-member-avatar-sm">{(m.name || '?')[0].toUpperCase()}</span>
@@ -316,7 +298,7 @@ function MemberPicker({ selected = [], onChange, label = 'Members', members = []
             {members.length === 0
               ? <p style={{ padding: '12px 16px', color: 'var(--text-muted)', fontSize: 13 }}>No members available.</p>
               : members.map(m => {
-                const key = m.id || Math.random().toString();
+                const key = m.id || `m-${Math.random().toString(36).slice(2, 8)}`;
                 const isSelected = selected.includes(m.id);
                 return (
                   <button key={key} type="button"
@@ -351,7 +333,7 @@ function ProjectMembersPanel({ members, onEdit, onRemove }) {
         : (
           <div className="lp-members-list">
             {members.map(m => {
-              const key = m.id || Math.random().toString();
+              const key = m.id || `m-${Math.random().toString(36).slice(2, 8)}`;
               return (
                 <div key={key} className="lp-member-row">
                   <span className="lp-member-avatar">{(m.name || '?')[0].toUpperCase()}</span>
@@ -513,16 +495,19 @@ export default function SupervisorProjects() {
     return () => clearTimeout(t);
   }, [taskAddModal]);
 
-  useEffect(() => { fetchData(); }, []);
+  useEffect(() => {
+    fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const categorizeMembers = (members, users) => {
     const supervisors = [];
     const regularMembers = [];
 
-    members.forEach(m => {
+    asArray(members).forEach(m => {
       let role = (m.role || '').toLowerCase();
       if (!role || role === 'member') {
-        const userObj = users.find(u => Number(u.id) === Number(m.id));
+        const userObj = asArray(users).find(u => Number(u.id) === Number(m.id));
         if (userObj) role = (userObj.role || '').toLowerCase();
       }
       const isSupervisor = SUPERVISOR_ROLES.includes(role);
@@ -534,22 +519,31 @@ export default function SupervisorProjects() {
   };
 
   const fetchData = async () => {
+    console.log('🚀 [SupervisorProjects] fetchData STARTED');
     try {
       setLoading(true);
 
       const [projectsData, tasksData, membersData, usersData, pteamData] = await Promise.all([
-        projectService.getProjects(),
-        taskService.getTasks(),
-        teamService.getTeamMembers(),
-        userService.getUsers(),
-        projectTeamService.getProjectTeams(),
+        projectService.getProjects().catch(e => { console.error('❌ getProjects:', e); return { data: [] }; }),
+        taskService.getTasks().catch(e => { console.error('❌ getTasks:', e); return { data: [] }; }),
+        teamService.getTeamMembers().catch(e => { console.error('❌ getTeamMembers:', e); return { data: [] }; }),
+        userService.getUsers().catch(e => { console.error('❌ getUsers:', e); return { data: [] }; }),
+        projectTeamService.getProjectTeams().catch(e => { console.error('❌ getProjectTeams:', e); return { data: [] }; }),
       ]);
 
-      const projectsList = projectsData?.data || projectsData || [];
-      const tasksList = tasksData?.data || tasksData || [];
-      const membersList = membersData?.data || membersData || [];
-      const usersList = usersData?.data || usersData || [];
-      const pteamList = pteamData?.data || pteamData || [];
+      const projectsList = asArray(projectsData?.data || projectsData);
+      const tasksList = asArray(tasksData?.data || tasksData);
+      const membersList = asArray(membersData?.data || membersData);
+      const usersList = asArray(usersData?.data || usersData);
+      const pteamList = asArray(pteamData?.data || pteamData);
+
+      console.log('✅ [SupervisorProjects] Normalized:', {
+        projects: projectsList.length,
+        tasks: tasksList.length,
+        members: membersList.length,
+        users: usersList.length,
+        pteam: pteamList.length,
+      });
 
       // Only real, non-deleted team members
       let activeMembersList = membersList.filter(m => m.is_deleted !== 1);
@@ -583,7 +577,7 @@ export default function SupervisorProjects() {
         }
       }
 
-      // Supervisor options: users with supervisor role
+      // Supervisor options
       const allSupervisorUsers = usersList
         .filter(u => SUPERVISOR_ROLES.includes((u.role || '').toLowerCase()))
         .map(u => ({
@@ -593,12 +587,12 @@ export default function SupervisorProjects() {
           role: (u.role || 'supervisor').toLowerCase(),
         }));
 
-      const supervisorIdSet = new Set(allSupervisorUsers.map(s => Number(s.id)));
+      const supIdSetForOptions = new Set(allSupervisorUsers.map(s => Number(s.id)));
       activeMembersList.forEach(m => {
         const userObj = usersList.find(u => Number(u.id) === Number(m.id));
         const role = (m.role || userObj?.role || '').toLowerCase();
-        if (SUPERVISOR_ROLES.includes(role) && !supervisorIdSet.has(Number(m.id))) {
-          supervisorIdSet.add(Number(m.id));
+        if (SUPERVISOR_ROLES.includes(role) && !supIdSetForOptions.has(Number(m.id))) {
+          supIdSetForOptions.add(Number(m.id));
           allSupervisorUsers.push({
             id: m.id,
             name: m.name || userObj?.u_name || 'Unknown',
@@ -611,83 +605,73 @@ export default function SupervisorProjects() {
       setSupervisorOptions(allSupervisorUsers);
       setAllSupervisors(allSupervisorUsers);
 
-      // STRICT: member options = REAL TeamMembers only (exclude supervisors)
+      // Member options: non-supervisor TeamMembers only
       const { regularMembers: memberList } = categorizeMembers(activeMembersList, usersList);
       setMemberOptions(memberList);
       setTeamMembers(activeMembersList);
 
-      // Projects this user can see
-      const userProjects = projectsList.filter(p => {
-        const isCreator = Number(p.created_by) === Number(userId);
-        const isMember = pteamList.some(pteam =>
-          Number(pteam.p) === Number(p.p_id || p.id) &&
-          Number(pteam.tm) === Number(userId)
-        );
-        return isCreator || isMember;
-      });
-
-      const projectsWithMembers = userProjects.map(project => {
+      // ─────────────────────────────────────────────────────────────
+      // Projects: use the backend-filtered list as-is.
+      // The backend decides visibility based on:
+      //   - created_by = user
+      //   - user in project.supervisors M2M
+      //   - user linked via PTeam (after the backend fix)
+      // ─────────────────────────────────────────────────────────────
+      const projectsWithMembers = projectsList.map(project => {
         const projectId = project.p_id || project.id;
         const projectPteamEntries = pteamList.filter(entry => getPteamProjectId(entry) === Number(projectId));
 
         const memberMap = new Map();
 
-        // 1. PTeam entries — the ONLY source of members
+        // Only PTeam members
         projectPteamEntries.forEach(entry => {
           const tmId = getPteamTmId(entry);
+          if (!Number.isFinite(tmId)) return;
           if (memberMap.has(tmId)) return;
           const resolved = resolveTeamMemberId(tmId, usersList, activeMembersList);
           if (resolved) {
             memberMap.set(tmId, {
               ...resolved,
-              pt_id: entry.pt_id,
-              task_id: entry.t,
+              pt_id: entry.pt_id ?? entry.id ?? null,
+              task_id: entry.t ?? null,
             });
           }
         });
 
-        // 2. Local supervisors — user ids (fallback for supervisors only)
-        getLocalSupervisors(projectId).forEach(sid => {
-          if (memberMap.has(sid)) return;
-          const resolved = resolveUserId(sid, usersList, activeMembersList);
-          if (resolved) memberMap.set(Number(sid), { ...resolved, pt_id: null, task_id: null });
-        });
-
-        // NOTE: no task assignees, no creator, no local member fallback.
-        // Members come strictly from PTeam.
-
         const projectMembersRaw = Array.from(memberMap.values());
 
-        const supervisorMap = new Map();
+        // Supervisors from the backend M2M
+        const supervisorIds = asArray(project.supervisors).map(Number);
+        const supervisorNames = asArray(project.supervisor_names);
 
-        getLocalSupervisors(projectId).forEach(sid => {
-          const resolved = resolveUserId(sid, usersList, activeMembersList);
-          if (resolved) supervisorMap.set(Number(sid), resolved);
-        });
+        const supervisorEntries = supervisorIds
+          .map((sid, idx) => {
+            if (!Number.isFinite(sid)) return null;
+            const userObj = usersList.find(u => Number(u.id) === Number(sid));
+            return {
+              id: sid,
+              userId: sid,
+              name: supervisorNames[idx] || userObj?.u_name || userObj?.name || `User ${sid}`,
+              email: userObj?.email || '',
+              role: (userObj?.role || 'supervisor').toLowerCase(),
+            };
+          })
+          .filter(Boolean);
 
-        projectMembersRaw.forEach(m => {
-          if (supervisorMap.has(Number(m.id))) return;
-          const role = (m.role || '').toLowerCase();
-          if (SUPERVISOR_ROLES.includes(role)) {
-            supervisorMap.set(Number(m.id), m);
-          }
-        });
-
-        const supervisorMembers = Array.from(supervisorMap.values());
-        const regularMembersList = projectMembersRaw.filter(m => !supervisorMap.has(Number(m.id)));
-        const allMembers = [...supervisorMembers, ...regularMembersList];
+        const supUserIdSet = new Set(supervisorEntries.map(s => Number(s.userId)));
+        const regularMembersList = projectMembersRaw.filter(m => !supUserIdSet.has(Number(m.userId)));
+        const allMembers = [...supervisorEntries, ...regularMembersList];
 
         return {
           ...project,
           members: allMembers,
-          supervisorMembers,
+          supervisorMembers: supervisorEntries,
           regularMembers: regularMembersList,
           memberIds: allMembers.map(m => m.id),
-          supervisorIds: supervisorMembers.map(m => m.id),
+          supervisorIds: supervisorEntries.map(m => m.id),
         };
       });
 
-      // Compute progress for task-list modal
       const mappedTasks = tasksList.map(t => ({
         ...t,
         progress: computeTaskProgress(t),
@@ -698,6 +682,7 @@ export default function SupervisorProjects() {
       setUsers(usersList);
       setPteamEntries(pteamList);
 
+      // Fetch stats per project
       const statsMap = {};
       for (const project of projectsWithMembers) {
         const projectId = project.p_id || project.id;
@@ -710,8 +695,10 @@ export default function SupervisorProjects() {
       }
       setProjectStatsMap(statsMap);
 
+      console.log('✅ [SupervisorProjects] fetchData COMPLETE');
+
     } catch (error) {
-      console.error('Error fetching data:', error);
+      console.error('❌ [SupervisorProjects] Error fetching data:', error);
       toast.error('Failed to load projects. Please refresh.');
       setProjects([]);
       setTasks([]);
@@ -785,7 +772,7 @@ export default function SupervisorProjects() {
       const userId = user?.id || user?.u_id || null;
 
       // Auto-assign creator as supervisor ONLY when form.supervisors is empty
-      const supervisorsFromForm = [...new Set(form.supervisors)];
+      const supervisorsFromForm = [...new Set(form.supervisors.map(Number))];
       const finalSupervisors = supervisorsFromForm.length > 0
         ? supervisorsFromForm
         : (userId ? [userId] : []);
@@ -798,10 +785,10 @@ export default function SupervisorProjects() {
         startDate: form.startDate || null,
         deadline: form.deadline || null,
         created_by: userId,
+        supervisors: finalSupervisors,
       };
 
-      const uniqueSupervisors = finalSupervisors;
-      const uniqueMembers = [...new Set(form.members)];
+      const uniqueMembers = [...new Set(form.members.map(Number))];
 
       let createdProject;
       if (editProject) {
@@ -812,45 +799,38 @@ export default function SupervisorProjects() {
         createdProject = updated?.data || updated;
         const projectId = createdProject.p_id || createdProject.id;
 
-        const currentPteam = pteamEntries.filter(entry => getPteamProjectId(entry) === Number(projectId));
+        const currentPteam = asArray(pteamEntries).filter(entry => getPteamProjectId(entry) === Number(projectId));
         const currentMemberIds = [...new Set(currentPteam.map(entry => getPteamTmId(entry)))];
 
-        // ── Supervisors: try PTeam, fall back to localStorage (supervisors only) ──
-        const localSupervisorFallback = [];
-        for (const supId of uniqueSupervisors) {
+        // Add supervisors as team members too (so they show in PTeam)
+        for (const supId of finalSupervisors) {
           const realTmId = findRealTeamMemberId(supId, teamMembers, users);
-          if (!realTmId) {
-            localSupervisorFallback.push(supId);
-            continue;
-          }
-          if (!currentMemberIds.includes(realTmId)) {
-            try {
-              await projectTeamService.addMemberToProject(projectId, realTmId);
-            } catch (e) {
-              localSupervisorFallback.push(supId);
-            }
+          if (!realTmId) continue;
+          if (currentMemberIds.includes(realTmId)) continue;
+          try {
+            await projectTeamService.addMemberToProject(projectId, realTmId);
+            currentMemberIds.push(realTmId);
+          } catch (e) {
+            console.warn(`Could not add supervisor ${supId} to PTeam:`, e);
           }
         }
 
-        // ── Regular members: PTeam only (STRICT) ──
+        // Add regular members to PTeam
         for (const memberId of uniqueMembers) {
           const realTmId = findRealTeamMemberId(memberId, teamMembers, users);
-          if (!realTmId) {
-            console.warn(`Member ${memberId} has no TeamMember row — skipping (only TeamMembers can be project members)`);
-            continue;
-          }
-          if (!currentMemberIds.includes(realTmId)) {
-            try {
-              await projectTeamService.addMemberToProject(projectId, realTmId);
-            } catch (e) {
-              console.warn(`Could not add member ${memberId} to PTeam:`, e);
-            }
+          if (!realTmId) continue;
+          if (currentMemberIds.includes(realTmId)) continue;
+          try {
+            await projectTeamService.addMemberToProject(projectId, realTmId);
+            currentMemberIds.push(realTmId);
+          } catch (e) {
+            console.warn(`Could not add member ${memberId} to PTeam:`, e);
           }
         }
 
         // Remove no-longer-wanted PTeam entries
         const allWantedTmIds = [
-          ...uniqueSupervisors.map(id => findRealTeamMemberId(id, teamMembers, users)).filter(Boolean),
+          ...finalSupervisors.map(id => findRealTeamMemberId(id, teamMembers, users)).filter(Boolean),
           ...uniqueMembers.map(id => findRealTeamMemberId(id, teamMembers, users)).filter(Boolean),
         ];
         for (const currentTmId of currentMemberIds) {
@@ -863,39 +843,27 @@ export default function SupervisorProjects() {
           }
         }
 
-        setLocalSupervisors(projectId, localSupervisorFallback);
-
-        setProjects(projects.map(p =>
-          (p.p_id || p.id) === (editProject.p_id || editProject.id) ? createdProject : p
-        ));
         toast.success('Project updated successfully');
       } else {
         const newProject = await projectService.createProject(projectData);
         createdProject = newProject?.data || newProject;
         const projectId = createdProject.p_id || createdProject.id;
 
-        // Supervisors
-        const localSupervisorFallback = [];
-        for (const supId of uniqueSupervisors) {
+        // Add supervisors to PTeam
+        for (const supId of finalSupervisors) {
           const realTmId = findRealTeamMemberId(supId, teamMembers, users);
-          if (!realTmId) {
-            localSupervisorFallback.push(supId);
-            continue;
-          }
+          if (!realTmId) continue;
           try {
             await projectTeamService.addMemberToProject(projectId, realTmId);
           } catch (e) {
-            localSupervisorFallback.push(supId);
+            console.warn(`Could not add supervisor ${supId} to PTeam:`, e);
           }
         }
 
-        // Regular members: PTeam only (STRICT)
+        // Add regular members to PTeam
         for (const memberId of uniqueMembers) {
           const realTmId = findRealTeamMemberId(memberId, teamMembers, users);
-          if (!realTmId) {
-            console.warn(`Member ${memberId} has no TeamMember row — skipping`);
-            continue;
-          }
+          if (!realTmId) continue;
           try {
             await projectTeamService.addMemberToProject(projectId, realTmId);
           } catch (e) {
@@ -903,9 +871,6 @@ export default function SupervisorProjects() {
           }
         }
 
-        setLocalSupervisors(projectId, localSupervisorFallback);
-
-        setProjects([createdProject, ...projects]);
         toast.success('Project created successfully');
       }
 
@@ -915,7 +880,8 @@ export default function SupervisorProjects() {
       console.error('Error saving project:', error);
       const rawMsg = error?.response?.data?.message ||
                      error?.response?.data?.detail ||
-                     error?.response?.data?.error;
+                     error?.response?.data?.error ||
+                     error?.response?.data?.supervisors?.[0];
       const errorMsg = typeof rawMsg === 'string' ? rawMsg : 'Failed to save project';
       toast.error(errorMsg);
     } finally {
@@ -926,7 +892,6 @@ export default function SupervisorProjects() {
   const handleDeleteProject = async () => {
     try {
       await projectService.deleteProject(deleteProjectId);
-      removeLocalSupervisors(deleteProjectId);
       setProjects(projects.filter(p => (p.p_id || p.id) !== deleteProjectId));
       setDeleteProjectId(null);
       toast.success('Project deleted successfully');
@@ -979,6 +944,7 @@ export default function SupervisorProjects() {
         assignTo: assignTo,
         dueDate: taskForm.milestoneDate || null,
         startDate: null,
+        progress: taskForm.progress,
       });
 
       const newTask = response?.data || response;
@@ -1090,17 +1056,22 @@ export default function SupervisorProjects() {
     setTasks(tasks.map(t => (t.t_id || t.id) === taskId ? { ...t, priority } : t));
   };
 
-  const getProjectProgress = (projectId) => projectStatsMap[projectId]?.completionRate || 0;
+  const getProjectProgress = (projectId) => {
+    const s = projectStatsMap[projectId];
+    const avg = Number(s?.avgProgress);
+    if (Number.isFinite(avg)) return Math.round(avg);
+    return Math.round(Number(s?.completionRate) || 0);
+  };
   const getProjectTotalTasks = (projectId) => projectStatsMap[projectId]?.totalTasks || 0;
   const getProjectDoneTasks = (projectId) => projectStatsMap[projectId]?.completedTasks || 0;
-  const getProjectMembers = (project) => project?.members || [];
-  const getMemberObjects = (ids = []) => teamMembers.filter(m => ids.includes(m.id));
+  const getProjectMembers = (project) => asArray(project?.members);
+  const getMemberObjects = (ids = []) => teamMembers.filter(m => asArray(ids).includes(m.id));
 
   const handleEditProject = (project) => {
     setEditProject(project);
 
-    const supervisorIds = [...new Set(project.supervisorMembers?.map(s => s.id) || [])];
-    const memberIds = [...new Set(project.regularMembers?.map(m => m.id) || [])];
+    const supervisorIds = [...new Set(asArray(project.supervisorMembers).map(s => s.id))];
+    const memberIds = [...new Set(asArray(project.regularMembers).map(m => m.id))];
 
     setForm({
       name: project.p_name || project.name || '',
@@ -1123,7 +1094,7 @@ export default function SupervisorProjects() {
     const projectId = taskListModal.p_id || taskListModal.id;
     const memberUserId = Number(member.userId ?? member.id);
 
-    const assignedTasks = tasks.filter(t => {
+    const assignedTasks = asArray(tasks).filter(t => {
       const belongsToProject = Number(t.p_id || t.p) === Number(projectId);
       if (!belongsToProject) return false;
       const ids = [];
@@ -1132,27 +1103,20 @@ export default function SupervisorProjects() {
       return ids.includes(memberUserId);
     });
 
-    setRemoveMemberInfo({
-      projectId,
-      member,
-      assignedTasks,
-    });
+    setRemoveMemberInfo({ projectId, member, assignedTasks });
     setReassignTo('');
   };
 
   const confirmRemoveMember = async () => {
     if (!removeMemberInfo) return;
     const { projectId, member, assignedTasks } = removeMemberInfo;
-    const memberUserId = Number(member.userId ?? member.id);
 
     setRemoveMemberSaving(true);
     try {
-      // 1) Reassign / unassign tasks
       if (assignedTasks.length > 0) {
         for (const t of assignedTasks) {
           const tid = t.t_id || t.id;
           if (!tid) continue;
-
           const payload = {
             title: t.title,
             description: t.desc || '',
@@ -1161,17 +1125,12 @@ export default function SupervisorProjects() {
             progress: t.progress ?? 0,
             assignTo: reassignTo ? Number(reassignTo) : null,
           };
-
-          try {
-            await taskService.updateTask(tid, payload);
-          } catch (e) {
-            console.warn(`Could not ${reassignTo ? 'reassign' : 'unassign'} task ${tid}:`, e);
-          }
+          try { await taskService.updateTask(tid, payload); }
+          catch (e) { console.warn(`Could not update task ${tid}:`, e); }
         }
       }
 
-      // 2) Remove from PTeam (if they had a row)
-      const currentPteam = pteamEntries.filter(entry => getPteamProjectId(entry) === Number(projectId));
+      const currentPteam = asArray(pteamEntries).filter(entry => getPteamProjectId(entry) === Number(projectId));
       const realTmId = findRealTeamMemberId(member, teamMembers, users);
       if (realTmId) {
         const entry = currentPteam.find(e => getPteamTmId(e) === realTmId);
@@ -1180,10 +1139,6 @@ export default function SupervisorProjects() {
           catch (e) { console.warn('Could not remove PTeam entry:', e); }
         }
       }
-
-      // 3) Remove from local supervisors fallback (if present)
-      const localSups = getLocalSupervisors(projectId).filter(id => Number(id) !== memberUserId);
-      setLocalSupervisors(projectId, localSups);
 
       toast.success(
         reassignTo
@@ -1329,11 +1284,11 @@ export default function SupervisorProjects() {
               const doneTasks = getProjectDoneTasks(projectId);
               const members = getProjectMembers(project);
               const health = progress >= 70 ? '#34d399' : progress >= 40 ? '#f59e0b' : '#f87171';
-              const supervisorNames = project.supervisorMembers?.map(s => s.name).join(', ') || '';
+              const supervisorNames = asArray(project.supervisorMembers).map(s => s.name).join(', ') || '';
 
               return (
                 <motion.div
-                  key={project.p_id || project.id || Math.random().toString()}
+                  key={project.p_id || project.id || `p-${index}`}
                   className="lp-project-card"
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -1344,10 +1299,10 @@ export default function SupervisorProjects() {
                     <div className="lp-card-badges">
                       <PriorityBadge priority={project.priority} />
                       <StatusBadge status={project.status} />
-                      {project.supervisorMembers && project.supervisorMembers.length > 0 && (
-                        <span className="lp-supervisor-badge" title={`${project.supervisorMembers.length} supervisor(s): ${supervisorNames}`}>
+                      {asArray(project.supervisorMembers).length > 0 && (
+                        <span className="lp-supervisor-badge" title={`${asArray(project.supervisorMembers).length} supervisor(s): ${supervisorNames}`}>
                           <Crown size={10} />
-                          {project.supervisorMembers.length}
+                          {asArray(project.supervisorMembers).length}
                         </span>
                       )}
                     </div>
@@ -1438,10 +1393,10 @@ export default function SupervisorProjects() {
 
             <div className="lp-modal-body-split">
               <div className="lp-task-scroll">
-                {tasks.filter(t => Number(t.p_id || t.p) === Number(taskListModal.p_id || taskListModal.id) && !t.is_deleted).length === 0
+                {asArray(tasks).filter(t => Number(t.p_id || t.p) === Number(taskListModal.p_id || taskListModal.id) && !t.is_deleted).length === 0
                   ? <p style={{ textAlign:'center', color:'var(--text-muted)', padding:'32px 0' }}>No tasks yet.</p>
-                  : tasks.filter(t => Number(t.p_id || t.p) === Number(taskListModal.p_id || taskListModal.id) && !t.is_deleted).map(t => {
-                      const key = t.t_id || t.id || Math.random().toString();
+                  : asArray(tasks).filter(t => Number(t.p_id || t.p) === Number(taskListModal.p_id || taskListModal.id) && !t.is_deleted).map((t, idx) => {
+                      const key = t.t_id || t.id || `t-${idx}`;
                       return (
                         <div key={key} className="lp-task-row" onClick={() => setSelectedTask(t)}>
                           <div className="lp-task-info">
@@ -1449,8 +1404,8 @@ export default function SupervisorProjects() {
                             {t.milestone && <span className="lp-milestone-tag"><Milestone size={10}/>{t.milestone}</span>}
                             {(t.assignedTo || []).length > 0 && (
                               <div style={{ display:'flex', gap:4, marginTop:2 }}>
-                                {getMemberObjects(Array.isArray(t.assignedTo) ? t.assignedTo : [t.assignedTo]).map(m => (
-                                  <span key={m.id || Math.random().toString()} className="lp-task-assignee">
+                                {getMemberObjects(Array.isArray(t.assignedTo) ? t.assignedTo : [t.assignedTo]).map((m, i) => (
+                                  <span key={m.id || `a-${i}`} className="lp-task-assignee">
                                     {(m.name || '?')[0].toUpperCase()}
                                   </span>
                                 ))}
@@ -1490,7 +1445,7 @@ export default function SupervisorProjects() {
                       <Users size={14} /><span>Edit Members</span>
                     </div>
                     <MemberPicker
-                      selected={taskListModal.members?.map(m => m.id) || []}
+                      selected={asArray(taskListModal.members).map(m => m.id)}
                       onChange={(nm) => setTaskListModal(prev => ({ ...prev, members: nm.map(id => teamMembers.find(m => m.id === id) || { id }) }))}
                       label=""
                       members={teamMembers}
@@ -1541,8 +1496,8 @@ export default function SupervisorProjects() {
                 <div style={{ marginBottom: 14 }}>
                   <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6 }}>Assigned To</p>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    {getMemberObjects(Array.isArray(selectedTask.assignedTo) ? selectedTask.assignedTo : [selectedTask.assignedTo]).map(m => (
-                      <span key={m.id || Math.random().toString()} className="lp-member-chip" style={{ cursor: 'default' }}>
+                    {getMemberObjects(Array.isArray(selectedTask.assignedTo) ? selectedTask.assignedTo : [selectedTask.assignedTo]).map((m, i) => (
+                      <span key={m.id || `a-${i}`} className="lp-member-chip" style={{ cursor: 'default' }}>
                         <span className="lp-member-avatar-sm">{(m.name || '?')[0].toUpperCase()}</span>
                         {m.name}
                       </span>
@@ -1826,7 +1781,7 @@ export default function SupervisorProjects() {
                       disabled={removeMemberSaving}
                     >
                       <option value="">— Leave unassigned —</option>
-                      {(taskListModal?.members || [])
+                      {asArray(taskListModal?.members)
                         .filter(m => Number(m.userId ?? m.id) !== Number(removeMemberInfo.member.userId ?? removeMemberInfo.member.id))
                         .map(m => (
                           <option key={m.id} value={m.userId ?? m.id}>{m.name}</option>
