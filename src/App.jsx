@@ -42,7 +42,6 @@ const ROLE_TO_ROUTE = {
   'lead': '/lead',
 };
 
-// Get route for a given role
 const getRouteForRole = (role) => {
   if (!role) return '/lead';
   const normalizedRole = role.toLowerCase();
@@ -63,16 +62,16 @@ function ProtectedRoute({ children, role }) {
   }
 
   if (!user) {
-  console.log('🔵 ProtectedRoute: ❌ no user, redirecting to login');
-  // Clear sessionStorage (not localStorage — tokens live in sessionStorage now)
-  sessionStorage.removeItem('access_token');
-  sessionStorage.removeItem('token');
-  sessionStorage.removeItem('refresh_token');
-  sessionStorage.removeItem('user');
-  sessionStorage.removeItem('pms_user');
-  sessionStorage.removeItem('user_role');
-  return <Navigate to="/login" replace />;
-}
+    console.log('🔵 ProtectedRoute: ❌ no user, redirecting to login');
+    // Clear sessionStorage (tokens live there now, not localStorage)
+    sessionStorage.removeItem('access_token');
+    sessionStorage.removeItem('token');
+    sessionStorage.removeItem('refresh_token');
+    sessionStorage.removeItem('user');
+    sessionStorage.removeItem('pms_user');
+    sessionStorage.removeItem('user_role');
+    return <Navigate to="/login" replace />;
+  }
 
   const userRole = user?.role?.toLowerCase() || 'member';
   const requiredRole = role?.toLowerCase() || 'member';
@@ -82,9 +81,6 @@ function ProtectedRoute({ children, role }) {
 
   const userRoute = ROLE_TO_ROUTE[userRole] || '/lead';
   const requiredRoute = ROLE_TO_ROUTE[requiredRole] || '/lead';
-
-  console.log('🔵 ProtectedRoute: user route =', userRoute);
-  console.log('🔵 ProtectedRoute: required route =', requiredRoute);
 
   if (userRoute !== requiredRoute) {
     console.log(`🔵 ProtectedRoute: ❌ role mismatch, redirecting to ${userRoute}`);
@@ -129,18 +125,11 @@ function PageLoader() {
 function AppRoutes() {
   const { user, loading } = useAuth();
   const location = useLocation();
-// (Removed — we no longer need the `verifying_email` flag.
-//  The verification page can be reached by anyone via /verify-email.)
-const isVerifying = false;
 
   console.log('🔵 AppRoutes: user =', user);
   console.log('🔵 AppRoutes: loading =', loading);
-  console.log('🔵 AppRoutes: isVerifying =', isVerifying);
   console.log('🔵 AppRoutes: pathname =', location.pathname);
 
-  // Show loader only during the INITIAL auth check, not during
-  // post-register/post-login transitions. Otherwise the routes tree
-  // unmounts mid-flow and races against navigate().
   if (loading && !user) {
     return <PageLoader />;
   }
@@ -152,18 +141,19 @@ const isVerifying = false;
 
   return (
     <Routes>
+      {/* Public auth routes — redirect away only if user is logged in */}
       <Route
-  path="/login"
-  element={user ? <Navigate to={getRedirectPath()} replace /> : <Login />}
-/>
+        path="/login"
+        element={user ? <Navigate to={getRedirectPath()} replace /> : <Login />}
+      />
 
-<Route
-  path="/register"
-  element={user ? <Navigate to={getRedirectPath()} replace /> : <Register />}
-/>
+      <Route
+        path="/register"
+        element={user ? <Navigate to={getRedirectPath()} replace /> : <Register />}
+      />
 
-{/* Public — reachable without auth */}
-<Route path="/verify-email" element={<EmailVerification />} />
+      {/* Public — reachable without auth, no redirect */}
+      <Route path="/verify-email" element={<EmailVerification />} />
 
       {/* SUPERVISOR — handles 'manager', 'supervisor', and 'admin' roles */}
       <Route

@@ -7,7 +7,7 @@ export default defineConfig({
     port: 5174,
     proxy: {
       '/api': {
-        target: 'https://pms-backend-fawn-pi.vercel.app',
+        target: 'http://localhost:8000',
         changeOrigin: true,
         secure: false,
         // Add this to handle CORS

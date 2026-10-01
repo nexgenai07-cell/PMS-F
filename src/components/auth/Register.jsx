@@ -7,7 +7,6 @@ import {
   CheckCircle, AlertCircle, CheckCircle2
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import teamService from '../../services/teamService';
 
 const ROLE_OPTIONS = [
   { value: 'manager', label: 'Supervisor', icon: Shield, description: 'Oversee multiple projects and teams' },
@@ -30,21 +29,11 @@ const PASSWORD_RULES = [
   { key: 'special', label: 'Special character', test: (p) => /[^a-zA-Z0-9]/.test(p) }
 ];
 
-// 🆕 Issue #3 fix — tighter regex:
-//   - Local part: 1-64 chars, no leading/trailing dots, no consecutive dots
-//   - Domain: labels 1-63 chars, TLD 2-24 letters
 const EMAIL_REGEX = /^[a-zA-Z0-9](?:[a-zA-Z0-9._%+-]{0,62}[a-zA-Z0-9])?@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,24}$/;
-
-// 🆕 Issue #3 fix — reject emails with consecutive dots in local part
 const HAS_CONSECUTIVE_DOTS = /\.\./;
-
-// 🆕 Issue #3 fix — block obviously wrong TLDs (single-char, digits-only, etc.)
 const BAD_TLD = /\.(\d+|[a-zA-Z])$/;
-
 const USERNAME_REGEX = /^[a-zA-Z0-9_]+$/;
 
-// 🆕 Issue #3 fix — common typo domains that pass regex but don't exist
-// If the domain matches one of these, we reject with a "Did you mean X?" hint.
 const TYPO_DOMAINS = {
   'mail.com': 'This domain accepts mail but rarely for signups. Use gmail.com, outlook.com, or your company email.',
   'gmial.com': 'gmail.com',
@@ -71,7 +60,6 @@ const TYPO_DOMAINS = {
   'protonmail.con': 'protonmail.com',
 };
 
-// 🆕 Issue #3 fix — emails on disposable / throwaway services
 const DISPOSABLE_DOMAINS = [
   'mailinator.com', '10minutemail.com', 'tempmail.com', 'guerrillamail.com',
   'throwawaymail.com', 'yopmail.com', 'trashmail.com', 'sharklasers.com',
@@ -88,7 +76,6 @@ function scorePassword(password) {
   return Math.min(score, 5);
 }
 
-// 🆕 Issue #3 fix — enhanced email validator
 function validateEmail(value) {
   const v = (value ?? '').trim().toLowerCase();
 
@@ -97,7 +84,6 @@ function validateEmail(value) {
     return { valid: false, message: 'Email address is too long (maximum 254 characters)' };
   }
 
-  // Must contain exactly one @
   const atCount = (v.match(/@/g) || []).length;
   if (atCount !== 1) {
     return { valid: false, message: 'Email must contain exactly one @ symbol' };
@@ -105,17 +91,14 @@ function validateEmail(value) {
 
   const [localPart, domain] = v.split('@');
 
-  // Local part length
   if (localPart.length > 64) {
     return { valid: false, message: 'Email local part is too long (maximum 64 characters)' };
   }
 
-  // Local part no consecutive dots
   if (HAS_CONSECUTIVE_DOTS.test(localPart)) {
     return { valid: false, message: 'Email cannot contain consecutive dots' };
   }
 
-  // Overall regex
   if (!EMAIL_REGEX.test(v)) {
     return {
       valid: false,
@@ -123,7 +106,6 @@ function validateEmail(value) {
     };
   }
 
-  // TLD must be letters only, 2-24 chars
   if (BAD_TLD.test(v)) {
     return {
       valid: false,
@@ -131,7 +113,6 @@ function validateEmail(value) {
     };
   }
 
-  // 🆕 Block known typo domains with a helpful correction hint
   if (TYPO_DOMAINS[domain]) {
     const suggestion = TYPO_DOMAINS[domain];
     const isCorrection = suggestion.includes('.');
@@ -143,7 +124,6 @@ function validateEmail(value) {
     };
   }
 
-  // 🆕 Block disposable email providers
   if (DISPOSABLE_DOMAINS.includes(domain)) {
     return {
       valid: false,
@@ -151,7 +131,6 @@ function validateEmail(value) {
     };
   }
 
-  // 🆕 Block obviously internal-looking fake domains (test, example, localhost)
   if (
     domain === 'test' ||
     domain === 'localhost' ||
@@ -170,7 +149,6 @@ function validateEmail(value) {
   return { valid: true, message: '' };
 }
 
-// Validation functions
 const validators = {
   username: (value) => {
     const v = (value ?? '').trim();
@@ -183,7 +161,6 @@ const validators = {
     return { valid: true, message: '' };
   },
 
-  // 🆕 Issue #3 fix — delegate to the enhanced validator
   email: (value) => validateEmail(value),
 
   password: (value) => {
@@ -362,44 +339,31 @@ export default function Register() {
     try {
       const registrationData = {
         u_name: formData.u_name.trim(),
-        email: formData.email.trim().toLowerCase(),   // 🆕 normalize case
-        password: formData.password,
-        role: formData.role
-      };
-
-      const user = await register(registrationData);
-
-      const teamMemberData = {
-        name: formData.u_name.trim(),
-        role: formData.role === 'manager' ? 'Supervisor' : 'Team Lead',
         email: formData.email.trim().toLowerCase(),
-        qualification: 'New Member',
-        experience: 0,
-        skills: 'New User',
-        description: `Auto-created team member for ${formData.u_name}`,
-        added_by: user?.id || 1
+        password: formData.password,
+        role: formData.role,
       };
 
-      teamService.addTeamMember(teamMemberData).catch((teamError) => {
-        console.warn('⚠️ Team member creation failed (non-fatal):', teamError);
-      });
+      // Backend creates user (is_active=False, is_verified=False)
+      // AND sends the verification email via Gmail SMTP.
+      await register(registrationData);
 
-      localStorage.setItem('verifying_email', formData.email.trim());
+      toast.success(
+        'Account created! Check your inbox for the verification link.',
+        { duration: 5000 }
+      );
 
-      toast.success('Account created! Check your email to verify.');
       navigate('/verify-email', {
         replace: true,
         state: {
-          email: formData.email.trim(),
-          name: formData.u_name.trim()
-        }
+          email: formData.email.trim().toLowerCase(),
+          name: formData.u_name.trim(),
+        },
       });
     } catch (err) {
       console.error('🔴 Registration error:', err);
 
       const errorData = err?.response?.data;
-      console.log('📋 Error data:', errorData);
-
       setServerErrors({});
 
       const { fieldMap, generalError } = extractFieldErrors(errorData);
@@ -776,540 +740,104 @@ export default function Register() {
 
       <style>{`
         * { box-sizing: border-box; }
-
-        .register-screen {
-          min-height: 100vh;
-          display: flex;
-          background: var(--bg-primary);
-          position: relative;
-          overflow: hidden;
-        }
-
-        .bg-fx {
-          position: absolute;
-          inset: 0;
-          overflow: hidden;
-          pointer-events: none;
-          z-index: 0;
-        }
-
-        .bg-grid {
-          position: absolute;
-          inset: 0;
-          opacity: 0.5;
-        }
-
-        .bg-orb {
-          position: absolute;
-          border-radius: 50%;
-          filter: blur(70px);
-          opacity: 0.32;
-          will-change: transform;
-        }
-
-        .bg-orb--a {
-          width: 480px;
-          height: 480px;
-          top: -140px;
-          left: -100px;
-          background: radial-gradient(circle, var(--accent-primary), transparent 70%);
-          animation: drift1 22s ease-in-out infinite;
-        }
-
-        .bg-orb--b {
-          width: 420px;
-          height: 420px;
-          bottom: -160px;
-          left: 30%;
-          background: radial-gradient(circle, var(--accent-teal), transparent 70%);
-          animation: drift2 26s ease-in-out infinite;
-        }
-
-        .bg-orb--c {
-          width: 360px;
-          height: 360px;
-          top: 20%;
-          right: -80px;
-          background: radial-gradient(circle, var(--accent-secondary), transparent 70%);
-          animation: drift3 30s ease-in-out infinite;
-        }
-
-        @keyframes drift1 {
-          0%, 100% { transform: translate(0, 0) scale(1); }
-          50% { transform: translate(60px, 40px) scale(1.08); }
-        }
-        @keyframes drift2 {
-          0%, 100% { transform: translate(0, 0) scale(1); }
-          50% { transform: translate(-50px, -30px) scale(1.1); }
-        }
-        @keyframes drift3 {
-          0%, 100% { transform: translate(0, 0) scale(1); }
-          50% { transform: translate(-40px, 50px) scale(0.95); }
-        }
-
-        .register-panel {
-          flex: 1;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          padding: clamp(24px, 4vh, 44px) clamp(24px, 5vw, 64px);
-          position: relative;
-          z-index: 1;
-        }
-
-        .register-card {
-          width: 100%;
-          max-width: 440px;
-        }
-
-        .brand {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          margin-bottom: 20px;
-        }
-
-        .brand-mark {
-          width: 36px;
-          height: 36px;
-          background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
-          border-radius: 10px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          box-shadow: 0 0 16px var(--accent-glow);
-          flex-shrink: 0;
-        }
-
-        .brand-name {
-          font-family: var(--font-display);
-          font-size: 19px;
-          font-weight: 800;
-          letter-spacing: -0.3px;
-        }
-
-        .headline {
-          font-size: clamp(24px, 3vw, 28px);
-          font-weight: 800;
-          line-height: 1.15;
-          letter-spacing: -0.6px;
-          margin: 0 0 6px;
-        }
-
-        .gradient-text {
-          background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
-          background-clip: text;
-        }
-
-        .subhead {
-          color: var(--text-secondary);
-          font-size: 14px;
-          margin: 0 0 20px;
-        }
-
-        .form {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-        }
-
-        .input-group label {
-          display: block;
-          font-size: 12.5px;
-          font-weight: 600;
-          color: var(--text-secondary);
-          margin-bottom: 5px;
-        }
-
-        .required-star {
-          color: #f87171;
-          margin-left: 2px;
-        }
-
+        .register-screen { min-height: 100vh; display: flex; background: var(--bg-primary); position: relative; overflow: hidden; }
+        .bg-fx { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+        .bg-grid { position: absolute; inset: 0; opacity: 0.5; }
+        .bg-orb { position: absolute; border-radius: 50%; filter: blur(70px); opacity: 0.32; will-change: transform; }
+        .bg-orb--a { width: 480px; height: 480px; top: -140px; left: -100px; background: radial-gradient(circle, var(--accent-primary), transparent 70%); animation: drift1 22s ease-in-out infinite; }
+        .bg-orb--b { width: 420px; height: 420px; bottom: -160px; left: 30%; background: radial-gradient(circle, var(--accent-teal), transparent 70%); animation: drift2 26s ease-in-out infinite; }
+        .bg-orb--c { width: 360px; height: 360px; top: 20%; right: -80px; background: radial-gradient(circle, var(--accent-secondary), transparent 70%); animation: drift3 30s ease-in-out infinite; }
+        @keyframes drift1 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(60px,40px) scale(1.08); } }
+        @keyframes drift2 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-50px,-30px) scale(1.1); } }
+        @keyframes drift3 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-40px,50px) scale(0.95); } }
+        .register-panel { flex: 1; display: flex; align-items: center; justify-content: center; padding: clamp(24px,4vh,44px) clamp(24px,5vw,64px); position: relative; z-index: 1; }
+        .register-card { width: 100%; max-width: 440px; }
+        .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+        .brand-mark { width: 36px; height: 36px; background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary)); border-radius: 10px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 16px var(--accent-glow); flex-shrink: 0; }
+        .brand-name { font-family: var(--font-display); font-size: 19px; font-weight: 800; letter-spacing: -0.3px; }
+        .headline { font-size: clamp(24px,3vw,28px); font-weight: 800; line-height: 1.15; letter-spacing: -0.6px; margin: 0 0 6px; }
+        .gradient-text { background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .subhead { color: var(--text-secondary); font-size: 14px; margin: 0 0 20px; }
+        .form { display: flex; flex-direction: column; gap: 12px; }
+        .input-group label { display: block; font-size: 12.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 5px; }
+        .required-star { color: #f87171; margin-left: 2px; }
         .field-wrapper { position: relative; }
-
-        .field-icon {
-          position: absolute;
-          right: 12px;
-          top: 50%;
-          transform: translateY(-50%);
-          pointer-events: none;
-        }
-
+        .field-icon { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); pointer-events: none; }
         .error-icon { color: #f87171; }
         .success-icon { color: #34d399; }
-
         .password-field .password-icon { right: 40px; }
-
-        .input {
-          width: 100%;
-          padding: 10px 14px;
-          border: 2px solid var(--border-default);
-          border-radius: 10px;
-          background: var(--bg-secondary);
-          color: var(--text-primary);
-          font-size: 14px;
-          transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
-          outline: none;
-        }
-
-        .input:focus {
-          border-color: var(--accent-primary);
-          background: var(--bg-card);
-          box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
-        }
-
+        .input { width: 100%; padding: 10px 14px; border: 2px solid var(--border-default); border-radius: 10px; background: var(--bg-secondary); color: var(--text-primary); font-size: 14px; transition: border-color 0.2s, box-shadow 0.2s, background 0.2s; outline: none; }
+        .input:focus { border-color: var(--accent-primary); background: var(--bg-card); box-shadow: 0 0 0 3px rgba(99,102,241,0.08); }
         .input::placeholder { color: var(--text-muted); }
         .input:disabled { opacity: 0.6; }
-
-        .input-error {
-          border-color: #f87171 !important;
-          background: rgba(248, 113, 113, 0.04) !important;
-        }
-
-        .input-error:focus {
-          box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.12) !important;
-        }
-
-        .input-success {
-          border-color: #34d399 !important;
-          background: rgba(52, 211, 153, 0.04) !important;
-        }
-
-        .input-success:focus {
-          box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.12) !important;
-        }
-
-        .error-message {
-          color: #f87171;
-          font-size: 12px;
-          font-weight: 500;
-          margin-top: 4px;
-          display: flex;
-          align-items: center;
-          gap: 4px;
-        }
-
-        .error-email {
-          color: #dc2626;
-          font-weight: 600;
-          background: rgba(220, 38, 38, 0.08);
-          padding: 6px 10px;
-          border-radius: 6px;
-          border-left: 3px solid #dc2626;
-        }
-
-        .role-grid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 10px;
-          margin-top: 4px;
-        }
-
-        .role-card {
-          position: relative;
-          padding: 12px 10px;
-          border-radius: 12px;
-          border: 2px solid var(--border-default);
-          background: var(--bg-secondary);
-          cursor: pointer;
-          transition: border-color 0.2s, background 0.2s, transform 0.15s;
-          text-align: center;
-          color: var(--text-primary);
-        }
+        .input-error { border-color: #f87171 !important; background: rgba(248,113,113,0.04) !important; }
+        .input-error:focus { box-shadow: 0 0 0 3px rgba(248,113,113,0.12) !important; }
+        .input-success { border-color: #34d399 !important; background: rgba(52,211,153,0.04) !important; }
+        .input-success:focus { box-shadow: 0 0 0 3px rgba(52,211,153,0.12) !important; }
+        .error-message { color: #f87171; font-size: 12px; font-weight: 500; margin-top: 4px; display: flex; align-items: center; gap: 4px; }
+        .error-email { color: #dc2626; font-weight: 600; background: rgba(220,38,38,0.08); padding: 6px 10px; border-radius: 6px; border-left: 3px solid #dc2626; }
+        .role-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; }
+        .role-card { position: relative; padding: 12px 10px; border-radius: 12px; border: 2px solid var(--border-default); background: var(--bg-secondary); cursor: pointer; transition: border-color 0.2s, background 0.2s, transform 0.15s; text-align: center; color: var(--text-primary); }
         .role-card:hover { transform: translateY(-2px); }
-        .role-card--active {
-          border-color: var(--accent-primary);
-          background: rgba(99,102,241,0.08);
-        }
-
-        .role-icon {
-          display: block;
-          margin: 0 auto 5px;
-          color: var(--text-muted);
-        }
+        .role-card--active { border-color: var(--accent-primary); background: rgba(99,102,241,0.08); }
+        .role-icon { display: block; margin: 0 auto 5px; color: var(--text-muted); }
         .role-card--active .role-icon { color: var(--accent-primary); }
-
-        .role-label {
-          font-size: 13px;
-          font-weight: 500;
-          margin-bottom: 3px;
-        }
-        .role-card--active .role-label {
-          font-weight: 700;
-          color: var(--accent-primary);
-        }
-
-        .role-desc {
-          font-size: 10.5px;
-          color: var(--text-muted);
-          line-height: 1.3;
-        }
-
-        .role-checkmark {
-          position: absolute;
-          top: 6px;
-          right: 6px;
-        }
-
+        .role-label { font-size: 13px; font-weight: 500; margin-bottom: 3px; }
+        .role-card--active .role-label { font-weight: 700; color: var(--accent-primary); }
+        .role-desc { font-size: 10.5px; color: var(--text-muted); line-height: 1.3; }
+        .role-checkmark { position: absolute; top: 6px; right: 6px; }
         .password-field { position: relative; }
         .password-field .input { padding-right: 42px; }
-        .password-toggle {
-          position: absolute;
-          right: 10px;
-          top: 50%;
-          transform: translateY(-50%);
-          background: none;
-          border: none;
-          color: var(--text-muted);
-          cursor: pointer;
-          padding: 4px;
-          display: flex;
-          transition: color 0.2s;
-        }
+        .password-toggle { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 4px; display: flex; transition: color 0.2s; }
         .password-toggle:hover { color: var(--text-primary); }
-
         .strength { margin-top: 6px; }
-        .strength-bars {
-          display: flex;
-          align-items: center;
-          gap: 4px;
-          margin-bottom: 2px;
-        }
-        .strength-bar {
-          height: 3px;
-          flex: 1;
-          border-radius: 2px;
-          transition: background 0.3s;
-        }
-        .strength-label {
-          font-size: 10.5px;
-          font-weight: 600;
-          white-space: nowrap;
-          margin-left: 4px;
-        }
-        .strength-feedback {
-          font-size: 10.5px;
-          color: var(--text-muted);
-        }
-
-        .requirements {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 4px;
-          margin-top: 6px;
-        }
-        .requirement {
-          display: flex;
-          align-items: center;
-          gap: 5px;
-          font-size: 11px;
-          color: var(--text-muted);
-          transition: color 0.3s;
-        }
+        .strength-bars { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; }
+        .strength-bar { height: 3px; flex: 1; border-radius: 2px; transition: background 0.3s; }
+        .strength-label { font-size: 10.5px; font-weight: 600; white-space: nowrap; margin-left: 4px; }
+        .strength-feedback { font-size: 10.5px; color: var(--text-muted); }
+        .requirements { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 6px; }
+        .requirement { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); transition: color 0.3s; }
         .requirement--met { color: #10b981; }
-
-        .btn {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          padding: 10px 18px;
-          border: none;
-          border-radius: 10px;
-          font-size: 14px;
-          font-weight: 600;
-          cursor: pointer;
-          transition: all 0.2s;
-        }
-
-        .btn-primary {
-          background: var(--accent-primary);
-          color: #fff;
-        }
-
-        .btn-primary:hover:not(:disabled) {
-          opacity: 0.85;
-          transform: translateY(-1px);
-        }
-
-        .btn-primary:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
-          transform: none;
-        }
-
-        .submit-btn {
-          margin-top: 2px;
-          justify-content: center;
-          padding: 12px 20px;
-          font-size: 15px;
-          gap: 8px;
-        }
-
-        .spinner {
-          width: 15px;
-          height: 15px;
-          border: 2px solid rgba(255,255,255,0.3);
-          border-top-color: #fff;
-          border-radius: 50%;
-          animation: spin 0.8s linear infinite;
-        }
-
-        .signin-line {
-          margin-top: 16px;
-          text-align: center;
-          font-size: 13.5px;
-          color: var(--text-secondary);
-        }
-        .signin-link {
-          background: none;
-          border: none;
-          color: var(--accent-primary);
-          font-weight: 600;
-          cursor: pointer;
-          padding: 0;
-          font-size: 13.5px;
-          transition: color 0.2s;
-        }
+        .btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 18px; border: none; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        .btn-primary { background: var(--accent-primary); color: #fff; }
+        .btn-primary:hover:not(:disabled) { opacity: 0.85; transform: translateY(-1px); }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        .submit-btn { margin-top: 2px; justify-content: center; padding: 12px 20px; font-size: 15px; gap: 8px; }
+        .spinner { width: 15px; height: 15px; border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite; }
+        .signin-line { margin-top: 16px; text-align: center; font-size: 13.5px; color: var(--text-secondary); }
+        .signin-link { background: none; border: none; color: var(--accent-primary); font-weight: 600; cursor: pointer; padding: 0; font-size: 13.5px; transition: color 0.2s; }
         .signin-link:hover { color: var(--accent-secondary); }
-
-        .side-panel {
-          width: 380px;
-          background: var(--bg-secondary);
-          border-left: 1px solid var(--border-subtle);
-          display: flex;
-          align-items: center;
-          padding: clamp(24px, 4vh, 44px) 32px;
-          flex-shrink: 0;
-          position: relative;
-          z-index: 1;
-        }
-
-        @media (max-width: 900px) {
-          .side-panel { display: none; }
-        }
-
-        .side-content {
-          display: flex;
-          flex-direction: column;
-          gap: 14px;
-        }
-
-        .side-title {
-          font-family: var(--font-display);
-          font-size: 18px;
-          font-weight: 700;
-          margin: 0 0 2px;
-        }
-
-        .side-role {
-          display: flex;
-          gap: 12px;
-          padding: 14px;
-          background: var(--bg-card);
-          border-radius: 12px;
-          border: 2px solid var(--border-subtle);
-          opacity: 0.7;
-          transition: all 0.3s;
-        }
-        .side-role--active {
-          border-color: var(--accent-primary);
-          opacity: 1;
-        }
-
-        .side-role-icon {
-          width: 36px;
-          height: 36px;
-          background: var(--bg-secondary);
-          border-radius: 10px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          flex-shrink: 0;
-          color: var(--text-muted);
-          transition: all 0.3s;
-        }
-        .side-role--active .side-role-icon {
-          background: rgba(99,102,241,0.15);
-          color: var(--accent-primary);
-        }
-
-        .side-role-label {
-          font-weight: 600;
-          margin: 0 0 2px;
-          font-family: var(--font-display);
-          font-size: 13.5px;
-          color: var(--text-primary);
-        }
+        .side-panel { width: 380px; background: var(--bg-secondary); border-left: 1px solid var(--border-subtle); display: flex; align-items: center; padding: clamp(24px,4vh,44px) 32px; flex-shrink: 0; position: relative; z-index: 1; }
+        @media (max-width: 900px) { .side-panel { display: none; } }
+        .side-content { display: flex; flex-direction: column; gap: 14px; }
+        .side-title { font-family: var(--font-display); font-size: 18px; font-weight: 700; margin: 0 0 2px; }
+        .side-role { display: flex; gap: 12px; padding: 14px; background: var(--bg-card); border-radius: 12px; border: 2px solid var(--border-subtle); opacity: 0.7; transition: all 0.3s; }
+        .side-role--active { border-color: var(--accent-primary); opacity: 1; }
+        .side-role-icon { width: 36px; height: 36px; background: var(--bg-secondary); border-radius: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--text-muted); transition: all 0.3s; }
+        .side-role--active .side-role-icon { background: rgba(99,102,241,0.15); color: var(--accent-primary); }
+        .side-role-label { font-weight: 600; margin: 0 0 2px; font-family: var(--font-display); font-size: 13.5px; color: var(--text-primary); }
         .side-role--active .side-role-label { color: var(--accent-primary); }
-
-        .side-role-desc {
-          font-size: 11.5px;
-          color: var(--text-secondary);
-          line-height: 1.4;
-          margin: 0;
-        }
-
-        .stats-card {
-          margin-top: 2px;
-          padding: 14px 12px;
-          background: var(--bg-card);
-          border-radius: 12px;
-          border: 1px solid var(--border-subtle);
-          display: flex;
-          align-items: center;
-          justify-content: space-around;
-        }
+        .side-role-desc { font-size: 11.5px; color: var(--text-secondary); line-height: 1.4; margin: 0; }
+        .stats-card { margin-top: 2px; padding: 14px 12px; background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border-subtle); display: flex; align-items: center; justify-content: space-around; }
         .stat { text-align: center; }
-        .stat-num {
-          font-size: 17px;
-          font-weight: 800;
-          margin: 0;
-        }
-        .stat-label {
-          font-size: 9.5px;
-          color: var(--text-muted);
-          margin: 0;
-        }
-        .stat-divider {
-          width: 1px;
-          height: 22px;
-          background: var(--border-subtle);
-        }
-
-        .spin { animation: spin 1s linear infinite; }
-
+        .stat-num { font-size: 17px; font-weight: 800; margin: 0; }
+        .stat-label { font-size: 9.5px; color: var(--text-muted); margin: 0; }
+        .stat-divider { width: 1px; height: 22px; background: var(--border-subtle); }
         @keyframes spin { to { transform: rotate(360deg); } }
-
         .animate-fade-in { animation: fadeIn 0.5s ease-out; }
         .animate-slide-right { animation: slideRight 0.5s ease-out; }
         .stagger-children > * { animation: fadeIn 0.5s ease-out both; }
         .stagger-children > *:nth-child(1) { animation-delay: 0.05s; }
         .stagger-children > *:nth-child(2) { animation-delay: 0.12s; }
         .stagger-children > *:nth-child(3) { animation-delay: 0.19s; }
-        .stagger-children > *:nth-child(4) { animation-delay: 0.26s; }
-
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(8px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes slideRight {
-          from { opacity: 0; transform: translateX(16px); }
-          to { opacity: 1; transform: translateX(0); }
-        }
-
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes slideRight { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: translateX(0); } }
         @media (prefers-reduced-motion: reduce) {
-          .animate-fade-in, .animate-slide-right, .stagger-children > *, .spinner, .bg-orb {
-            animation: none !important;
-          }
+          .animate-fade-in, .animate-slide-right, .stagger-children > *, .spinner, .bg-orb { animation: none !important; }
         }
-
         @media (max-width: 480px) {
           .register-panel { padding: 16px; }
           .role-desc { display: none; }
-          .role-grid { grid-template-columns: 1fr 1fr; }
           .requirements { grid-template-columns: 1fr; }
           .headline { font-size: 22px; }
           .brand-name { font-size: 17px; }

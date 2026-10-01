@@ -107,41 +107,63 @@ export default function Login() {
         role === 'supervisor' || role === 'admin' || role === 'manager';
       navigate(isSupervisor ? '/supervisor' : '/lead', { replace: true });
     } catch (err) {
-  // Extract status code from the error response
-  const status = err?.response?.status;
-  const data = err?.response?.data;
+      const status = err?.response?.status;
+      const data = err?.response?.data;
 
-  // Look for the EMAIL_NOT_VERIFIED code in several possible places
-  const code =
-    data?.code ||
-    data?.error?.code ||
-    data?.detail?.code ||
-    (typeof data?.detail === 'object' ? data.detail.code : null);
+      // -------------------------------------------------------------
+      // Normalize error fields. Backend may return:
+      //   { success:false, error:{ detail, code }, detail, code }
+      //   { detail: "...", code: "..." }
+      //   { non_field_errors: ["..."] }
+      // -------------------------------------------------------------
+      const rawCode =
+        data?.code ||
+        data?.error?.code ||
+        (typeof data?.detail === 'object' ? data.detail.code : null);
 
-  // 🆕 If email not verified — redirect user to the verify page with a clear message
-  if (status === 403 && code === 'EMAIL_NOT_VERIFIED') {
-    const detail =
-      data?.detail ||
-      data?.error?.detail ||
-      'Please verify your email before logging in.';
-    const message = typeof detail === 'string' ? detail : 'Please verify your email before logging in.';
+      const rawDetail =
+        (typeof data?.detail === 'string' ? data.detail : null) ||
+        data?.error?.detail ||
+        (Array.isArray(data?.non_field_errors) ? data.non_field_errors[0] : null) ||
+        err?.message;
 
-    toast.error(message);
-    // Send user to the verification page, prefilled with their email
-    navigate('/verify-email', {
-      replace: true,
-      state: { email: email.trim(), reason: 'not_verified' },
-    });
-    return;
-  }
+      // Unwrap arrays (DRF sometimes wraps strings)
+      const code = Array.isArray(rawCode) ? rawCode[0] : rawCode;
+      const detail = Array.isArray(rawDetail) ? rawDetail[0] : rawDetail;
 
-  // Otherwise, use the standard error message extractor
-  const msg = extractErrorMessage(err, 'Login failed. Please try again.');
-  const safeMsg = typeof msg === 'string' ? msg : 'Login failed. Please try again.';
-  setServerError(safeMsg);
-  toast.error(safeMsg);
-  setPassword('');
-} finally {
+      // -------------------------------------------------------------
+      // 🚫 EMAIL_NOT_VERIFIED — send user to the verification page
+      // -------------------------------------------------------------
+      if (status === 403 && code === 'EMAIL_NOT_VERIFIED') {
+        const message =
+          typeof detail === 'string'
+            ? detail
+            : 'Please verify your email before logging in.';
+
+        toast.error(message, { duration: 5000 });
+
+        navigate('/verify-email', {
+          replace: true,
+          state: { email: email.trim(), reason: 'not_verified' },
+        });
+        return;
+      }
+
+      // -------------------------------------------------------------
+      // All other errors — show a specific message
+      // -------------------------------------------------------------
+      const fallback =
+        typeof detail === 'string' && detail
+          ? detail
+          : extractErrorMessage(err, 'Login failed. Please try again.');
+
+      const safeMessage =
+        typeof fallback === 'string' ? fallback : 'Login failed. Please try again.';
+
+      setServerError(safeMessage);
+      toast.error(safeMessage);
+      setPassword('');
+    } finally {
       setLoading(false);
     }
   };
@@ -331,10 +353,7 @@ export default function Login() {
 
       <style>{`
         * { box-sizing: border-box; }
-        .login-screen {
-          height: 100vh; min-height: 640px; display: flex;
-          background: var(--bg-primary); overflow: hidden; position: relative;
-        }
+        .login-screen { height: 100vh; min-height: 640px; display: flex; background: var(--bg-primary); overflow: hidden; position: relative; }
         .bg-fx { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
         .bg-grid { position: absolute; inset: 0; opacity: 0.5; }
         .bg-orb { position: absolute; border-radius: 50%; filter: blur(70px); opacity: 0.35; will-change: transform; }
