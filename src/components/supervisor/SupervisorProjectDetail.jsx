@@ -24,7 +24,7 @@ import NotificationHelper from '../../services/notificationHelper';
 const PRIORITY_OPTIONS = ["low", "medium", "high", "critical"];
 const STATUS_OPTIONS = ["todo", "in_progress", "review", "done", "cancelled"];
 const SUPERVISOR_ROLES = ['manager', 'admin', 'supervisor'];
-const LEAD_ROLES = ['lead', 'member'];
+const LEAD_ROLES = ['lead', 'member']; // treat 'member' as Lead for now (matches User.ROLE_CHOICES)
 
 /* ─────────── Safe array helper ─────────── */
 const asArray = (v) => (Array.isArray(v) ? v : []);
@@ -281,11 +281,13 @@ export default function SupervisorProjectDetail() {
      DERIVED DATA
      ═══════════════════════════════════════════════════════════ */
 
+  // Set of User.ids for supervisors.
   const supervisorIdSet = useMemo(
     () => new Set(asArray(projectSupervisors).map(s => Number(s.userId))),
     [projectSupervisors]
   );
 
+  // Leads = project members whose role is lead/member, excluding creator + supervisors.
   const projectLeadsDerived = useMemo(() => {
     if (!project) return [];
     const creatorId = Number(project.created_by);
@@ -302,6 +304,7 @@ export default function SupervisorProjectDetail() {
     ? asArray(projectLeads)
     : projectLeadsDerived;
 
+  // Regular members = project members that are neither supervisors nor leads.
   const regularMembers = useMemo(
     () => asArray(projectMembers).filter(m => {
       const role = (m.role || '').toLowerCase();
@@ -318,6 +321,7 @@ export default function SupervisorProjectDetail() {
     [projectMembers]
   );
 
+  /* ─── Project progress ─── */
   const projectProgress = useMemo(() => {
     const backendProgress = Number(stats?.avgProgress);
     if (Number.isFinite(backendProgress) && backendProgress > 0) return Math.round(backendProgress);
@@ -447,12 +451,14 @@ export default function SupervisorProjectDetail() {
         avgProgress:     Number(statsResponse.avgProgress) || 0,
       });
 
+      // Filter tasks for this project
       const projectTasks = allTasks.filter(t => {
         const taskProjectId = t.p_id ?? t.p ?? t.project ?? t.project_id;
         return Number(taskProjectId) === Number(projectId);
       });
       console.log('✅ [Supervisor] projectTasks filtered:', projectTasks.length);
 
+      // Build PTeam member map
       const memberMap = new Map();
       const projectPteamEntries = pteamList.filter(
         entry => getPteamProjectId(entry) === Number(projectId)
@@ -480,6 +486,7 @@ export default function SupervisorProjectDetail() {
       });
       console.log('✅ [Supervisor] memberEntries:', memberEntries.length, memberEntries);
 
+      // Parse supervisors from backend M2M (source of truth)
       const supervisorIds = asArray(projectItem?.supervisors).map(Number);
       const supervisorNames = asArray(projectItem?.supervisor_names);
 
@@ -500,6 +507,7 @@ export default function SupervisorProjectDetail() {
       console.log('✅ [Supervisor] supervisorEntries:', supervisorEntries);
       setProjectSupervisors(supervisorEntries);
 
+      // Build projectMembers
       const supUserIdSet = new Set(supervisorEntries.map(s => Number(s.userId)));
       const membersWithoutSupervisors = memberEntries.filter(
         m => !supUserIdSet.has(Number(m.userId))
@@ -508,6 +516,7 @@ export default function SupervisorProjectDetail() {
       setProjectMembers(allMembers);
       console.log('✅ [Supervisor] projectMembers:', allMembers.length);
 
+      // Extract leads
       const creatorId = Number(projectItem?.created_by);
       const leadEntries = memberEntries.filter(m => {
         const role = (m.role || '').toLowerCase();
@@ -519,7 +528,8 @@ export default function SupervisorProjectDetail() {
       setProjectLeads(leadEntries);
       console.log('✅ [Supervisor] projectLeads:', leadEntries);
 
-       const mappedTasks = projectTasks.map(t => ({
+      // Map tasks with computed progress
+      const mappedTasks = projectTasks.map(t => ({
         ...t,
         progress: computeTaskProgress(t),
         milestones: asArray(t.milestones),
@@ -528,39 +538,7 @@ export default function SupervisorProjectDetail() {
       setTasks(mappedTasks);
       console.log('✅ [Supervisor] mappedTasks:', mappedTasks.length);
 
-      // ⬇️⬇️⬇️  DIAGNOSTIC GOES HERE  ⬇️⬇️⬇️
-      console.log('🔍 ===== TASK / ASSIGNEE DIAGNOSTIC =====');
-      console.log('🔍 TeamMembers:', membersList.map(m => ({ id: m.id, name: m.name })));
-      console.log('🔍 Users:', usersList.map(u => ({ id: u.id, name: u.u_name || u.name })));
-      console.log('🔍 Tasks with assignee resolution:',
-        mappedTasks.map(t => {
-          const id = Number(t.assign_to);
-          let resolvesTo = 'no valid id';
-          if (Number.isFinite(id)) {
-            const tm = membersList.find(m => Number(m.id) === id);
-            if (tm) {
-              resolvesTo = `TeamMember #${tm.id} = "${tm.name}"`;
-            } else {
-              const u = usersList.find(x => Number(x.id) === id);
-              if (u) {
-                resolvesTo = `User #${u.id} = "${u.u_name || u.name}"`;
-              } else {
-                resolvesTo = `id ${id} NOT FOUND`;
-              }
-            }
-          }
-          return {
-            t_id: t.t_id,
-            title: t.title,
-            assign_to: t.assign_to,
-            assign_to_name: t.assign_to_name,
-            resolves_to: resolvesTo,
-          };
-        })
-      );
-      console.log('🔍 =========================================');
-      
-
+      // Load comments (non-blocking)
       loadCommentsForTasks(mappedTasks);
 
     } catch (error) {
@@ -575,7 +553,6 @@ export default function SupervisorProjectDetail() {
       console.log('✅ [Supervisor] fetchProjectData COMPLETE');
     }
   };
-  
 
   const loadCommentsForTasks = async (taskList) => {
     if (!Array.isArray(taskList) || taskList.length === 0) {
@@ -711,10 +688,10 @@ export default function SupervisorProjectDetail() {
         try { await NotificationHelper.taskCompleted(updatedTask, user); } catch (e) { /* silent */ }
       }
 
-      // 🔧 FIX: If the assignee changed, DO NOT carry over the old
-      // `assign_to_name`. The cached name from the previous state is stale
-      // and would make the task card show the old assignee even though
-      // the assign_to id now points at someone else.
+      // If the assignee changed, DO NOT carry over the old `assign_to_name`.
+      // The cached name from the previous state is stale and would make the
+      // task card show the old assignee even though the assign_to id now
+      // points at someone else.
       setTasks(prev => prev.map(t => {
         if ((t.t_id || t.id) !== (updated.t_id || updated.id)) return t;
 
@@ -729,8 +706,6 @@ export default function SupervisorProjectDetail() {
           ...updatedTask,
           progress: computeTaskProgress({ ...t, ...updatedTask }),
           assign_to: nextAssignee,
-          // Drop the cached name if the assignee changed — getMemberName
-          // will resolve the fresh name from `assign_to` id.
           assign_to_name: assigneeChanged
             ? null
             : (updatedTask.assign_to_name ?? t.assign_to_name ?? null),
@@ -898,14 +873,8 @@ export default function SupervisorProjectDetail() {
   const progress = projectProgress;
 
   /* ═══════════════════════════════════════════════════════════
-     🔧 FIX: getMemberName
-     ═══════════════════════════════════════════════════════════
-     The old version returned `taskRef.assign_to_name` FIRST, which is
-     a cached string that can go stale after a reassignment. This new
-     version resolves the name from the `assign_to` id FIRST, and only
-     falls back to the cached name if the id lookup fails. This is why
-     the card showed "Admin" while the modal (which refetches fresh)
-     showed "Alii".
+     getMemberName — resolves the assignee name from the FK id.
+     NEVER trusts a stale cached name when an id is present.
      ═══════════════════════════════════════════════════════════ */
   const getMemberName = (memberId, taskRef = null) => {
     // 1. Try to resolve by id — this is always the freshest source.
@@ -917,11 +886,14 @@ export default function SupervisorProjectDetail() {
 
         const u = asArray(users).find(x => Number(x.id) === numId);
         if (u) return u.u_name || u.name || "Unassigned";
+
+        // We HAD an id but couldn't resolve it. Never lie about it —
+        // show a placeholder instead of a stale cached name.
+        return `Member #${numId}`;
       }
     }
 
-    // 2. Only if we have no usable id, fall back to the cached name
-    //    from the task reference (last resort).
+    // 2. Only when we have NO id at all do we trust the cached name.
     if (taskRef?.assign_to_name) return taskRef.assign_to_name;
 
     // 3. Nothing to go on.
@@ -1079,8 +1051,7 @@ export default function SupervisorProjectDetail() {
                   <PriorityBadge priority={selectedTask.priority} />
                 </div>
 
-                {/* 🔧 FIX: use the id-resolving getMemberName helper so
-                    the modal also reflects the fresh assignee. */}
+                {/* Assigned To — always resolved from the FK id */}
                 <div style={{ marginBottom: 12 }}>
                   <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 4 }}>
                     Assigned To
@@ -1547,8 +1518,6 @@ export default function SupervisorProjectDetail() {
                         {t.desc && <p className="task-item-desc">{t.desc}</p>}
                         <div className="task-item-footer">
                           <StatusBadge status={t.status} />
-                          {/* 🔧 FIX: getMemberName resolves by id, so the card
-                              always shows the CURRENT assignee. */}
                           <div className="task-item-assignee"><User size={12} />{getMemberName(t.assign_to, t)}</div>
                           <div className="task-item-actions">
                             <button
@@ -1618,6 +1587,7 @@ export default function SupervisorProjectDetail() {
             </h4>
 
             <div className="team-sections">
+              {/* ─── PROJECT LEAD (creator) ─── */}
               <div className="team-section team-section-lead">
                 <div className="team-section-header">
                   <div className="team-section-title">
@@ -1674,6 +1644,7 @@ export default function SupervisorProjectDetail() {
                 </div>
               </div>
 
+              {/* ─── SUPERVISORS ─── */}
               <div className="team-section team-section-supervisors">
                 <div className="team-section-header">
                   <div className="team-section-title">
@@ -1721,6 +1692,7 @@ export default function SupervisorProjectDetail() {
                 )}
               </div>
 
+              {/* ─── TEAM MEMBERS ─── */}
               <div className="team-section team-section-members">
                 <div className="team-section-header">
                   <div className="team-section-title">
