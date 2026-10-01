@@ -29,7 +29,12 @@ class TaskService {
           const taskId = task.t_id ?? task.id;
 
           if (!needsEnrichment(task)) {
-            // Already good — normalize a couple of numeric fields
+            // Already good — normalize a couple of numeric fields.
+            //
+            // NOTE: even here, we leave `assign_to_name` alone. We DON'T
+            // trust a cached name if we can resolve it later from
+            // `allTeamMembers` by `assign_to` id. The UI's `getMemberName`
+            // will prefer the id-based lookup.
             return {
               ...task,
               t_id: taskId ? Number(taskId) : null,
@@ -42,21 +47,43 @@ class TaskService {
           try {
             const detailResponse = await this.getTask(taskId);
             const detailData = detailResponse?.data || detailResponse || {};
+
+            // ─────────────────────────────────────────────────────────
+            // Assignee-change detection.
+            //
+            // If the list's `assign_to` differs from the detail's
+            // `assign_to`, then the task was reassigned since the list
+            // was cached. In that case the list's `assign_to_name` is
+            // STALE and must NOT be trusted — only the detail's name is
+            // authoritative.
+            // ─────────────────────────────────────────────────────────
+            const listAssignee   = task.assign_to != null ? Number(task.assign_to) : null;
+            const detailAssignee = detailData?.assign_to != null ? Number(detailData.assign_to) : null;
+            const assigneeChanged = listAssignee !== detailAssignee;
+
+            const resolvedAssignTo = detailData?.assign_to != null
+              ? Number(detailData.assign_to)
+              : (task.assign_to != null ? Number(task.assign_to) : null);
+
+            const resolvedAssignToName = assigneeChanged
+              ? (detailData?.assign_to_name ?? null)               // trust the detail only
+              : (detailData?.assign_to_name ?? task.assign_to_name ?? null);
+
             return {
               ...task,
               ...detailData,
               t_id: taskId ? Number(taskId) : null,
               id: taskId ? Number(taskId) : null,
-              assign_to: detailData?.assign_to != null
-                ? Number(detailData.assign_to)
-                : (task.assign_to != null ? Number(task.assign_to) : null),
-              assign_to_name: detailData?.assign_to_name || task.assign_to_name || null,
+              assign_to: resolvedAssignTo,
+              assign_to_name: resolvedAssignToName,
               progress: Number.isFinite(Number(detailData?.progress))
                 ? Number(detailData.progress)
                 : (Number.isFinite(Number(task.progress)) ? Number(task.progress) : 0),
             };
           } catch (err) {
-            // Keep the task as-is but normalize
+            // Detail fetch failed — keep the task as-is but normalized.
+            // We deliberately DO NOT trust `task.assign_to_name` here
+            // beyond passing it through; the UI resolves by id anyway.
             return {
               ...task,
               t_id: taskId ? Number(taskId) : null,

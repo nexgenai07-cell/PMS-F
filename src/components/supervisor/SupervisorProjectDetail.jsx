@@ -24,7 +24,7 @@ import NotificationHelper from '../../services/notificationHelper';
 const PRIORITY_OPTIONS = ["low", "medium", "high", "critical"];
 const STATUS_OPTIONS = ["todo", "in_progress", "review", "done", "cancelled"];
 const SUPERVISOR_ROLES = ['manager', 'admin', 'supervisor'];
-const LEAD_ROLES = ['lead', 'member']; // treat 'member' as Lead for now (matches User.ROLE_CHOICES)
+const LEAD_ROLES = ['lead', 'member'];
 
 /* ─────────── Safe array helper ─────────── */
 const asArray = (v) => (Array.isArray(v) ? v : []);
@@ -281,13 +281,11 @@ export default function SupervisorProjectDetail() {
      DERIVED DATA
      ═══════════════════════════════════════════════════════════ */
 
-  // Set of User.ids for supervisors.
   const supervisorIdSet = useMemo(
     () => new Set(asArray(projectSupervisors).map(s => Number(s.userId))),
     [projectSupervisors]
   );
 
-  // Leads = project members whose role is lead/member, excluding creator + supervisors.
   const projectLeadsDerived = useMemo(() => {
     if (!project) return [];
     const creatorId = Number(project.created_by);
@@ -304,7 +302,6 @@ export default function SupervisorProjectDetail() {
     ? asArray(projectLeads)
     : projectLeadsDerived;
 
-  // Regular members = project members that are neither supervisors nor leads.
   const regularMembers = useMemo(
     () => asArray(projectMembers).filter(m => {
       const role = (m.role || '').toLowerCase();
@@ -321,7 +318,6 @@ export default function SupervisorProjectDetail() {
     [projectMembers]
   );
 
-  /* ─── Project progress ─── */
   const projectProgress = useMemo(() => {
     const backendProgress = Number(stats?.avgProgress);
     if (Number.isFinite(backendProgress) && backendProgress > 0) return Math.round(backendProgress);
@@ -451,14 +447,12 @@ export default function SupervisorProjectDetail() {
         avgProgress:     Number(statsResponse.avgProgress) || 0,
       });
 
-      // Filter tasks for this project
       const projectTasks = allTasks.filter(t => {
         const taskProjectId = t.p_id ?? t.p ?? t.project ?? t.project_id;
         return Number(taskProjectId) === Number(projectId);
       });
       console.log('✅ [Supervisor] projectTasks filtered:', projectTasks.length);
 
-      // Build PTeam member map
       const memberMap = new Map();
       const projectPteamEntries = pteamList.filter(
         entry => getPteamProjectId(entry) === Number(projectId)
@@ -486,7 +480,6 @@ export default function SupervisorProjectDetail() {
       });
       console.log('✅ [Supervisor] memberEntries:', memberEntries.length, memberEntries);
 
-      // Parse supervisors from backend M2M (source of truth)
       const supervisorIds = asArray(projectItem?.supervisors).map(Number);
       const supervisorNames = asArray(projectItem?.supervisor_names);
 
@@ -507,7 +500,6 @@ export default function SupervisorProjectDetail() {
       console.log('✅ [Supervisor] supervisorEntries:', supervisorEntries);
       setProjectSupervisors(supervisorEntries);
 
-      // Build projectMembers
       const supUserIdSet = new Set(supervisorEntries.map(s => Number(s.userId)));
       const membersWithoutSupervisors = memberEntries.filter(
         m => !supUserIdSet.has(Number(m.userId))
@@ -516,7 +508,6 @@ export default function SupervisorProjectDetail() {
       setProjectMembers(allMembers);
       console.log('✅ [Supervisor] projectMembers:', allMembers.length);
 
-      // Extract leads
       const creatorId = Number(projectItem?.created_by);
       const leadEntries = memberEntries.filter(m => {
         const role = (m.role || '').toLowerCase();
@@ -528,7 +519,6 @@ export default function SupervisorProjectDetail() {
       setProjectLeads(leadEntries);
       console.log('✅ [Supervisor] projectLeads:', leadEntries);
 
-      // Map tasks with computed progress
       const mappedTasks = projectTasks.map(t => ({
         ...t,
         progress: computeTaskProgress(t),
@@ -538,7 +528,6 @@ export default function SupervisorProjectDetail() {
       setTasks(mappedTasks);
       console.log('✅ [Supervisor] mappedTasks:', mappedTasks.length);
 
-      // Load comments (non-blocking)
       loadCommentsForTasks(mappedTasks);
 
     } catch (error) {
@@ -688,11 +677,31 @@ export default function SupervisorProjectDetail() {
         try { await NotificationHelper.taskCompleted(updatedTask, user); } catch (e) { /* silent */ }
       }
 
-      setTasks(prev => prev.map(t =>
-        (t.t_id || t.id) === (updated.t_id || updated.id)
-          ? { ...t, ...updatedTask, progress: computeTaskProgress({ ...t, ...updatedTask }), assign_to: updatedTask.assign_to ?? assignTo }
-          : t
-      ));
+      // 🔧 FIX: If the assignee changed, DO NOT carry over the old
+      // `assign_to_name`. The cached name from the previous state is stale
+      // and would make the task card show the old assignee even though
+      // the assign_to id now points at someone else.
+      setTasks(prev => prev.map(t => {
+        if ((t.t_id || t.id) !== (updated.t_id || updated.id)) return t;
+
+        const prevAssignee = t.assign_to != null ? Number(t.assign_to) : null;
+        const nextAssignee = updatedTask.assign_to != null
+          ? Number(updatedTask.assign_to)
+          : (assignTo != null ? Number(assignTo) : null);
+        const assigneeChanged = prevAssignee !== nextAssignee;
+
+        return {
+          ...t,
+          ...updatedTask,
+          progress: computeTaskProgress({ ...t, ...updatedTask }),
+          assign_to: nextAssignee,
+          // Drop the cached name if the assignee changed — getMemberName
+          // will resolve the fresh name from `assign_to` id.
+          assign_to_name: assigneeChanged
+            ? null
+            : (updatedTask.assign_to_name ?? t.assign_to_name ?? null),
+        };
+      }));
 
       setEditTask(null);
       resetEditTaskTouched();
@@ -854,18 +863,34 @@ export default function SupervisorProjectDetail() {
 
   const progress = projectProgress;
 
+  /* ═══════════════════════════════════════════════════════════
+     🔧 FIX: getMemberName
+     ═══════════════════════════════════════════════════════════
+     The old version returned `taskRef.assign_to_name` FIRST, which is
+     a cached string that can go stale after a reassignment. This new
+     version resolves the name from the `assign_to` id FIRST, and only
+     falls back to the cached name if the id lookup fails. This is why
+     the card showed "Admin" while the modal (which refetches fresh)
+     showed "Alii".
+     ═══════════════════════════════════════════════════════════ */
   const getMemberName = (memberId, taskRef = null) => {
+    // 1. Try to resolve by id — this is always the freshest source.
+    if (memberId != null) {
+      const numId = Number(memberId);
+      if (Number.isFinite(numId)) {
+        const tm = asArray(allTeamMembers).find(m => Number(m.id) === numId);
+        if (tm) return tm.name;
+
+        const u = asArray(users).find(x => Number(x.id) === numId);
+        if (u) return u.u_name || u.name || "Unassigned";
+      }
+    }
+
+    // 2. Only if we have no usable id, fall back to the cached name
+    //    from the task reference (last resort).
     if (taskRef?.assign_to_name) return taskRef.assign_to_name;
-    if (!memberId) return "Unassigned";
-    const numId = Number(memberId);
-    if (!Number.isFinite(numId)) return "Unassigned";
 
-    const tm = asArray(allTeamMembers).find(m => Number(m.id) === numId);
-    if (tm) return tm.name;
-
-    const u = asArray(users).find(x => Number(x.id) === numId);
-    if (u) return u.u_name || u.name || "Unassigned";
-
+    // 3. Nothing to go on.
     return "Unassigned";
   };
 
@@ -1018,6 +1043,18 @@ export default function SupervisorProjectDetail() {
                 <div className="modal-meta-row">
                   <StatusBadge status={selectedTask.status} />
                   <PriorityBadge priority={selectedTask.priority} />
+                </div>
+
+                {/* 🔧 FIX: use the id-resolving getMemberName helper so
+                    the modal also reflects the fresh assignee. */}
+                <div style={{ marginBottom: 12 }}>
+                  <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 4 }}>
+                    Assigned To
+                  </p>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-primary)' }}>
+                    <User size={13} />
+                    {getMemberName(selectedTask.assign_to, selectedTask)}
+                  </div>
                 </div>
 
                 {asArray(selectedTask.milestones).length > 0 && (
@@ -1476,6 +1513,8 @@ export default function SupervisorProjectDetail() {
                         {t.desc && <p className="task-item-desc">{t.desc}</p>}
                         <div className="task-item-footer">
                           <StatusBadge status={t.status} />
+                          {/* 🔧 FIX: getMemberName resolves by id, so the card
+                              always shows the CURRENT assignee. */}
                           <div className="task-item-assignee"><User size={12} />{getMemberName(t.assign_to, t)}</div>
                           <div className="task-item-actions">
                             <button
@@ -1545,7 +1584,6 @@ export default function SupervisorProjectDetail() {
             </h4>
 
             <div className="team-sections">
-              {/* ─── PROJECT LEAD (creator) ─── */}
               <div className="team-section team-section-lead">
                 <div className="team-section-header">
                   <div className="team-section-title">
@@ -1602,7 +1640,6 @@ export default function SupervisorProjectDetail() {
                 </div>
               </div>
 
-              {/* ─── SUPERVISORS ─── */}
               <div className="team-section team-section-supervisors">
                 <div className="team-section-header">
                   <div className="team-section-title">
@@ -1650,7 +1687,6 @@ export default function SupervisorProjectDetail() {
                 )}
               </div>
 
-              {/* ─── TEAM MEMBERS ─── */}
               <div className="team-section team-section-members">
                 <div className="team-section-header">
                   <div className="team-section-title">
