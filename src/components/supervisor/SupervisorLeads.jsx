@@ -11,12 +11,7 @@ import toast from "react-hot-toast";
 
 import Topbar from "../shared/Topbar";
 import { StatusBadge, PriorityBadge } from "../shared/UIComponents";
-
-import projectService from "../../services/projectService";
-import taskService from "../../services/taskService";
-import teamService from "../../services/teamService";
-import userService from "../../services/userService";
-import projectTeamService from "../../services/projectTeamService";
+import leadService from "../../services/leadService";
 
 /* ─────────── Helpers ─────────── */
 
@@ -40,210 +35,13 @@ const getRoleColor = (role) => {
   return colors[norm(role)] || colors.member;
 };
 
-function getPteamProjectId(entry) {
-  return Number(
-    entry?.p ?? entry?.p_id ?? entry?.project ?? entry?.projectId ?? entry?.project_id
-  );
-}
-function getPteamTmId(entry) {
-  return Number(
-    entry?.tm ?? entry?.tm_id ?? entry?.team_member ??
-    entry?.member ?? entry?.member_id ?? entry?.teamMember
-  );
-}
-
-/* ─────────── Find TeamMember profile(s) for a user ─────────── */
-/*
- * TeamMember has no FK to User, so we guess. We try three strategies
- * in order of reliability and collect ALL matches:
- *   1. Exact name match (case-insensitive, trimmed)
- *   2. Prefix match ("Ali" matches "Ali Raza")
- *   3. `added_by` equals the lead's user id
- */
-function findTeamMemberIds(leadUser, teamMembers) {
-  const leadName = norm(leadUser?.u_name);
-  const leadUserId = Number(leadUser?.id ?? leadUser?.u_id);
-
-  const ids = new Set();
-  asArray(teamMembers).forEach(m => {
-    const mName = norm(m.name);
-    if (!mName) return;
-
-    if (leadName && mName === leadName) { ids.add(Number(m.id)); return; }
-    if (leadName && mName.startsWith(leadName)) { ids.add(Number(m.id)); return; }
-    if (Number.isFinite(leadUserId) && Number(m.added_by) === leadUserId) {
-      ids.add(Number(m.id));
-    }
-  });
-
-  return [...ids].filter(Number.isFinite);
-}
-
-/* ─────────── Compute a lead's OWN stats from raw data ─────────── */
-function computeLeadData(leadId, projects, tasks, teamMembers, users, pteamEntries) {
-  const leadUser = users.find(u => Number(u.id ?? u.u_id) === Number(leadId));
-  const leadUserId = Number(leadId);
-  const leadName = norm(leadUser?.u_name);
-
-  // 1. Collect all matching TeamMember ids
-  const teamMemberIds = new Set(findTeamMemberIds(leadUser, teamMembers));
-  const teamMemberId = teamMemberIds.size > 0 ? [...teamMemberIds][0] : null;
-
-  // 2. Projects the lead is linked to via PTeam
-  const pteamProjectIds = new Set();
-  if (teamMemberIds.size > 0) {
-    asArray(pteamEntries).forEach(entry => {
-      const tmId = getPteamTmId(entry);
-      if (teamMemberIds.has(tmId)) {
-        const pid = getPteamProjectId(entry);
-        if (Number.isFinite(pid)) pteamProjectIds.add(pid);
-      }
-    });
-  }
-
-  // 3. Build project set: created_by OR supervised OR PTeam
-  const projectMap = new Map();
-  asArray(projects).forEach(p => {
-    const id = Number(p.p_id ?? p.id);
-    if (!Number.isFinite(id)) return;
-
-    const isCreator     = Number(p.created_by) === leadUserId;
-    const isSupervisor  = asArray(p.supervisors).map(Number).includes(leadUserId);
-    const isPteamMember = pteamProjectIds.has(id);
-
-    if (isCreator || isSupervisor || isPteamMember) {
-      projectMap.set(id, p);
-    }
-  });
-  const leadProjects = Array.from(projectMap.values());
-  const leadProjectIds = leadProjects.map(p => Number(p.p_id ?? p.id));
-
-  // 4. TASKS = only tasks assigned directly to one of the lead's TeamMembers
-  //    (with a name-based fallback in case assign_to is missing)
-  const ownTasks = asArray(tasks).filter(t => {
-    const assignTo = Number(t.assign_to ?? t.assignedTo);
-    if (Number.isFinite(assignTo) && teamMemberIds.has(assignTo)) return true;
-
-    const assigneeName = norm(t.assign_to_name || t.assignee_name);
-    if (assigneeName && leadName) {
-      if (assigneeName === leadName) return true;
-      if (assigneeName.startsWith(leadName)) return true;
-    }
-    return false;
-  });
-
-  const totalTasks = ownTasks.length;
-  const completedTasks = ownTasks.filter(t => {
-    const s = norm(t.status);
-    return s === 'done' || s === 'completed';
-  }).length;
-  const inProgressTasks = ownTasks.filter(t => {
-    const s = norm(t.status);
-    return s === 'in_progress' || s === 'in-progress' || s === 'review';
-  }).length;
-  const todoTasks = ownTasks.filter(t => {
-    const s = norm(t.status);
-    return s === 'todo' || s === 'pending' || s === 'planning';
-  }).length;
-
-  const completionRate = totalTasks > 0
-    ? Math.round((completedTasks / totalTasks) * 100)
-    : 0;
-
-  const avgProgress = totalTasks > 0
-    ? Math.round(
-        ownTasks.reduce((sum, t) => {
-          const p = Number(t.progress);
-          if (Number.isFinite(p)) return sum + p;
-          const s = norm(t.status);
-          if (s === 'done' || s === 'completed') return sum + 100;
-          if (s === 'review') return sum + 75;
-          if (s === 'in_progress' || s === 'in-progress') return sum + 50;
-          return sum;
-        }, 0) / totalTasks
-      )
-    : 0;
-
-  const completedWithDue = ownTasks.filter(t => {
-    const s = norm(t.status);
-    return (s === 'done' || s === 'completed') && (t.due_date || t.deadline);
-  });
-  const onTimeCount = completedWithDue.filter(t => {
-    const due = new Date(t.due_date || t.deadline);
-    const updated = new Date(
-      t.updated_at || t.update_last || t.created_at || Date.now()
-    );
-    return updated <= due;
-  }).length;
-  const onTimeRate = completedWithDue.length > 0
-    ? Math.round((onTimeCount / completedWithDue.length) * 100)
-    : 0;
-
-  // 5. Team size = OTHER TeamMembers on the lead's projects (exclude self)
-  const otherMembersOnLeadProjects = new Set();
-  if (leadProjectIds.length > 0) {
-    const leadProjectSet = new Set(leadProjectIds);
-    asArray(pteamEntries).forEach(entry => {
-      const pid  = getPteamProjectId(entry);
-      const tmId = getPteamTmId(entry);
-      if (!leadProjectSet.has(pid)) return;
-      if (!Number.isFinite(tmId)) return;
-      if (teamMemberIds.has(tmId)) return;
-      otherMembersOnLeadProjects.add(tmId);
-    });
-  }
-  const teamSize = otherMembersOnLeadProjects.size;
-
-  const performance =
-    totalTasks === 0 ? 'New' :
-    completionRate >= 80 ? 'Excellent' :
-    completionRate >= 60 ? 'Good' :
-    completionRate >= 40 ? 'Average' :
-    'Needs Attention';
-
-  const perfColor =
-    totalTasks === 0 ? '#94a3b8' :
-    completionRate >= 80 ? '#34d399' :
-    completionRate >= 60 ? '#2dd4bf' :
-    completionRate >= 40 ? '#f59e0b' :
-    '#f87171';
-
-  return {
-    user: leadUser,
-    projects: leadProjects,
-    tasks: ownTasks,
-    completed: completedTasks,
-    inProgress: inProgressTasks,
-    todo: todoTasks,
-    totalTasks,
-    completionRate,
-    avgProgress,
-    onTimeRate,
-    hasCompletedWithDue: completedWithDue.length > 0,
-    teamSize,
-    performance,
-    perfColor,
-    teamMemberId,
-    teamMemberIds: [...teamMemberIds],
-    hasTeamMember: teamMemberIds.size > 0,
-  };
-}
-
-/* ─────────── Component ─────────── */
 export default function SupervisorLeads() {
   const ctx = useOutletContext?.() || {};
   const onMenuClick = ctx.onMenuClick;
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-
-  const [projects, setProjects] = useState([]);
-  const [tasks, setTasks] = useState([]);
-  const [teamMembers, setTeamMembers] = useState([]);
-  const [users, setUsers] = useState([]);
-  const [pteamEntries, setPteamEntries] = useState([]);
-  const [leadList, setLeadList] = useState([]);
-
+  const [leadsData, setLeadsData] = useState([]);
   const [selectedLead, setSelectedLead] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterPerformance, setFilterPerformance] = useState('all');
@@ -252,74 +50,60 @@ export default function SupervisorLeads() {
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      const [projectsData, tasksData, membersData, usersData, pteamData] = await Promise.all([
-        projectService.getProjects(),
-        taskService.getTasks(),
-        teamService.getTeamMembers(),
-        userService.getUsers(),
-        projectTeamService.getProjectTeams(),
-      ]);
+      const response = await leadService.getLeadStats();
+      const data = asArray(response?.data || response);
+      
+      // Map backend response to UI structure
+      const mappedData = data.map(lead => {
+        const totalTasks = lead.totalTasks || 0;
+        const completedTasks = lead.completedTasks || 0;
+        const inProgressTasks = lead.inProgressTasks || 0;
+        const todoTasks = lead.todoTasks || 0;
+        const avgProgress = lead.avgProgress || 0;
+        
+        // Compute performance label
+        let performance = 'New';
+        let perfColor = '#94a3b8';
+        
+        if (totalTasks > 0) {
+          const rate = lead.completionRate || 0;
+          if (rate >= 80) { performance = 'Excellent'; perfColor = '#34d399'; }
+          else if (rate >= 60) { performance = 'Good'; perfColor = '#2dd4bf'; }
+          else if (rate >= 40) { performance = 'Average'; perfColor = '#f59e0b'; }
+          else { performance = 'Needs Attention'; perfColor = '#f87171'; }
+        }
 
-      const projectsList = asArray(projectsData?.data || projectsData);
-      const tasksList    = asArray(tasksData?.data || tasksData);
-      const membersList  = asArray(membersData?.data || membersData);
-      const usersList    = asArray(usersData?.data || usersData);
-      const pteamList    = asArray(pteamData?.data || pteamData);
+        return {
+          userId: lead.userId,
+          user: {
+            id: lead.userId,
+            u_name: lead.u_name,
+            email: lead.email,
+            role: lead.role,
+          },
+          projects: asArray(lead.projects),
+          totalTasks,
+          completed: completedTasks,
+          inProgress: inProgressTasks,
+          todo: todoTasks,
+          completionRate: lead.completionRate || 0,
+          avgProgress,
+          onTimeRate: lead.onTimeRate || 0,
+          hasCompletedWithDue: lead.hasCompletedWithDue || false,
+          teamSize: lead.teamSize || 0,
+          performance,
+          perfColor,
+          hasTeamMember: lead.hasTeamMember || false,
+          teamMemberId: lead.teamMemberId || null,
+          directAssignedCount: lead.directAssignedCount || 0,
+        };
+      });
 
-      setProjects(projectsList);
-      setTasks(tasksList);
-      setTeamMembers(membersList);
-      setUsers(usersList);
-      setPteamEntries(pteamList);
-
-      const leads = usersList
-        .filter(u => {
-          const role = norm(u.role);
-          return role === 'member' || role === 'developer' || role.includes('lead');
-        })
-        .map(u => Number(u.id ?? u.u_id))
-        .filter(Number.isFinite);
-
-      setLeadList(leads);
-
-      // Diagnostics
-      console.log('📊 [SupervisorLeads] users:', usersList.length);
-      console.log('📊 [SupervisorLeads] leads:', leads.length);
-      console.log('📊 [SupervisorLeads] projects:', projectsList.length);
-      console.log('📊 [SupervisorLeads] tasks:', tasksList.length);
-      console.log('📊 [SupervisorLeads] pteam entries:', pteamList.length);
-      console.log('🔍 [SupervisorLeads] tasks sample:',
-        tasksList.map(t => ({
-          id: t.t_id ?? t.id,
-          title: t.title,
-          assign_to: t.assign_to ?? t.assignedTo ?? null,
-          assign_to_name: t.assign_to_name ?? null,
-        }))
-      );
-      console.log('🔍 [SupervisorLeads] teamMembers:',
-        membersList.map(m => ({ id: m.id, name: m.name, added_by: m.added_by }))
-      );
-      console.log('🔍 [SupervisorLeads] lead diagnostics:',
-        leads.slice(0, 5).map(id => {
-          const d = computeLeadData(id, projectsList, tasksList, membersList, usersList, pteamList);
-          return {
-            id,
-            name: d.user?.u_name,
-            teamMemberIds: d.teamMemberIds,
-            totalTasks: d.totalTasks,
-            projectCount: d.projects.length,
-          };
-        })
-      );
+      setLeadsData(mappedData);
     } catch (error) {
       console.error('Error fetching leads data:', error);
       toast.error('Failed to load leads data');
-      setProjects([]);
-      setTasks([]);
-      setTeamMembers([]);
-      setUsers([]);
-      setPteamEntries([]);
-      setLeadList([]);
+      setLeadsData([]);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -334,22 +118,13 @@ export default function SupervisorLeads() {
     toast.success('Leads refreshed');
   };
 
-  const leadsData = useMemo(() => {
-    return leadList
-      .map(id => ({
-        leadId: id,
-        data: computeLeadData(id, projects, tasks, teamMembers, users, pteamEntries),
-      }))
-      .filter(x => x.data.user);
-  }, [leadList, projects, tasks, teamMembers, users, pteamEntries]);
-
   const filteredLeads = useMemo(() => {
     const q = norm(searchTerm);
-    return leadsData.filter(({ data }) => {
-      const nameMatch = !q || norm(data.user?.u_name).includes(q);
+    return leadsData.filter((lead) => {
+      const nameMatch = !q || norm(lead.user?.u_name).includes(q);
       const perfMatch =
         filterPerformance === 'all' ||
-        norm(data.performance) === norm(filterPerformance);
+        norm(lead.performance) === norm(filterPerformance);
       return nameMatch && perfMatch;
     });
   }, [leadsData, searchTerm, filterPerformance]);
@@ -374,7 +149,7 @@ export default function SupervisorLeads() {
     );
   }
 
-  const leadsWithProfile    = leadsData.filter(x => x.data.hasTeamMember).length;
+  const leadsWithProfile = leadsData.filter(x => x.hasTeamMember).length;
   const leadsWithoutProfile = leadsData.length - leadsWithProfile;
 
   return (
@@ -467,17 +242,17 @@ export default function SupervisorLeads() {
           </div>
         ) : (
           <div className="leads-grid">
-            {filteredLeads.map(({ leadId, data: d }) => {
+            {filteredLeads.map((d) => {
               const roleInfo = getRoleColor(d.user?.role);
               const initials = getInitials(d.user?.u_name);
 
               return (
                 <motion.div
-                  key={leadId}
+                  key={d.userId}
                   className="lead-card"
                   whileHover={{ y: -2 }}
                   transition={{ type: 'spring', stiffness: 340, damping: 24 }}
-                  onClick={() => setSelectedLead(leadId)}
+                  onClick={() => setSelectedLead(d)}
                 >
                   <div className="lead-card-header">
                     <div className="lead-avatar" style={{ borderColor: d.perfColor }}>
@@ -536,8 +311,8 @@ export default function SupervisorLeads() {
                   <div className="lead-card-footer">
                     <div className="lead-project-tags">
                       {d.projects.slice(0, 2).map((p) => (
-                        <span key={p.p_id || p.id} className="lead-project-tag">
-                          {p.p_name || p.name}
+                        <span key={p.p_id} className="lead-project-tag">
+                          {p.p_name}
                         </span>
                       ))}
                       {d.projects.length > 2 && (
@@ -573,7 +348,7 @@ export default function SupervisorLeads() {
       {/* ─── LEAD DETAIL MODAL ─── */}
       <AnimatePresence>
         {selectedLead && (() => {
-          const d = computeLeadData(selectedLead, projects, tasks, teamMembers, users, pteamEntries);
+          const d = selectedLead;
           const roleInfo = getRoleColor(d.user?.role);
           const initials = getInitials(d.user?.u_name);
 
@@ -681,11 +456,11 @@ export default function SupervisorLeads() {
                       <p className="modal-empty">No projects assigned</p>
                     ) : (
                       d.projects.map((p) => (
-                        <div key={p.p_id || p.id} className="modal-project-item">
+                        <div key={p.p_id} className="modal-project-item">
                           <div>
-                            <span className="modal-project-name">{p.p_name || p.name}</span>
-                            {(p.desc || p.description) && (
-                              <span className="modal-project-desc">{p.desc || p.description}</span>
+                            <span className="modal-project-name">{p.p_name}</span>
+                            {p.desc && (
+                              <span className="modal-project-desc">{p.desc}</span>
                             )}
                           </div>
                           <div className="modal-project-badges">
