@@ -140,9 +140,6 @@ export const endpoints = {
     byId: (id) => `/task/${id}`,
     comments: (id) => `/tasks/${id}/comments`,
   },
-  leads: {
-    stats: '/leads/stats/',
-  },
   comments: {
     list: '/comments',
     byId: (id) => `/comments/${id}`,
