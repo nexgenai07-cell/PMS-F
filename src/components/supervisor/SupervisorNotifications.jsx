@@ -72,8 +72,12 @@ export default function SupervisorNotifications() {
       const rawNotifs    = notificationsData?.data || [];
 
       // Filter out locally-deleted + locally-read notifications
-      const readItems    = JSON.parse(localStorage.getItem('read_notifications') || '[]');
-      const deletedItems = JSON.parse(localStorage.getItem('deleted_notifications') || '[]');
+      const readItems = JSON.parse(
+  localStorage.getItem(`read_notifications_${userId}`) || '[]'
+);
+const deletedItems = JSON.parse(
+  localStorage.getItem(`deleted_notifications_${userId}`) || '[]'
+);
 
       const notificationsList = (Array.isArray(rawNotifs) ? rawNotifs : [])
         .filter(n => !deletedItems.includes(n.n_id || n.id))
@@ -114,43 +118,41 @@ export default function SupervisorNotifications() {
 
   /* ─────────── Actions ─────────── */
 
-  const markAllRead = async () => {
-    try {
-      await notificationService.markAllRead();
-      const ids = notifications.map(n => n.n_id || n.id);
-      const readItems = JSON.parse(localStorage.getItem('read_notifications') || '[]');
-      const merged = [...new Set([...readItems, ...ids])];
-      localStorage.setItem('read_notifications', JSON.stringify(merged));
-      setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
-      toast.success('All notifications marked as read');
-    } catch (error) {
-      console.error('markAllRead failed:', error);
-      toast.error('Failed to mark all as read');
-    }
-  };
+  // In markAllRead:
+const markAllRead = async () => {
+  try {
+    const ids = notifications.map(n => n.n_id || n.id);
+    await notificationService.markAllRead(ids, user?.id || user?.u_id);
+    setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+    toast.success('All notifications marked as read');
+  } catch (error) {
+    toast.error('Failed to mark all as read');
+  }
+};
 
-  const markAsRead = async (id) => {
-    try {
-      await notificationService.markAsRead(id);
-      setNotifications(prev => prev.map(n =>
-        (n.n_id || n.id) === id ? { ...n, is_read: true } : n
-      ));
-    } catch (error) {
-      console.error('markAsRead failed:', error);
-    }
-  };
+// In markAsRead:
+const markAsRead = async (id) => {
+  try {
+    await notificationService.markAsRead(id, user?.id || user?.u_id);
+    setNotifications(prev => prev.map(n =>
+      (n.n_id || n.id) === id ? { ...n, is_read: true } : n
+    ));
+  } catch (error) {
+    console.error('markAsRead failed:', error);
+  }
+};
 
-  const deleteNotification = async (id) => {
-    try {
-      await notificationService.deleteNotification(id);
-      setNotifications(prev => prev.filter(n => (n.n_id || n.id) !== id));
-      setShowDeleteConfirm(null);
-      toast.success('Notification deleted');
-    } catch (error) {
-      console.error('delete failed:', error);
-      toast.error('Failed to delete notification');
-    }
-  };
+// In deleteNotification:
+const deleteNotification = async (id) => {
+  try {
+    await notificationService.deleteNotification(id, user?.id || user?.u_id);
+    setNotifications(prev => prev.filter(n => (n.n_id || n.id) !== id));
+    setShowDeleteConfirm(null);
+    toast.success('Notification deleted');
+  } catch (error) {
+    toast.error('Failed to delete notification');
+  }
+};
 
   /* ─────────── Helpers ─────────── */
 

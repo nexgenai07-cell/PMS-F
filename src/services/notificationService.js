@@ -2,261 +2,279 @@
 import api, { endpoints } from '../utils/api';
 
 class NotificationService {
-  // ✅ Get all activities filtered by user's projects
+  /* ─────────── Tiny helpers ─────────── */
+  _asArray(v) {
+    return Array.isArray(v) ? v : [];
+  }
+  _unwrap(response) {
+    if (!response) return [];
+    const d = response?.data?.data ?? response?.data ?? response;
+    return Array.isArray(d) ? d : [];
+  }
+  _norm(s) {
+    return (s || '').toLowerCase().trim();
+  }
+
+  /**
+   * GET activities filtered STRICTLY by the user's actual membership.
+   *
+   * Rules:
+   *  - Admin            → sees everything.
+   *  - Manager/Supervisor → sees ONLY projects they created OR supervise OR are PTeam members of.
+   *  - Lead/Member      → sees ONLY projects they created OR are PTeam members of.
+   *  - New user (no projects, no tasks, no PTeam) → sees NOTHING.
+   */
   async getNotifications(userId = null, userRole = null) {
     try {
-      // Fetch all data in parallel
-      const [projectsData, tasksData, commentsData, membersData, usersData, pteamData] = await Promise.all([
-        api.get(endpoints.projects.list),
-        api.get(endpoints.tasks.list),
-        api.get(endpoints.comments.list),
-        api.get(endpoints.teamMembers.list),
-        api.get(endpoints.users.list),
-        api.get(endpoints.pteam.list),
-      ]);
-
-      const projects = projectsData?.data?.data || projectsData?.data || projectsData || [];
-      const tasks = tasksData?.data?.data || tasksData?.data || tasksData || [];
-      const comments = commentsData?.data?.data || commentsData?.data || commentsData || [];
-      const members = membersData?.data?.data || membersData?.data || membersData || [];
-      const users = usersData?.data?.data || usersData?.data || usersData || [];
-      const pteam = pteamData?.data?.data || pteamData?.data || pteamData || [];
-
-      console.log('📊 Projects for activities:', projects.length);
-      console.log('📊 Tasks for activities:', tasks.length);
-      console.log('📊 Comments for activities:', comments.length);
-      console.log('📊 Members for activities:', members.length);
-      console.log('📊 PTeam entries:', pteam.length);
-
-      // ✅ Get user info
       const currentUserId = Number(userId);
-      const currentUser = users.find(u => Number(u.id || u.u_id) === currentUserId);
-      const isSupervisor = userRole === 'manager' || userRole === 'admin' || userRole === 'supervisor';
-      
-      // ✅ Find TeamMember ID for current user
-      const userTeamMember = members.find(m => 
-        (m.name || '').toLowerCase().trim() === (currentUser?.u_name || '').toLowerCase().trim()
+      const role = (userRole || '').toLowerCase();
+
+      // ─── No user → nothing to show ───
+      if (!Number.isFinite(currentUserId)) {
+        return { success: true, data: [] };
+      }
+
+      const isAdmin = role === 'admin';
+
+      // ─── Fetch all data in parallel ───
+      const [projectsRes, tasksRes, commentsRes, membersRes, usersRes, pteamRes] =
+        await Promise.all([
+          api.get(endpoints.projects.list).catch(() => null),
+          api.get(endpoints.tasks.list).catch(() => null),
+          api.get(endpoints.comments.list).catch(() => null),
+          api.get(endpoints.teamMembers.list).catch(() => null),
+          api.get(endpoints.users.list).catch(() => null),
+          api.get(endpoints.pteam.list).catch(() => null),
+        ]);
+
+      const projects = this._unwrap(projectsRes);
+      const tasks    = this._unwrap(tasksRes);
+      const comments = this._unwrap(commentsRes);
+      const members  = this._unwrap(membersRes);
+      const users    = this._unwrap(usersRes);
+      const pteam    = this._unwrap(pteamRes);
+
+      const currentUser = users.find(u => Number(u.id ?? u.u_id) === currentUserId);
+      const userName = this._norm(currentUser?.u_name || currentUser?.name);
+
+      // ─── Find this user's TeamMember profile(s) by name match ───
+      const userTeamMemberIds = new Set(
+        members
+          .filter(m => this._norm(m.name) === userName && userName)
+          .map(m => Number(m.id))
+          .filter(Number.isFinite)
       );
-      const userTeamMemberId = userTeamMember ? Number(userTeamMember.id) : null;
+      const userTeamMemberId = userTeamMemberIds.size > 0
+        ? [...userTeamMemberIds][0]
+        : null;
 
-      console.log('👤 Current User:', currentUser?.u_name, 'ID:', currentUserId, 'TeamMember ID:', userTeamMemberId);
-      console.log('👤 Is Supervisor:', isSupervisor);
+      // ═══════════════════════════════════════════════════════════
+      // 1) Which projects can this user see?
+      // ═══════════════════════════════════════════════════════════
+      const userProjectIds = new Set();
 
-      // ✅ Get ALL project IDs this user has access to
-      let userProjectIds = new Set();
-
-      if (isSupervisor) {
-        // ✅ SUPERVISOR: Can see ALL projects
-        userProjectIds = new Set(projects.map(p => Number(p.p_id || p.id)));
-        console.log('📊 Supervisor has access to ALL projects:', userProjectIds.size);
+      if (isAdmin) {
+        // Admin sees everything
+        projects.forEach(p => userProjectIds.add(Number(p.p_id ?? p.id)));
       } else {
-        // ✅ LEAD/MEMBER: Only projects they created OR are added to via PTeam
-        // 1. Projects created by user
-        const createdProjects = projects.filter(p => Number(p.created_by) === currentUserId);
-        createdProjects.forEach(p => userProjectIds.add(Number(p.p_id || p.id)));
-        
-        // 2. Projects where user is added via PTeam
-        pteam.forEach(entry => {
-          const projectId = Number(entry.p);
-          const teamMemberId = Number(entry.tm);
-          
-          // Check if this PTeam entry matches the user (by TeamMember ID or User ID)
-          const isUser = teamMemberId === currentUserId || teamMemberId === userTeamMemberId;
-          
-          // Also check by name
-          const member = members.find(m => Number(m.id) === teamMemberId);
-          const isUserByName = member && (member.name || '').toLowerCase().trim() === (currentUser?.u_name || '').toLowerCase().trim();
-          
-          if (isUser || isUserByName) {
-            userProjectIds.add(projectId);
-          }
+        // Everyone else: created OR supervised OR PTeam-linked
+        projects.forEach(p => {
+          const pid = Number(p.p_id ?? p.id);
+
+          const isCreator = Number(p.created_by) === currentUserId;
+          const isSupervisor = this._asArray(p.supervisors).map(Number).includes(currentUserId);
+          if (isCreator || isSupervisor) userProjectIds.add(pid);
         });
 
-        console.log('📊 Lead/Member has access to projects:', userProjectIds.size);
+        // Via PTeam
+        if (userTeamMemberIds.size > 0) {
+          pteam.forEach(entry => {
+            const tmId = Number(entry.tm ?? entry.tm_id);
+            if (userTeamMemberIds.has(tmId)) {
+              const pid = Number(entry.p ?? entry.p_id);
+              if (Number.isFinite(pid)) userProjectIds.add(pid);
+            }
+          });
+        }
       }
 
-      // ✅ Get ALL TeamMember IDs that belong to user's projects
+      // ─── New user: no projects → nothing to show ───
+      if (userProjectIds.size === 0) {
+        return { success: true, data: [] };
+      }
+
+      // ═══════════════════════════════════════════════════════════
+      // 2) Which TeamMember IDs belong to those projects?
+      //    (Only used to gate "member added" events.)
+      // ═══════════════════════════════════════════════════════════
       const projectMemberIds = new Set();
       pteam.forEach(entry => {
-        const projectId = Number(entry.p);
-        if (userProjectIds.has(projectId)) {
-          const memberId = Number(entry.tm);
-          if (memberId) projectMemberIds.add(memberId);
+        const pid = Number(entry.p ?? entry.p_id);
+        const tmId = Number(entry.tm ?? entry.tm_id);
+        if (userProjectIds.has(pid) && Number.isFinite(tmId)) {
+          projectMemberIds.add(tmId);
         }
       });
-      
-      // Add current user's TeamMember ID if not already added
-      if (userTeamMemberId) {
-        projectMemberIds.add(userTeamMemberId);
-      }
-
-      console.log('📊 TeamMember IDs in user projects:', projectMemberIds.size);
 
       const activities = [];
 
-      // ─── 1. PROJECT ACTIVITIES ───
+      // ═══════════════════════════════════════════════════════════
+      // 3) PROJECT activities (only for visible projects)
+      // ═══════════════════════════════════════════════════════════
       projects.forEach(project => {
-        const projectId = Number(project.p_id || project.id);
-        
-        // ✅ ONLY show if project is in user's accessible projects
+        const projectId = Number(project.p_id ?? project.id);
         if (!userProjectIds.has(projectId)) return;
 
-        // Project created - ONLY if creator is part of the project
+        const creator = users.find(
+          u => Number(u.id ?? u.u_id) === Number(project.created_by)
+        );
+
         if (project.created_at) {
-          const creator = users.find(u => Number(u.id || u.u_id) === Number(project.created_by));
-          // ✅ Check if creator is in project members OR is supervisor
-          const isCreatorInProject = projectMemberIds.has(Number(project.created_by)) || isSupervisor;
-          if (isCreatorInProject) {
-            activities.push({
-              n_id: `project-created-${project.p_id || project.id}`,
-              type: 'project_created',
-              message: `${creator?.u_name || creator?.name || 'Someone'} created project "${project.p_name || project.name}"`,
-              is_read: false,
-              created_at: project.created_at,
-              u: project.created_by,
-              entity_type: 'project',
-              entity_id: project.p_id || project.id,
-            });
-          }
+          activities.push({
+            n_id: `project-created-${projectId}`,
+            type: 'project_created',
+            message: `${creator?.u_name || 'Someone'} created project "${project.p_name || project.name}"`,
+            is_read: false,
+            created_at: project.created_at,
+            u: project.created_by,
+            entity_type: 'project',
+            entity_id: projectId,
+          });
         }
-        
-        // Project updated
+
         if (project.updated_at && project.updated_at !== project.created_at) {
           activities.push({
-            n_id: `project-updated-${project.p_id || project.id}`,
+            n_id: `project-updated-${projectId}`,
             type: 'project_updated',
             message: `Project "${project.p_name || project.name}" was updated`,
             is_read: false,
             created_at: project.updated_at,
             u: project.created_by,
             entity_type: 'project',
-            entity_id: project.p_id || project.id,
+            entity_id: projectId,
           });
         }
       });
 
-      // ─── 2. TASK ACTIVITIES ───
+      // ═══════════════════════════════════════════════════════════
+      // 4) TASK activities (only tasks in visible projects)
+      // ═══════════════════════════════════════════════════════════
       tasks.forEach(task => {
-        const taskProjectId = Number(task.p_id || task.p);
-        
-        // ✅ ONLY show if task's project is in user's accessible projects
+        const taskProjectId = Number(task.p_id ?? task.p);
         if (!userProjectIds.has(taskProjectId)) return;
 
-        const creator = users.find(u => Number(u.id || u.u_id) === Number(task.created_by));
+        const creator  = users.find(u => Number(u.id ?? u.u_id) === Number(task.created_by));
+        const updater  = users.find(u => Number(u.id ?? u.u_id) === Number(task.assign_by));
         const assignee = members.find(m => Number(m.id) === Number(task.assign_to));
-        const updater = users.find(u => Number(u.id || u.u_id) === Number(task.assign_by));
 
-        // ✅ Task created - ONLY if within user's project
         if (task.created_at) {
           activities.push({
-            n_id: `task-created-${task.t_id || task.id}`,
+            n_id: `task-created-${task.t_id ?? task.id}`,
             type: 'task_created',
-            message: `${creator?.u_name || creator?.name || 'Someone'} created task "${task.title}" in ${this.getProjectName(taskProjectId, projects)}`,
+            message: `${creator?.u_name || 'Someone'} created task "${task.title}"`,
             is_read: false,
             created_at: task.created_at,
             u: task.created_by,
             entity_type: 'task',
-            entity_id: task.t_id || task.id,
+            entity_id: task.t_id ?? task.id,
           });
         }
 
-        // ✅ Task updated - ONLY if within user's project
         if (task.update_last && task.update_last !== task.created_at) {
           activities.push({
-            n_id: `task-updated-${task.t_id || task.id}`,
+            n_id: `task-updated-${task.t_id ?? task.id}`,
             type: 'task_updated',
-            message: `${updater?.u_name || updater?.name || 'Someone'} updated task "${task.title}"`,
+            message: `${updater?.u_name || 'Someone'} updated task "${task.title}"`,
             is_read: false,
             created_at: task.update_last,
             u: task.assign_by,
             entity_type: 'task',
-            entity_id: task.t_id || task.id,
+            entity_id: task.t_id ?? task.id,
           });
         }
 
-        // ✅ Task assigned - ONLY if within user's project AND assignee is in the project
         if (task.assign_to) {
-          const isAssigneeInProject = projectMemberIds.has(Number(task.assign_to)) || isSupervisor;
-          if (isAssigneeInProject) {
-            activities.push({
-              n_id: `task-assigned-${task.t_id || task.id}`,
-              type: 'task_assigned',
-              message: `${creator?.u_name || creator?.name || 'Someone'} assigned task "${task.title}" to ${assignee?.name || 'someone'}`,
-              is_read: false,
-              created_at: task.created_at || task.update_last,
-              u: task.assign_by,
-              entity_type: 'task',
-              entity_id: task.t_id || task.id,
-            });
-          }
+          activities.push({
+            n_id: `task-assigned-${task.t_id ?? task.id}`,
+            type: 'task_assigned',
+            message: `${creator?.u_name || 'Someone'} assigned task "${task.title}" to ${assignee?.name || 'someone'}`,
+            is_read: false,
+            created_at: task.created_at || task.update_last,
+            u: task.assign_by,
+            entity_type: 'task',
+            entity_id: task.t_id ?? task.id,
+          });
         }
 
-        // ✅ Task completed - ONLY if within user's project
-        if (task.status === 'done' || task.status === 'completed') {
+        const s = (task.status || '').toLowerCase();
+        if (s === 'done' || s === 'completed') {
           activities.push({
-            n_id: `task-completed-${task.t_id || task.id}`,
+            n_id: `task-completed-${task.t_id ?? task.id}`,
             type: 'task_completed',
-            message: `${updater?.u_name || updater?.name || 'Someone'} completed task "${task.title}"`,
+            message: `${updater?.u_name || 'Someone'} completed task "${task.title}"`,
             is_read: false,
             created_at: task.update_last || task.created_at,
             u: task.assign_by,
             entity_type: 'task',
-            entity_id: task.t_id || task.id,
+            entity_id: task.t_id ?? task.id,
           });
         }
       });
 
-      // ─── 3. COMMENT ACTIVITIES ───
+      // ═══════════════════════════════════════════════════════════
+      // 5) COMMENT activities (only for tasks in visible projects)
+      // ═══════════════════════════════════════════════════════════
       comments.forEach(comment => {
-        const taskId = Number(comment.t);
-        const task = tasks.find(t => Number(t.t_id || t.id) === taskId);
-        const taskProjectId = task ? Number(task.p_id || task.p) : null;
-        
-        // ✅ ONLY show if comment's task project is in user's accessible projects
+        const taskId = Number(comment.t ?? comment.t_id);
+        const task = tasks.find(t => Number(t.t_id ?? t.id) === taskId);
+        const taskProjectId = task ? Number(task.p_id ?? task.p) : null;
+
         if (!taskProjectId || !userProjectIds.has(taskProjectId)) return;
 
-        const commenter = users.find(u => Number(u.id || u.u_id) === Number(comment.u));
-        
+        const commenter = users.find(u => Number(u.id ?? u.u_id) === Number(comment.u));
+
         activities.push({
-          n_id: `comment-${comment.c_id || comment.id}`,
+          n_id: `comment-${comment.c_id ?? comment.id}`,
           type: 'comment_added',
-          message: `${commenter?.u_name || commenter?.name || 'Someone'} commented on task "${task?.title || 'a task'}"`,
+          message: `${commenter?.u_name || 'Someone'} commented on task "${task?.title || 'a task'}"`,
           is_read: false,
           created_at: comment.created_at,
           u: comment.u,
           entity_type: 'task',
-          entity_id: comment.t,
+          entity_id: comment.t ?? comment.t_id,
         });
-        
-        // Comment pinned
+
         if (comment.pin) {
           activities.push({
-            n_id: `comment-pinned-${comment.c_id || comment.id}`,
+            n_id: `comment-pinned-${comment.c_id ?? comment.id}`,
             type: 'comment_pinned',
-            message: `${commenter?.u_name || commenter?.name || 'Someone'} pinned a comment on "${task?.title || 'a task'}"`,
+            message: `${commenter?.u_name || 'Someone'} pinned a comment on "${task?.title || 'a task'}"`,
             is_read: false,
             created_at: comment.updated_at || comment.created_at,
             u: comment.u,
             entity_type: 'task',
-            entity_id: comment.t,
+            entity_id: comment.t ?? comment.t_id,
           });
         }
       });
 
-      // ─── 4. TEAM MEMBER ACTIVITIES ───
+      // ═══════════════════════════════════════════════════════════
+      // 6) TEAM MEMBER activities
+      //    Only members who are actually IN the user's projects.
+      // ═══════════════════════════════════════════════════════════
       members.forEach(member => {
-        // ✅ ONLY show if member is in the user's project members
-        const isMemberInProject = projectMemberIds.has(Number(member.id)) || isSupervisor;
-        if (!isMemberInProject) return;
+        if (!projectMemberIds.has(Number(member.id))) return;
 
-        const adder = users.find(u => Number(u.id || u.u_id) === Number(member.added_by));
-        if (member.created_at || member.updated_at) {
+        const adder = users.find(u => Number(u.id ?? u.u_id) === Number(member.added_by));
+        const ts = member.created_at || member.updated_at;
+
+        if (ts) {
           activities.push({
             n_id: `member-added-${member.id}`,
             type: 'member_added',
-            message: `${adder?.u_name || adder?.name || 'Someone'} added ${member.name} as a team member`,
+            message: `${adder?.u_name || 'Someone'} added ${member.name} as a team member`,
             is_read: false,
-            created_at: member.created_at || member.updated_at,
+            created_at: ts,
             u: member.added_by,
             entity_type: 'team_member',
             entity_id: member.id,
@@ -264,41 +282,38 @@ class NotificationService {
         }
       });
 
-      // Sort by created_at (newest first)
+      // ─── Sort newest first ───
       activities.sort((a, b) => {
-        const dateA = new Date(a.created_at || 0);
-        const dateB = new Date(b.created_at || 0);
-        return dateB - dateA;
+        const da = new Date(a.created_at || 0).getTime();
+        const db = new Date(b.created_at || 0).getTime();
+        return db - da;
       });
 
-      console.log('📊 Activities generated:', activities.length);
-      console.log('📊 Sample activities:', activities.slice(0, 3));
+      console.log(
+        `📬 notificationService: user=${userName || currentUserId} role=${role}`,
+        `visibleProjects=${userProjectIds.size}`,
+        `activities=${activities.length}`
+      );
 
       return { success: true, data: activities };
     } catch (error) {
       console.error('NotificationService: Error fetching activities:', error);
-      return { data: [] };
+      return { success: false, data: [] };
     }
   }
 
-  // ✅ Helper function to get project name (now properly defined as a class method)
-  getProjectName(projectId, projects) {
-    const project = projects.find(p => Number(p.p_id || p.id) === Number(projectId));
-    return project?.p_name || project?.name || 'a project';
-  }
+  /* ─────────── Local-only read/delete (per user) ─────────── */
 
-  // Get notifications for a specific user
-  async getUserNotifications(userId, userRole) {
-    return this.getNotifications(userId, userRole);
-  }
+  _readKey(userId)    { return `read_notifications_${userId ?? 'anon'}`; }
+  _deletedKey(userId) { return `deleted_notifications_${userId ?? 'anon'}`; }
 
-  // Mark a notification as read (local only)
-  async markAsRead(id) {
+  async markAsRead(id, userId = null) {
     try {
-      const readItems = JSON.parse(localStorage.getItem('read_notifications') || '[]');
+      const key = this._readKey(userId);
+      const readItems = JSON.parse(localStorage.getItem(key) || '[]');
       if (!readItems.includes(id)) {
         readItems.push(id);
-        localStorage.setItem('read_notifications', JSON.stringify(readItems));
+        localStorage.setItem(key, JSON.stringify(readItems));
       }
       return { success: true };
     } catch (error) {
@@ -307,11 +322,12 @@ class NotificationService {
     }
   }
 
-  // Mark all notifications as read (local only)
-  async markAllRead() {
+  async markAllRead(ids = [], userId = null) {
     try {
-      // Mark all current notifications as read by storing all IDs
-      // This will be handled in the component
+      const key = this._readKey(userId);
+      const readItems = JSON.parse(localStorage.getItem(key) || '[]');
+      const merged = [...new Set([...readItems, ...ids])];
+      localStorage.setItem(key, JSON.stringify(merged));
       return { success: true };
     } catch (error) {
       console.error('Error marking all as read:', error);
@@ -319,13 +335,13 @@ class NotificationService {
     }
   }
 
-  // Delete a notification (local only)
-  async deleteNotification(id) {
+  async deleteNotification(id, userId = null) {
     try {
-      const deletedItems = JSON.parse(localStorage.getItem('deleted_notifications') || '[]');
+      const key = this._deletedKey(userId);
+      const deletedItems = JSON.parse(localStorage.getItem(key) || '[]');
       if (!deletedItems.includes(id)) {
         deletedItems.push(id);
-        localStorage.setItem('deleted_notifications', JSON.stringify(deletedItems));
+        localStorage.setItem(key, JSON.stringify(deletedItems));
       }
       return { success: true };
     } catch (error) {
@@ -334,19 +350,32 @@ class NotificationService {
     }
   }
 
-  // Get unread count
-  async getUnreadCount(userId, userRole) {
+  /* ─────────── Read-state helpers ─────────── */
+  getReadSet(userId = null) {
     try {
-      const readItems = JSON.parse(localStorage.getItem('read_notifications') || '[]');
-      const deletedItems = JSON.parse(localStorage.getItem('deleted_notifications') || '[]');
-      const notifications = await this.getNotifications(userId, userRole);
-      const allData = notifications.data || [];
-      
-      // Filter out deleted notifications
-      const filteredData = allData.filter(n => !deletedItems.includes(n.n_id || n.id));
-      const total = filteredData.length;
-      const read = readItems.length;
-      return { count: Math.max(0, total - read) };
+      return new Set(
+        JSON.parse(localStorage.getItem(this._readKey(userId)) || '[]')
+      );
+    } catch { return new Set(); }
+  }
+  getDeletedSet(userId = null) {
+    try {
+      return new Set(
+        JSON.parse(localStorage.getItem(this._deletedKey(userId)) || '[]')
+      );
+    } catch { return new Set(); }
+  }
+
+  async getUnreadCount(userId = null, userRole = null) {
+    try {
+      const deleted = this.getDeletedSet(userId);
+      const read = this.getReadSet(userId);
+      const res = await this.getNotifications(userId, userRole);
+      const all = this._asArray(res?.data);
+
+      const visible = all.filter(n => !deleted.has(n.n_id || n.id));
+      const unread = visible.filter(n => !read.has(n.n_id || n.id)).length;
+      return { count: unread };
     } catch (error) {
       console.error('NotificationService: Error fetching unread count:', error);
       return { count: 0 };
@@ -357,13 +386,14 @@ class NotificationService {
     if (error.response) {
       return {
         status: error.response.status,
-        message: error.response.data.message || error.response.data.detail || 'An error occurred',
+        message:
+          error.response.data?.message ||
+          error.response.data?.detail ||
+          'An error occurred',
         data: error.response.data,
       };
     }
-    return {
-      message: error.message || 'Network error occurred',
-    };
+    return { message: error.message || 'Network error occurred' };
   }
 }
 
