@@ -5,9 +5,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Users, FolderKanban, X, RefreshCw, Search,
   UserCheck, AlertCircle, UserCog, TrendingUp, TrendingDown,
-  MessageSquare, CheckCircle2, Clock, Award, ChevronDown,
-  Download, BarChart2, Target, Zap, Eye, ArrowUpDown,
-  Filter, Mail, ExternalLink, ListTodo,
+  MessageSquare, CheckCircle2, Award,
+  Download, BarChart2, Target, Zap, Eye,
+  Filter, Mail, ExternalLink, ListTodo, Briefcase,
 } from "lucide-react";
 import toast from "react-hot-toast";
 
@@ -37,36 +37,47 @@ const getRoleColor = (role) => {
 };
 
 const SORT_OPTIONS = [
-  { value: 'name-asc',        label: 'Name (A–Z)' },
-  { value: 'name-desc',       label: 'Name (Z–A)' },
-  { value: 'completion-desc', label: 'Completion Rate (High → Low)' },
-  { value: 'completion-asc',  label: 'Completion Rate (Low → High)' },
-  { value: 'tasks-desc',      label: 'Total Tasks (Most First)' },
-  { value: 'tasks-asc',       label: 'Total Tasks (Least First)' },
-  { value: 'progress-desc',   label: 'Avg. Progress (High → Low)' },
-  { value: 'projects-desc',   label: 'Projects (Most First)' },
+  { value: 'completion-desc',  label: 'Personal Completion (High → Low)' },
+  { value: 'completion-asc',   label: 'Personal Completion (Low → High)' },
+  { value: 'personal-tasks-desc', label: 'Personal Tasks (Most First)' },
+  { value: 'project-tasks-desc',  label: 'Project Tasks (Most First)' },
+  { value: 'progress-desc',    label: 'Avg. Progress (High → Low)' },
+  { value: 'projects-desc',    label: 'Projects (Most First)' },
+  { value: 'name-asc',         label: 'Name (A–Z)' },
+  { value: 'name-desc',        label: 'Name (Z–A)' },
 ];
 
 /**
  * Map a backend lead-stats row into the shape the UI expects.
+ *
+ * Two scopes are unpacked:
+ *   - PERSONAL  → d.personal.*    (the lead's own tasks)
+ *   - PROJECT   → d.project.*     (all tasks in the lead's projects)
  */
 function mapLeadRow(row) {
-  const total = Number(row.totalTasks) || 0;
-  const completionRate = Number(row.completionRate) || 0;
+  const pTotal    = Number(row.personalTotalTasks) || 0;
+  const pCompRate = Number(row.personalCompletionRate) || 0;
 
+  // The performance verdict is based on PERSONAL completion, not project.
+  // A lead who runs a large project but does zero work themselves isn't
+  // "excellent" — they're "managing". A lead with no personal tasks at
+  // all is "New" only if they also have no projects.
+  const projectTotal = Number(row.totalTasks) || 0;
   const performance =
-    total === 0 ? 'New' :
-    completionRate >= 80 ? 'Excellent' :
-    completionRate >= 60 ? 'Good' :
-    completionRate >= 40 ? 'Average' :
-    'Needs Attention';
+    pTotal === 0 && projectTotal === 0 ? 'New' :
+    pTotal === 0 ?                       'Managing' :
+    pCompRate >= 80 ?                    'Excellent' :
+    pCompRate >= 60 ?                    'Good' :
+    pCompRate >= 40 ?                    'Average' :
+                                          'Needs Attention';
 
   const perfColor =
-    total === 0 ? '#94a3b8' :
-    completionRate >= 80 ? '#34d399' :
-    completionRate >= 60 ? '#2dd4bf' :
-    completionRate >= 40 ? '#f59e0b' :
-    '#f87171';
+    pTotal === 0 && projectTotal === 0 ? '#94a3b8' :
+    pTotal === 0 ?                       '#818cf8' :
+    pCompRate >= 80 ?                    '#34d399' :
+    pCompRate >= 60 ?                    '#2dd4bf' :
+    pCompRate >= 40 ?                    '#f59e0b' :
+                                          '#f87171';
 
   return {
     leadId: row.userId,
@@ -77,18 +88,37 @@ function mapLeadRow(row) {
       role: row.role,
     },
     projects: asArray(row.projects),
-    completed: Number(row.completedTasks) || 0,
-    inProgress: Number(row.inProgressTasks) || 0,
-    todo: Number(row.todoTasks) || 0,
-    totalTasks: total,
-    completionRate,
-    avgProgress: Number(row.avgProgress) || 0,
-    onTimeRate: Number(row.onTimeRate) || 0,
-    hasCompletedWithDue: !!row.hasCompletedWithDue,
-    teamSize: Number(row.teamSize) || 0,
+
+    // ─── PERSONAL scope (the lead's own work) ───
+    personal: {
+      total:       pTotal,
+      completed:   Number(row.personalCompletedTasks) || 0,
+      inProgress:  Number(row.personalInProgressTasks) || 0,
+      todo:        Number(row.personalTodoTasks) || 0,
+      completionRate: pCompRate,
+      avgProgress:    Number(row.personalAvgProgress) || 0,
+      onTimeRate:     Number(row.personalOnTimeRate) || 0,
+      hasCompletedWithDue: !!row.personalHasCompletedWithDue,
+    },
+
+    // ─── PROJECT scope (team-wide outcome) ───
+    project: {
+      total:       projectTotal,
+      completed:   Number(row.completedTasks) || 0,
+      inProgress:  Number(row.inProgressTasks) || 0,
+      todo:        Number(row.todoTasks) || 0,
+      completionRate: Number(row.completionRate) || 0,
+      avgProgress:    Number(row.avgProgress) || 0,
+      onTimeRate:     Number(row.onTimeRate) || 0,
+      hasCompletedWithDue: !!row.hasCompletedWithDue,
+    },
+
+    // ─── Misc ───
+    teamSize:    Number(row.teamSize) || 0,
     hasTeamMember: !!row.hasTeamMember,
-    teamMemberId: row.teamMemberId,
-    directAssignedCount: Number(row.directAssignedCount) || 0,
+    teamMemberId:  row.teamMemberId,
+
+    // ─── Verdict ───
     performance,
     perfColor,
   };
@@ -140,6 +170,50 @@ function PerformanceBadge({ performance, color, size = 'sm' }) {
   );
 }
 
+/**
+ * A single scoped stat row: { Done / Active / To Do / Total } +
+ * a header label and a completion-rate pill on the right.
+ */
+function ScopedStatRow({ scope, label, rate, rateColor, icon: Icon }) {
+  return (
+    <div className="scope-block">
+      <div className="scope-header">
+        <div className="scope-label">
+          {Icon && <Icon size={11} />}
+          <span>{label}</span>
+        </div>
+        <span className="scope-rate" style={{ color: rateColor }}>
+          {scope.total > 0 ? `${rate}%` : '—'}
+        </span>
+      </div>
+      <div className="scope-grid">
+        <div className="scope-cell">
+          <span className="scope-num" style={{ color: '#34d399' }}>
+            {scope.completed}
+          </span>
+          <span className="scope-lbl">Done</span>
+        </div>
+        <div className="scope-cell">
+          <span className="scope-num" style={{ color: '#818cf8' }}>
+            {scope.inProgress}
+          </span>
+          <span className="scope-lbl">Active</span>
+        </div>
+        <div className="scope-cell">
+          <span className="scope-num" style={{ color: '#94a3b8' }}>
+            {scope.todo}
+          </span>
+          <span className="scope-lbl">To Do</span>
+        </div>
+        <div className="scope-cell">
+          <span className="scope-num">{scope.total}</span>
+          <span className="scope-lbl">Total</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ─────────── Main Component ─────────── */
 export default function SupervisorLeads() {
   const ctx = useOutletContext?.() || {};
@@ -153,9 +227,8 @@ export default function SupervisorLeads() {
   const [selectedLead, setSelectedLead] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterPerformance, setFilterPerformance] = useState('all');
-  const [filterHasProfile, setFilterHasProfile] = useState('all'); // 'all' | 'yes' | 'no'
+  const [filterHasProfile, setFilterHasProfile] = useState('all');
   const [sortBy, setSortBy] = useState('completion-desc');
-  const [viewMode, setViewMode] = useState('grid'); // 'grid' | 'list'
 
   /* ─── Fetch data ─── */
   const fetchData = useCallback(async () => {
@@ -190,27 +263,31 @@ export default function SupervisorLeads() {
     toast.success('Leads refreshed');
   };
 
-  /* ─── Derived: aggregate stats for header ─── */
+  /* ─── Aggregate ─── */
   const aggregate = useMemo(() => {
     const total = leadsData.length;
     const withProfile = leadsData.filter(x => x.hasTeamMember).length;
     const withoutProfile = total - withProfile;
-    const totalTasks = leadsData.reduce((s, l) => s + l.totalTasks, 0);
+
+    const personalTasks = leadsData.reduce((s, l) => s + l.personal.total, 0);
+    const projectTasks  = leadsData.reduce((s, l) => s + l.project.total, 0);
     const totalProjects = leadsData.reduce((s, l) => s + l.projects.length, 0);
-    const avgCompletion = total
-      ? Math.round(leadsData.reduce((s, l) => s + l.completionRate, 0) / total)
+
+    // Personal completion is what we compare leads on.
+    const avgPersonalCompletion = total
+      ? Math.round(
+          leadsData.reduce((s, l) => s + l.personal.completionRate, 0) / total
+        )
       : 0;
-    const avgProgress = total
-      ? Math.round(leadsData.reduce((s, l) => s + l.avgProgress, 0) / total)
-      : 0;
-    const topPerformer = [...leadsData].sort(
-      (a, b) => b.completionRate - a.completionRate
-    )[0] || null;
+
+    const topPerformer = [...leadsData]
+      .filter((l) => l.personal.total > 0)
+      .sort((a, b) => b.personal.completionRate - a.personal.completionRate)[0] || null;
 
     return {
       total, withProfile, withoutProfile,
-      totalTasks, totalProjects,
-      avgCompletion, avgProgress,
+      personalTasks, projectTasks, totalProjects,
+      avgPersonalCompletion,
       topPerformer,
     };
   }, [leadsData]);
@@ -232,15 +309,15 @@ export default function SupervisorLeads() {
 
     out = [...out].sort((a, b) => {
       switch (sortBy) {
-        case 'name-asc':        return norm(a.user?.u_name).localeCompare(norm(b.user?.u_name));
-        case 'name-desc':       return norm(b.user?.u_name).localeCompare(norm(a.user?.u_name));
-        case 'completion-desc': return b.completionRate - a.completionRate;
-        case 'completion-asc':  return a.completionRate - b.completionRate;
-        case 'tasks-desc':      return b.totalTasks - a.totalTasks;
-        case 'tasks-asc':       return a.totalTasks - b.totalTasks;
-        case 'progress-desc':   return b.avgProgress - a.avgProgress;
-        case 'projects-desc':   return b.projects.length - a.projects.length;
-        default:                return 0;
+        case 'name-asc':  return norm(a.user?.u_name).localeCompare(norm(b.user?.u_name));
+        case 'name-desc': return norm(b.user?.u_name).localeCompare(norm(a.user?.u_name));
+        case 'completion-desc':  return b.personal.completionRate - a.personal.completionRate;
+        case 'completion-asc':   return a.personal.completionRate - b.personal.completionRate;
+        case 'personal-tasks-desc': return b.personal.total - a.personal.total;
+        case 'project-tasks-desc':  return b.project.total - a.project.total;
+        case 'progress-desc':    return b.personal.avgProgress - a.personal.avgProgress;
+        case 'projects-desc':    return b.projects.length - a.projects.length;
+        default: return 0;
       }
     });
 
@@ -258,7 +335,7 @@ export default function SupervisorLeads() {
     setFilterHasProfile('all');
   };
 
-  /* ─── Export to CSV ─── */
+  /* ─── CSV export ─── */
   const handleExportCSV = () => {
     if (visibleLeads.length === 0) {
       toast.error('Nothing to export');
@@ -267,9 +344,16 @@ export default function SupervisorLeads() {
 
     const headers = [
       'Name', 'Email', 'Role',
-      'Projects', 'Total Tasks', 'Completed', 'In Progress', 'To Do',
-      'Completion Rate (%)', 'Avg Progress (%)', 'On-Time Rate (%)',
-      'Team Size', 'Has Profile', 'Performance',
+      'Projects', 'Team Size', 'Has Profile',
+      // Personal scope
+      'Personal Total', 'Personal Completed', 'Personal In Progress',
+      'Personal To Do', 'Personal Completion Rate (%)',
+      'Personal Avg Progress (%)', 'Personal On-Time Rate (%)',
+      // Project scope
+      'Project Total', 'Project Completed', 'Project In Progress',
+      'Project To Do', 'Project Completion Rate (%)',
+      'Project Avg Progress (%)', 'Project On-Time Rate (%)',
+      'Performance',
     ];
 
     const rows = visibleLeads.map((d) => [
@@ -277,15 +361,22 @@ export default function SupervisorLeads() {
       d.user?.email ?? '',
       d.user?.role ?? '',
       d.projects.length,
-      d.totalTasks,
-      d.completed,
-      d.inProgress,
-      d.todo,
-      d.completionRate,
-      d.avgProgress,
-      d.hasCompletedWithDue ? d.onTimeRate : '',
       d.teamSize,
       d.hasTeamMember ? 'Yes' : 'No',
+      d.personal.total,
+      d.personal.completed,
+      d.personal.inProgress,
+      d.personal.todo,
+      d.personal.completionRate,
+      d.personal.avgProgress,
+      d.personal.hasCompletedWithDue ? d.personal.onTimeRate : '',
+      d.project.total,
+      d.project.completed,
+      d.project.inProgress,
+      d.project.todo,
+      d.project.completionRate,
+      d.project.avgProgress,
+      d.project.hasCompletedWithDue ? d.project.onTimeRate : '',
       d.performance,
     ]);
 
@@ -310,7 +401,6 @@ export default function SupervisorLeads() {
     toast.success(`Exported ${visibleLeads.length} leads`);
   };
 
-  /* ─── Loading ─── */
   if (loading) {
     return (
       <div>
@@ -361,68 +451,28 @@ export default function SupervisorLeads() {
       />
 
       <div className="page-container">
-        {/* ─── Aggregate stat cards ─── */}
+        {/* ─── Aggregate cards ─── */}
         <div className="leads-stats">
-          <StatCard
-            icon={Users}
-            label="Total Leads"
-            value={aggregate.total}
-            color="#818cf8"
-          />
-          <StatCard
-            icon={UserCheck}
-            label="With Profile"
-            value={aggregate.withProfile}
-            color="#34d399"
-            sublabel={
-              aggregate.total > 0
-                ? `${Math.round((aggregate.withProfile / aggregate.total) * 100)}% of total`
-                : null
-            }
-          />
-          <StatCard
-            icon={AlertCircle}
-            label="No Profile"
-            value={aggregate.withoutProfile}
-            color="#f59e0b"
-            sublabel={
-              aggregate.withoutProfile > 0 ? 'Need a TeamMember profile' : 'All set'
-            }
-          />
-          <StatCard
-            icon={BarChart2}
-            label="Avg. Completion"
-            value={`${aggregate.avgCompletion}%`}
-            color="#2dd4bf"
-          />
-          <StatCard
-            icon={ListTodo}
-            label="Total Tasks"
-            value={aggregate.totalTasks}
-            color="#a78bfa"
-          />
-          <StatCard
-            icon={FolderKanban}
-            label="Total Projects"
-            value={aggregate.totalProjects}
-            color="#f472b6"
-          />
+          <StatCard icon={Users}        label="Total Leads"    value={aggregate.total}           color="#818cf8" />
+          <StatCard icon={UserCheck}    label="With Profile"   value={aggregate.withProfile}     color="#34d399"
+            sublabel={aggregate.total > 0 ? `${Math.round((aggregate.withProfile / aggregate.total) * 100)}% of total` : null} />
+          <StatCard icon={AlertCircle}  label="No Profile"     value={aggregate.withoutProfile}  color="#f59e0b"
+            sublabel={aggregate.withoutProfile > 0 ? 'Need a TeamMember profile' : 'All set'} />
+          <StatCard icon={BarChart2}    label="Avg. Personal"  value={`${aggregate.avgPersonalCompletion}%`} color="#2dd4bf" />
+          <StatCard icon={Target}       label="Personal Tasks" value={aggregate.personalTasks}   color="#a78bfa" />
+          <StatCard icon={Briefcase}    label="Project Tasks"  value={aggregate.projectTasks}    color="#f472b6" />
         </div>
 
-        {/* ─── Top performer banner ─── */}
-        {aggregate.topPerformer && aggregate.topPerformer.totalTasks > 0 && (
+        {/* ─── Top performer ─── */}
+        {aggregate.topPerformer && (
           <motion.div
             className="top-performer-banner"
             initial={{ opacity: 0, y: -6 }}
             animate={{ opacity: 1, y: 0 }}
           >
-            <div className="top-performer-icon">
-              <Award size={18} />
-            </div>
+            <div className="top-performer-icon"><Award size={18} /></div>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="top-performer-title">
-                Top Performer
-              </div>
+              <div className="top-performer-title">Top Personal Performer</div>
               <div className="top-performer-name">
                 {aggregate.topPerformer.user?.u_name}
               </div>
@@ -430,11 +480,11 @@ export default function SupervisorLeads() {
             <div className="top-performer-metrics">
               <span className="top-performer-metric">
                 <Target size={12} />
-                {aggregate.topPerformer.completionRate}% completion
+                {aggregate.topPerformer.personal.completionRate}% personal
               </span>
               <span className="top-performer-metric">
                 <Zap size={12} />
-                {aggregate.topPerformer.avgProgress}% progress
+                {aggregate.topPerformer.personal.total} tasks
               </span>
             </div>
           </motion.div>
@@ -472,6 +522,7 @@ export default function SupervisorLeads() {
             <option value="good">✅ Good</option>
             <option value="average">📊 Average</option>
             <option value="needs attention">⚠️ Needs Attention</option>
+            <option value="managing">👔 Managing (no personal tasks)</option>
             <option value="new">🆕 New</option>
           </select>
 
@@ -498,7 +549,6 @@ export default function SupervisorLeads() {
           </select>
         </div>
 
-        {/* ─── Active filters bar ─── */}
         {hasActiveFilters && (
           <div className="active-filters-bar">
             <Filter size={12} />
@@ -512,7 +562,7 @@ export default function SupervisorLeads() {
           </div>
         )}
 
-        {/* ─── Leads grid ─── */}
+        {/* ─── Grid ─── */}
         {visibleLeads.length === 0 ? (
           <EmptyState
             icon={Users}
@@ -528,7 +578,6 @@ export default function SupervisorLeads() {
             {visibleLeads.map((d, index) => {
               const roleInfo = getRoleColor(d.user?.role);
               const initials = getInitials(d.user?.u_name);
-              const deltaSign = d.completionRate - aggregate.avgCompletion;
 
               return (
                 <motion.div
@@ -563,10 +612,7 @@ export default function SupervisorLeads() {
                         >
                           {d.user?.role || 'Member'}
                         </span>
-                        <PerformanceBadge
-                          performance={d.performance}
-                          color={d.perfColor}
-                        />
+                        <PerformanceBadge performance={d.performance} color={d.perfColor} />
                         {!d.hasTeamMember && (
                           <span className="lead-no-profile-badge">No Profile</span>
                         )}
@@ -574,41 +620,71 @@ export default function SupervisorLeads() {
                     </div>
                   </div>
 
-                  <div className="lead-stats-grid">
-                    <div className="lead-stat-item">
-                      <span className="lead-stat-number">{d.projects.length}</span>
-                      <span className="lead-stat-label">Projects</span>
-                    </div>
-                    <div className="lead-stat-item">
-                      <span className="lead-stat-number" style={{ color: '#34d399' }}>{d.completed}</span>
-                      <span className="lead-stat-label">Done</span>
-                    </div>
-                    <div className="lead-stat-item">
-                      <span className="lead-stat-number" style={{ color: '#818cf8' }}>{d.inProgress}</span>
-                      <span className="lead-stat-label">Active</span>
-                    </div>
-                    <div className="lead-stat-item">
-                      <span className="lead-stat-number">{d.totalTasks}</span>
-                      <span className="lead-stat-label">Total</span>
-                    </div>
-                  </div>
+                  {/* ─── PERSONAL SCOPE ─── */}
+                  <ScopedStatRow
+                    scope={d.personal}
+                    label="Their Own Tasks"
+                    rate={d.personal.completionRate}
+                    rateColor={d.perfColor}
+                    icon={UserCog}
+                  />
 
-                  <div className="lead-progress">
-                    <div className="lead-progress-header">
-                      <span>Avg. Progress</span>
-                      <span style={{ color: d.perfColor, fontWeight: 700 }}>
-                        {d.totalTasks > 0 ? `${d.avgProgress}%` : '—'}
+                  {/* ─── PROJECT SCOPE ─── */}
+                  <div className="scope-block scope-block-secondary">
+                    <div className="scope-header">
+                      <div className="scope-label">
+                        <Briefcase size={11} />
+                        <span>Their Projects (team-wide)</span>
+                      </div>
+                      <span className="scope-rate" style={{ color: 'var(--text-muted)' }}>
+                        {d.project.total > 0 ? `${d.project.completionRate}%` : '—'}
                       </span>
                     </div>
-                    <div className="lead-progress-bar">
-                      <div
-                        className="lead-progress-fill"
-                        style={{ width: `${d.avgProgress}%`, background: d.perfColor }}
-                      />
+                    <div className="scope-grid">
+                      <div className="scope-cell">
+                        <span className="scope-num">{d.projects.length}</span>
+                        <span className="scope-lbl">Projects</span>
+                      </div>
+                      <div className="scope-cell">
+                        <span className="scope-num" style={{ color: '#34d399' }}>
+                          {d.project.completed}
+                        </span>
+                        <span className="scope-lbl">Done</span>
+                      </div>
+                      <div className="scope-cell">
+                        <span className="scope-num" style={{ color: '#818cf8' }}>
+                          {d.project.inProgress}
+                        </span>
+                        <span className="scope-lbl">Active</span>
+                      </div>
+                      <div className="scope-cell">
+                        <span className="scope-num">{d.project.total}</span>
+                        <span className="scope-lbl">Total</span>
+                      </div>
                     </div>
                   </div>
 
                   <div className="lead-card-footer">
+                    <div className="lead-meta-pills">
+                      <span
+                        className="lead-meta-pill"
+                        title={
+                          d.project.hasCompletedWithDue
+                            ? 'On-time completion rate across their projects'
+                            : 'No completed tasks with due dates yet'
+                        }
+                      >
+                        <CheckCircle2 size={11} />
+                        {d.project.hasCompletedWithDue ? `${d.project.onTimeRate}%` : '—'}
+                      </span>
+                      <span
+                        className="lead-meta-pill"
+                        title="Team members on their projects"
+                      >
+                        <UserCog size={11} />
+                        {d.teamSize}
+                      </span>
+                    </div>
                     <div className="lead-project-tags">
                       {d.projects.slice(0, 2).map((p) => (
                         <span
@@ -628,23 +704,6 @@ export default function SupervisorLeads() {
                         </span>
                       )}
                     </div>
-                    <div className="lead-meta-pills">
-                      <span
-                        className="lead-meta-pill"
-                        title={
-                          d.hasCompletedWithDue
-                            ? 'On-time completion rate'
-                            : 'No completed tasks with due dates yet'
-                        }
-                      >
-                        <CheckCircle2 size={11} />
-                        {d.hasCompletedWithDue ? `${d.onTimeRate}%` : '—'}
-                      </span>
-                      <span className="lead-meta-pill" title="Team members on their projects">
-                        <UserCog size={11} />
-                        {d.teamSize}
-                      </span>
-                    </div>
                   </div>
                 </motion.div>
               );
@@ -661,7 +720,7 @@ export default function SupervisorLeads() {
 
           const roleInfo = getRoleColor(d.user?.role);
           const initials = getInitials(d.user?.u_name);
-          const delta = d.completionRate - aggregate.avgCompletion;
+          const delta = d.personal.completionRate - aggregate.avgPersonalCompletion;
 
           return (
             <motion.div
@@ -693,11 +752,7 @@ export default function SupervisorLeads() {
                         >
                           {d.user?.role || 'Member'}
                         </span>
-                        <PerformanceBadge
-                          performance={d.performance}
-                          color={d.perfColor}
-                          size="lg"
-                        />
+                        <PerformanceBadge performance={d.performance} color={d.perfColor} size="lg" />
                       </div>
                     </div>
                   </div>
@@ -711,7 +766,6 @@ export default function SupervisorLeads() {
                 </div>
 
                 <div className="modal-body">
-                  {/* Contact row */}
                   {d.user?.email && (
                     <a
                       className="modal-contact-row"
@@ -724,68 +778,128 @@ export default function SupervisorLeads() {
                     </a>
                   )}
 
-                  {/* Stat tiles */}
-                  <div className="modal-stats">
-                    <div className="modal-stat">
-                      <span className="modal-stat-value">{d.projects.length}</span>
-                      <span className="modal-stat-label">Projects</span>
-                    </div>
-                    <div className="modal-stat">
-                      <span className="modal-stat-value" style={{ color: '#34d399' }}>{d.completed}</span>
-                      <span className="modal-stat-label">Completed</span>
-                    </div>
-                    <div className="modal-stat">
-                      <span className="modal-stat-value" style={{ color: '#818cf8' }}>{d.inProgress}</span>
-                      <span className="modal-stat-label">In Progress</span>
-                    </div>
-                    <div className="modal-stat">
-                      <span className="modal-stat-value" style={{ color: '#94a3b8' }}>{d.todo}</span>
-                      <span className="modal-stat-label">To Do</span>
-                    </div>
-                    <div className="modal-stat">
-                      <span className="modal-stat-value">{d.totalTasks}</span>
-                      <span className="modal-stat-label">Total</span>
-                    </div>
-                  </div>
-
-                  {/* Progress bar */}
-                  <div className="modal-progress">
-                    <div className="modal-progress-header">
-                      <span>Average Progress</span>
-                      <span style={{ color: d.perfColor, fontWeight: 700 }}>
-                        {d.totalTasks > 0 ? `${d.avgProgress}%` : '—'}
+                  {/* ─── PERSONAL SCOPE ─── */}
+                  <div className="modal-scope-card modal-scope-personal">
+                    <div className="modal-scope-title">
+                      <UserCog size={14} />
+                      <span>Their Own Tasks</span>
+                      <span className="modal-scope-rate" style={{ color: d.perfColor }}>
+                        {d.personal.total > 0 ? `${d.personal.completionRate}%` : '—'}
                       </span>
                     </div>
-                    <div className="modal-progress-bar">
-                      <div
-                        className="modal-progress-fill"
-                        style={{ width: `${d.avgProgress}%`, background: d.perfColor }}
-                      />
+                    <div className="modal-scope-stats">
+                      <div className="modal-stat">
+                        <span className="modal-stat-value" style={{ color: '#34d399' }}>
+                          {d.personal.completed}
+                        </span>
+                        <span className="modal-stat-label">Done</span>
+                      </div>
+                      <div className="modal-stat">
+                        <span className="modal-stat-value" style={{ color: '#818cf8' }}>
+                          {d.personal.inProgress}
+                        </span>
+                        <span className="modal-stat-label">Active</span>
+                      </div>
+                      <div className="modal-stat">
+                        <span className="modal-stat-value" style={{ color: '#94a3b8' }}>
+                          {d.personal.todo}
+                        </span>
+                        <span className="modal-stat-label">To Do</span>
+                      </div>
+                      <div className="modal-stat">
+                        <span className="modal-stat-value">{d.personal.total}</span>
+                        <span className="modal-stat-label">Total</span>
+                      </div>
+                    </div>
+                    <div className="modal-progress">
+                      <div className="modal-progress-header">
+                        <span>Avg. Progress (own tasks)</span>
+                        <span style={{ color: d.perfColor, fontWeight: 700 }}>
+                          {d.personal.total > 0 ? `${d.personal.avgProgress}%` : '—'}
+                        </span>
+                      </div>
+                      <div className="modal-progress-bar">
+                        <div
+                          className="modal-progress-fill"
+                          style={{ width: `${d.personal.avgProgress}%`, background: d.perfColor }}
+                        />
+                      </div>
                     </div>
                   </div>
 
-                  {/* Comparison vs. average */}
-                  {aggregate.total > 1 && d.totalTasks > 0 && (
-                    <div
-                      className={`modal-comparison ${delta >= 0 ? 'up' : 'down'}`}
-                    >
+                  {/* ─── PROJECT SCOPE ─── */}
+                  <div className="modal-scope-card modal-scope-project">
+                    <div className="modal-scope-title">
+                      <Briefcase size={14} />
+                      <span>Their Projects (team-wide)</span>
+                      <span className="modal-scope-rate" style={{ color: 'var(--text-muted)' }}>
+                        {d.project.total > 0 ? `${d.project.completionRate}%` : '—'}
+                      </span>
+                    </div>
+                    <div className="modal-scope-stats">
+                      <div className="modal-stat">
+                        <span className="modal-stat-value" style={{ color: '#34d399' }}>
+                          {d.project.completed}
+                        </span>
+                        <span className="modal-stat-label">Done</span>
+                      </div>
+                      <div className="modal-stat">
+                        <span className="modal-stat-value" style={{ color: '#818cf8' }}>
+                          {d.project.inProgress}
+                        </span>
+                        <span className="modal-stat-label">Active</span>
+                      </div>
+                      <div className="modal-stat">
+                        <span className="modal-stat-value" style={{ color: '#94a3b8' }}>
+                          {d.project.todo}
+                        </span>
+                        <span className="modal-stat-label">To Do</span>
+                      </div>
+                      <div className="modal-stat">
+                        <span className="modal-stat-value">{d.project.total}</span>
+                        <span className="modal-stat-label">Total</span>
+                      </div>
+                    </div>
+                    <div className="modal-progress">
+                      <div className="modal-progress-header">
+                        <span>Avg. Progress (project-wide)</span>
+                        <span style={{ color: 'var(--text-secondary)', fontWeight: 700 }}>
+                          {d.project.total > 0 ? `${d.project.avgProgress}%` : '—'}
+                        </span>
+                      </div>
+                      <div className="modal-progress-bar">
+                        <div
+                          className="modal-progress-fill"
+                          style={{
+                            width: `${d.project.avgProgress}%`,
+                            background: 'var(--text-muted)',
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Comparison vs. average (personal rate) */}
+                  {aggregate.total > 1 && d.personal.total > 0 && (
+                    <div className={`modal-comparison ${delta >= 0 ? 'up' : 'down'}`}>
                       {delta >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
                       <span>
                         {delta >= 0 ? '+' : ''}
-                        {delta.toFixed(1)}% vs team average ({aggregate.avgCompletion}%)
+                        {delta.toFixed(1)}% personal completion vs team average (
+                        {aggregate.avgPersonalCompletion}%)
                       </span>
                     </div>
                   )}
 
-                  {/* KPI tiles */}
+                  {/* KPI row */}
                   <div className="modal-kpis">
                     <div className="modal-kpi">
                       <CheckCircle2 size={14} />
                       <div>
                         <span className="modal-kpi-value">
-                          {d.hasCompletedWithDue ? `${d.onTimeRate}%` : '—'}
+                          {d.personal.hasCompletedWithDue ? `${d.personal.onTimeRate}%` : '—'}
                         </span>
-                        <span className="modal-kpi-label">On-time rate</span>
+                        <span className="modal-kpi-label">On-time (own)</span>
                       </div>
                     </div>
                     <div className="modal-kpi">
@@ -798,8 +912,8 @@ export default function SupervisorLeads() {
                     <div className="modal-kpi">
                       <MessageSquare size={14} />
                       <div>
-                        <span className="modal-kpi-value">{d.directAssignedCount}</span>
-                        <span className="modal-kpi-label">Directly assigned</span>
+                        <span className="modal-kpi-value">{d.personal.total}</span>
+                        <span className="modal-kpi-label">Assigned tasks</span>
                       </div>
                     </div>
                   </div>
@@ -852,7 +966,7 @@ export default function SupervisorLeads() {
         @keyframes spin { to { transform: rotate(360deg); } }
         .spin { animation: spin 1s linear infinite; }
 
-        /* ─── Stat cards ─── */
+        /* ─── Aggregate cards ─── */
         .leads-stats {
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -860,9 +974,7 @@ export default function SupervisorLeads() {
           margin-bottom: 18px;
         }
         .leads-stat {
-          display: flex;
-          align-items: center;
-          gap: 12px;
+          display: flex; align-items: center; gap: 12px;
           padding: 14px 16px;
           background: var(--bg-card);
           border: 1px solid var(--border-subtle);
@@ -871,34 +983,23 @@ export default function SupervisorLeads() {
         }
         .leads-stat:hover { border-color: var(--border-default); }
         .leads-stat-icon {
-          width: 40px; height: 40px;
-          border-radius: 10px;
+          width: 40px; height: 40px; border-radius: 10px;
           display: flex; align-items: center; justify-content: center;
           flex-shrink: 0;
         }
         .leads-stat-value {
-          display: block;
-          font-size: 20px; font-weight: 800;
-          color: var(--text-primary);
-          line-height: 1.2;
+          display: block; font-size: 20px; font-weight: 800;
+          color: var(--text-primary); line-height: 1.2;
         }
-        .leads-stat-label {
-          display: block;
-          font-size: 12px; color: var(--text-muted);
-        }
+        .leads-stat-label { display: block; font-size: 12px; color: var(--text-muted); }
         .leads-stat-sublabel {
-          display: block;
-          font-size: 10px;
-          color: var(--text-muted);
-          opacity: 0.75;
-          margin-top: 2px;
+          display: block; font-size: 10px;
+          color: var(--text-muted); opacity: 0.75; margin-top: 2px;
         }
 
         /* ─── Top performer banner ─── */
         .top-performer-banner {
-          display: flex;
-          align-items: center;
-          gap: 12px;
+          display: flex; align-items: center; gap: 12px;
           padding: 12px 16px;
           background: linear-gradient(90deg,
             rgba(245, 158, 11, 0.08),
@@ -908,32 +1009,23 @@ export default function SupervisorLeads() {
           margin-bottom: 16px;
         }
         .top-performer-icon {
-          width: 34px; height: 34px;
-          border-radius: 8px;
+          width: 34px; height: 34px; border-radius: 8px;
           display: flex; align-items: center; justify-content: center;
-          background: rgba(245, 158, 11, 0.15);
-          color: #f59e0b;
+          background: rgba(245, 158, 11, 0.15); color: #f59e0b;
           flex-shrink: 0;
         }
         .top-performer-title {
-          font-size: 10px; font-weight: 700;
-          color: #f59e0b;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
+          font-size: 10px; font-weight: 700; color: #f59e0b;
+          text-transform: uppercase; letter-spacing: 0.5px;
         }
         .top-performer-name {
-          font-size: 14px; font-weight: 700;
-          color: var(--text-primary);
+          font-size: 14px; font-weight: 700; color: var(--text-primary);
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
-        .top-performer-metrics {
-          display: flex; gap: 10px; flex-wrap: wrap;
-          flex-shrink: 0;
-        }
+        .top-performer-metrics { display: flex; gap: 10px; flex-wrap: wrap; flex-shrink: 0; }
         .top-performer-metric {
           display: inline-flex; align-items: center; gap: 4px;
-          font-size: 11px; font-weight: 600;
-          color: var(--text-secondary);
+          font-size: 11px; font-weight: 600; color: var(--text-secondary);
           padding: 3px 10px;
           background: var(--bg-card);
           border: 1px solid var(--border-subtle);
@@ -942,18 +1034,14 @@ export default function SupervisorLeads() {
         }
 
         /* ─── Filters ─── */
-        .leads-filters {
-          display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap;
-        }
+        .leads-filters { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
         .leads-search { position: relative; flex: 1; min-width: 220px; }
         .leads-search-icon {
           position: absolute; left: 12px; top: 50%;
-          transform: translateY(-50%); color: var(--text-muted);
-          pointer-events: none;
+          transform: translateY(-50%); color: var(--text-muted); pointer-events: none;
         }
         .leads-search-input {
-          width: 100%;
-          padding: 9px 36px 9px 36px;
+          width: 100%; padding: 9px 36px 9px 36px;
           border-radius: 8px;
           border: 1px solid var(--border-default);
           background: var(--bg-secondary);
@@ -967,31 +1055,22 @@ export default function SupervisorLeads() {
           box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
         }
         .leads-search-clear {
-          position: absolute; right: 8px; top: 50%;
-          transform: translateY(-50%);
+          position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
           display: flex; align-items: center; justify-content: center;
-          width: 26px; height: 26px;
-          border: none; border-radius: 50%;
-          background: var(--bg-hover);
-          color: var(--text-muted);
-          cursor: pointer;
-          transition: background 0.15s, color 0.15s;
+          width: 26px; height: 26px; border: none; border-radius: 50%;
+          background: var(--bg-hover); color: var(--text-muted);
+          cursor: pointer; transition: background 0.15s, color 0.15s;
         }
-        .leads-search-clear:hover {
-          background: var(--border-default);
-          color: var(--text-primary);
-        }
+        .leads-search-clear:hover { background: var(--border-default); color: var(--text-primary); }
         .leads-filter-select {
-          padding: 9px 32px 9px 12px;
-          border-radius: 8px;
+          padding: 9px 32px 9px 12px; border-radius: 8px;
           border: 1px solid var(--border-default);
           background: var(--bg-secondary);
           color: var(--text-primary);
           font-size: 13px; outline: none; cursor: pointer;
           appearance: none;
           background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-          background-repeat: no-repeat;
-          background-position: right 10px center;
+          background-repeat: no-repeat; background-position: right 10px center;
           transition: border-color 0.15s;
         }
         .leads-filter-select:hover { border-color: var(--border-strong); }
@@ -1030,7 +1109,7 @@ export default function SupervisorLeads() {
         /* ─── Grid + cards ─── */
         .leads-grid {
           display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+          grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
           gap: 16px;
         }
         .lead-card {
@@ -1084,7 +1163,28 @@ export default function SupervisorLeads() {
           color: #f59e0b;
           border: 1px solid rgba(245, 158, 11, 0.3);
         }
-        .lead-stats-grid {
+
+        /* ─── Scoped stat rows ─── */
+        .scope-block {
+          display: flex; flex-direction: column; gap: 6px;
+        }
+        .scope-block-secondary { opacity: 0.92; }
+        .scope-header {
+          display: flex; justify-content: space-between; align-items: center;
+          padding: 0 2px;
+        }
+        .scope-label {
+          display: inline-flex; align-items: center; gap: 5px;
+          font-size: 10.5px; font-weight: 700;
+          color: var(--text-secondary);
+          text-transform: uppercase;
+          letter-spacing: 0.4px;
+        }
+        .scope-rate {
+          font-size: 12px; font-weight: 800;
+          line-height: 1;
+        }
+        .scope-grid {
           display: grid; grid-template-columns: repeat(4, 1fr);
           gap: 4px;
           background: var(--bg-secondary);
@@ -1092,31 +1192,17 @@ export default function SupervisorLeads() {
           border: 1px solid var(--border-subtle);
           padding: 6px 0;
         }
-        .lead-stat-item { text-align: center; padding: 4px; }
-        .lead-stat-item:not(:last-child) { border-right: 1px solid var(--border-subtle); }
-        .lead-stat-number {
-          display: block; font-size: 16px; font-weight: 700;
-          color: var(--text-primary);
+        .scope-cell { text-align: center; padding: 4px; }
+        .scope-cell:not(:last-child) { border-right: 1px solid var(--border-subtle); }
+        .scope-num {
+          display: block; font-size: 15px; font-weight: 700;
+          color: var(--text-primary); line-height: 1.2;
         }
-        .lead-stat-label {
+        .scope-lbl {
           font-size: 9px; color: var(--text-muted);
           text-transform: uppercase; letter-spacing: 0.3px;
         }
-        .lead-progress { margin-top: 2px; }
-        .lead-progress-header {
-          display: flex; justify-content: space-between;
-          font-size: 11px; color: var(--text-secondary);
-          margin-bottom: 4px;
-        }
-        .lead-progress-bar {
-          width: 100%; height: 6px;
-          background: var(--border-subtle);
-          border-radius: 10px; overflow: hidden;
-        }
-        .lead-progress-fill {
-          height: 100%; border-radius: 10px;
-          transition: width 0.6s ease;
-        }
+
         .lead-card-footer {
           display: flex; justify-content: space-between; align-items: center;
           padding-top: 10px;
@@ -1130,8 +1216,7 @@ export default function SupervisorLeads() {
           background: var(--bg-secondary);
           border: 1px solid var(--border-subtle);
           color: var(--text-secondary);
-          white-space: nowrap;
-          max-width: 100px;
+          white-space: nowrap; max-width: 100px;
           overflow: hidden; text-overflow: ellipsis;
         }
         .lead-meta-pills { display: flex; gap: 4px; flex-wrap: wrap; }
@@ -1146,16 +1231,13 @@ export default function SupervisorLeads() {
           white-space: nowrap;
         }
 
-        /* ─── Empty state ─── */
         .leads-empty {
-          text-align: center;
-          padding: 60px 20px;
+          text-align: center; padding: 60px 20px;
           color: var(--text-muted);
         }
         .leads-empty h3 {
           font-size: 18px; font-weight: 700;
-          color: var(--text-primary);
-          margin: 12px 0 4px;
+          color: var(--text-primary); margin: 12px 0 4px;
         }
         .leads-empty p { font-size: 13px; }
 
@@ -1168,13 +1250,12 @@ export default function SupervisorLeads() {
           z-index: 1000; padding: 20px;
         }
         .modal-content {
-          width: 100%; max-width: 640px; max-height: 90vh;
+          width: 100%; max-width: 660px; max-height: 90vh;
           overflow-y: auto;
           background: var(--bg-card);
           border: 1px solid var(--border-default);
           border-radius: 18px;
           box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
-          padding: 0;
         }
         .modal-content::-webkit-scrollbar { width: 4px; }
         .modal-content::-webkit-scrollbar-thumb {
@@ -1195,8 +1276,7 @@ export default function SupervisorLeads() {
           border: 2px solid;
           display: flex; align-items: center; justify-content: center;
           font-size: 20px; font-weight: 800;
-          background: var(--bg-secondary);
-          color: var(--text-primary);
+          background: var(--bg-secondary); color: var(--text-primary);
           flex-shrink: 0;
         }
         .modal-name {
@@ -1206,8 +1286,8 @@ export default function SupervisorLeads() {
           white-space: nowrap; max-width: 320px;
         }
         .modal-badges {
-          display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px;
-          align-items: center;
+          display: flex; gap: 4px; flex-wrap: wrap;
+          margin-top: 4px; align-items: center;
         }
         .modal-role-badge {
           font-size: 11px; font-weight: 600;
@@ -1216,8 +1296,7 @@ export default function SupervisorLeads() {
         }
         .modal-close-btn {
           display: flex; align-items: center; justify-content: center;
-          width: 36px; height: 36px;
-          border-radius: 8px;
+          width: 36px; height: 36px; border-radius: 8px;
           border: 1px solid var(--border-subtle);
           background: var(--bg-secondary);
           color: var(--text-secondary);
@@ -1244,25 +1323,50 @@ export default function SupervisorLeads() {
           color: var(--text-secondary);
           text-decoration: none;
           transition: border-color 0.15s, color 0.15s;
-          width: fit-content;
-          max-width: 100%;
+          width: fit-content; max-width: 100%;
         }
         .modal-contact-row:hover {
           border-color: var(--accent-primary);
           color: var(--accent-primary);
         }
         .modal-contact-row span {
-          overflow: hidden; text-overflow: ellipsis;
-          white-space: nowrap;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
 
-        .modal-stats {
-          display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;
+        /* ─── Modal scope cards ─── */
+        .modal-scope-card {
+          padding: 14px 16px;
+          border-radius: 12px;
+          border: 1px solid var(--border-subtle);
+          background: var(--bg-secondary);
+          display: flex; flex-direction: column; gap: 10px;
+        }
+        .modal-scope-personal {
+          background: linear-gradient(180deg,
+            rgba(99, 102, 241, 0.04),
+            rgba(99, 102, 241, 0.01));
+          border-color: rgba(99, 102, 241, 0.18);
+        }
+        .modal-scope-project {
+          background: var(--bg-secondary);
+        }
+        .modal-scope-title {
+          display: flex; align-items: center; gap: 6px;
+          font-size: 11px; font-weight: 700;
+          color: var(--text-secondary);
+          text-transform: uppercase;
+          letter-spacing: 0.4px;
+        }
+        .modal-scope-title > span:first-of-type { flex: 1; }
+        .modal-scope-rate { font-size: 13px; font-weight: 800; }
+
+        .modal-scope-stats {
+          display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
         }
         .modal-stat {
           text-align: center;
           padding: 10px 6px;
-          background: var(--bg-secondary);
+          background: var(--bg-card);
           border-radius: 10px;
           border: 1px solid var(--border-subtle);
         }
@@ -1276,14 +1380,14 @@ export default function SupervisorLeads() {
         }
 
         .modal-progress {
-          background: var(--bg-secondary);
+          background: var(--bg-card);
           border-radius: 10px;
-          padding: 12px 16px;
+          padding: 10px 14px;
           border: 1px solid var(--border-subtle);
         }
         .modal-progress-header {
           display: flex; justify-content: space-between;
-          font-size: 13px; color: var(--text-secondary);
+          font-size: 12px; color: var(--text-secondary);
           margin-bottom: 6px;
         }
         .modal-progress-bar {
@@ -1300,8 +1404,7 @@ export default function SupervisorLeads() {
           display: flex; align-items: center; gap: 8px;
           padding: 8px 12px;
           border-radius: 8px;
-          font-size: 12px;
-          font-weight: 600;
+          font-size: 12px; font-weight: 600;
         }
         .modal-comparison.up {
           background: rgba(52, 211, 153, 0.08);
@@ -1327,8 +1430,7 @@ export default function SupervisorLeads() {
         }
         .modal-kpi-value {
           display: block; font-size: 15px; font-weight: 800;
-          color: var(--text-primary);
-          line-height: 1.2;
+          color: var(--text-primary); line-height: 1.2;
         }
         .modal-kpi-label {
           display: block; font-size: 10px;
@@ -1352,10 +1454,7 @@ export default function SupervisorLeads() {
           gap: 10px; flex-wrap: wrap;
           cursor: pointer;
           transition: border-color 0.15s, background 0.15s;
-          font: inherit;
-          color: inherit;
-          text-align: left;
-          width: 100%;
+          font: inherit; color: inherit; text-align: left; width: 100%;
         }
         .modal-project-item:hover {
           border-color: var(--accent-primary);
@@ -1371,9 +1470,7 @@ export default function SupervisorLeads() {
           overflow: hidden; text-overflow: ellipsis;
           white-space: nowrap; max-width: 320px;
         }
-        .modal-project-badges {
-          display: flex; gap: 4px; flex-shrink: 0;
-        }
+        .modal-project-badges { display: flex; gap: 4px; flex-shrink: 0; }
         .modal-project-eye {
           color: var(--text-muted);
           flex-shrink: 0;
@@ -1390,8 +1487,8 @@ export default function SupervisorLeads() {
         /* ─── Responsive ─── */
         @media (max-width: 768px) {
           .leads-stats { grid-template-columns: 1fr 1fr; }
-          .leads-grid { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
-          .modal-stats { grid-template-columns: repeat(3, 1fr); }
+          .leads-grid { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+          .modal-scope-stats { grid-template-columns: repeat(3, 1fr); }
           .modal-kpis { grid-template-columns: 1fr; }
           .modal-content { max-width: 100%; border-radius: 14px; max-height: 95vh; }
           .top-performer-banner { flex-wrap: wrap; }
@@ -1401,7 +1498,7 @@ export default function SupervisorLeads() {
           .leads-stats { grid-template-columns: 1fr; }
           .leads-filters { flex-direction: column; }
           .leads-grid { grid-template-columns: 1fr; }
-          .modal-stats { grid-template-columns: repeat(2, 1fr); }
+          .modal-scope-stats { grid-template-columns: repeat(2, 1fr); }
           .modal-header { padding: 16px 18px; }
           .modal-body { padding: 16px 18px; }
           .modal-name { max-width: 180px; }
