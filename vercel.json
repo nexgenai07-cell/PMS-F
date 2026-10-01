@@ -1,17 +1,16 @@
 {
   "version": 2,
-  "rewrites": [
+  "routes": [
     {
-      "source": "/definitely-not-a-real-path-test",
-      "destination": "https://example.com"
+      "src": "/api/(.*)",
+      "dest": "https://pms-backend-fawn-pi.vercel.app/api/$1"
     },
     {
-      "source": "/api/:path*",
-      "destination": "https://pms-backend-fawn-pi.vercel.app/api/:path*"
+      "handle": "filesystem"
     },
     {
-      "source": "/(.*)",
-      "destination": "/index.html"
+      "src": "/(.*)",
+      "dest": "/index.html"
     }
   ]
 }
