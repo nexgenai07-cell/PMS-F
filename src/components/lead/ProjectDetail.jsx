@@ -100,8 +100,12 @@ function getPteamTmId(entry) {
 
 /* ─────────── Compute task progress from status ─────────── */
 function computeTaskProgress(task) {
-  const raw = Number(task.progress);
-  if (Number.isFinite(raw) && raw > 0) return raw;
+  // If the backend has a real progress value, always trust it — even 0.
+  if (task.progress !== undefined && task.progress !== null) {
+    const raw = Number(task.progress);
+    if (Number.isFinite(raw)) return raw;
+  }
+  // Fallback only when the backend doesn't send progress at all.
   const status = (task.status || '').toLowerCase();
   if (status === 'done' || status === 'completed') return 100;
   if (status === 'review') return 75;
@@ -323,15 +327,17 @@ const regularMembers = useMemo(
 
   /* ─── Replace the projectProgress useMemo ─── */
 const projectProgress = useMemo(() => {
-  // Prefer backend-computed avgProgress (uses correct status weights).
+  // Prefer backend-computed avgProgress.
   const backendProgress = Number(stats?.avgProgress);
-  if (Number.isFinite(backendProgress) && backendProgress > 0) return backendProgress;
-
-  // Fallback: compute from tasks excluding cancelled.
+  if (Number.isFinite(backendProgress)) return backendProgress;
   if (!tasks || tasks.length === 0) return 0;
-  const countable = tasks.filter(t => (t.status || '').toLowerCase() !== 'cancelled');
+  const countable = tasks.filter(
+    t => (t.status || '').toLowerCase() !== 'cancelled'
+  );
   if (countable.length === 0) return 0;
-  const total = countable.reduce((sum, t) => sum + (Number(t.progress) || 0), 0);
+  const total = countable.reduce(
+    (sum, t) => sum + (Number(t.progress) || 0), 0
+  );
   return Math.round(total / countable.length);
 }, [tasks, stats?.avgProgress]);
 
@@ -577,6 +583,7 @@ const handleAddLead = async (teamMemberId) => {
         dueDate: null,
         startDate: null,
         progress: newTask.progress,
+         progress: editTask.progress,
       });
 
       const createdTask = response?.data || response;

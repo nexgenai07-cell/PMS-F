@@ -120,6 +120,7 @@ class TaskService {
       assign_to: taskData.assignTo || null,
       due_date: taskData.dueDate || null,
       start_date: taskData.startDate || null,
+       progress: taskData.progress ?? undefined,
     };
 
     console.log('📤 Updating task with payload:', payload);
