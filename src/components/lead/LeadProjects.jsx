@@ -964,7 +964,7 @@ export default function LeadProjects() {
     setTasks(tasks.map(t => (t.t_id || t.id) === taskId ? { ...t, priority } : t));
   };
 
-  const getProjectProgress = (projectId) => projectStatsMap[projectId]?.completionRate || 0;
+  const getProjectProgress = (projectId) => projectStatsMap[projectId]?.avgProgress || 0;
   const getProjectTotalTasks = (projectId) => projectStatsMap[projectId]?.totalTasks || 0;
   const getProjectDoneTasks = (projectId) => projectStatsMap[projectId]?.completedTasks || 0;
   const getProjectMembers = (project) => project?.members || [];
