@@ -125,7 +125,9 @@ function computeTaskStatsForMember(memberId, allTasks) {
   const numId = Number(memberId);
   const memberTasks = (allTasks || []).filter(t => {
     const assignTo = t.assign_to ?? t.assignedTo;
-    return Number(assignTo) === numId;
+    if (Number(assignTo) === numId) return true;
+    if (Array.isArray(t.assignees) && t.assignees.some(a => Number(a) === numId)) return true;
+    return false;
   });
 
   const totalTasks = memberTasks.length;
@@ -297,9 +299,6 @@ export default function SupervisorTeams() {
       );
 
       setMemberStatsMap(mergedStats);
-
-      console.log('📊 Tasks loaded:', tasksList.length);
-      console.log('📊 Active Members (after filter):', filteredMembers.length);
     } catch (error) {
       console.error('Error fetching data:', error);
       toast.error('Failed to load team members');
@@ -356,6 +355,20 @@ export default function SupervisorTeams() {
   };
 
   const getUserById = (id) => users.find(u => (u.id || u.u_id) === id);
+
+  /* ─────────── Email resolver ───────────
+     Prefer `member.email` (backend column). Fall back to a linked User
+     by matching name — legacy members created before the column existed
+     will still get their email prefilled this way. */
+  const getMemberEmail = (member) => {
+    if (!member) return '';
+    if (member.email && String(member.email).trim()) return member.email;
+
+    const name = (member.name || '').toLowerCase().trim();
+    if (!name) return '';
+    const match = users.find(u => (u.u_name || u.name || '').toLowerCase().trim() === name);
+    return match?.email || '';
+  };
 
   const getInitials = (name) => {
     if (!name) return '?';
@@ -436,12 +449,15 @@ export default function SupervisorTeams() {
     }
   };
 
+  /* ─────────── Edit — prefills the previous email ─────────── */
   const openEdit = (member) => {
     setSelected(member);
+    const prevEmail = getMemberEmail(member);
+
     setForm({
       name: member.name || '',
       role: member.role || '',
-      email: member.email || '',
+      email: prevEmail || '',                                          // ← prefilled
       qualification: member.qualitifcation || member.qualification || '',
       experience: member.experience ?? '',
       skills: member.skills || '',
@@ -813,7 +829,7 @@ export default function SupervisorTeams() {
           </div>
         </div>
 
-        {/* Members Grid — uses the SAME class-based markup as LeadTeamMembers */}
+        {/* Members Grid */}
         <div className="members-grid">
           {paginatedMembers.length === 0 ? (
             <div className="members-empty">
@@ -833,6 +849,7 @@ export default function SupervisorTeams() {
               const totalTasks = stats?.totalTasks || 0;
               const completedTasks = stats?.completedTasks || 0;
               const inProgressTasks = stats?.inProgressTasks || 0;
+              const memberEmail = getMemberEmail(member);
 
               return (
                 <motion.div
@@ -875,6 +892,14 @@ export default function SupervisorTeams() {
                     <h3 className="member-name" title={member.name}>{member.name}</h3>
                     <span className="member-role">{member.role}</span>
                   </div>
+
+                  {/* email on the card */}
+                  {memberEmail && (
+                    <div className="member-email" title={memberEmail}>
+                      <Mail size={12} />
+                      <span>{memberEmail}</span>
+                    </div>
+                  )}
 
                   <p className="member-qualification">
                     {member.qualitifcation || member.qualification || ''} · {member.experience || 0} yrs exp
@@ -962,15 +987,18 @@ export default function SupervisorTeams() {
           const initials = getInitials(drawer.name);
           const color = drawer.avatar_color || '#818cf8';
           const addedBy = getUserById(drawer.added_by);
-          const completionRate = stats?.completionRate || 0;
           const totalTasks = stats?.totalTasks || 0;
           const completedTasks = stats?.completedTasks || 0;
           const inProgressTasks = stats?.inProgressTasks || 0;
+          const memberEmail = getMemberEmail(drawer);
 
           const currentProjects = tasks
             .filter(t => {
               const assignTo = t.assign_to || t.assignedTo;
-              return Number(assignTo) === Number(memberId) && t.status !== 'done' && t.status !== 'completed';
+              const inSingle = Number(assignTo) === Number(memberId);
+              const inMulti = Array.isArray(t.assignees) &&
+                t.assignees.some(a => Number(a) === Number(memberId));
+              return (inSingle || inMulti) && t.status !== 'done' && t.status !== 'completed';
             })
             .slice(0, 3)
             .map(t => ({
@@ -983,7 +1011,10 @@ export default function SupervisorTeams() {
           const completedProjects = tasks
             .filter(t => {
               const assignTo = t.assign_to || t.assignedTo;
-              return Number(assignTo) === Number(memberId) && (t.status === 'done' || t.status === 'completed');
+              const inSingle = Number(assignTo) === Number(memberId);
+              const inMulti = Array.isArray(t.assignees) &&
+                t.assignees.some(a => Number(a) === Number(memberId));
+              return (inSingle || inMulti) && (t.status === 'done' || t.status === 'completed');
             })
             .slice(0, 3)
             .map(t => ({
@@ -1025,6 +1056,13 @@ export default function SupervisorTeams() {
                         <span className="badge badge-green">Active</span>
                         <span className="badge badge-gray">{drawer.experience || 0} yrs exp</span>
                       </div>
+                      {/* email in the header, right under the badges */}
+                      {memberEmail && (
+                        <div className="mm-header-email" title={memberEmail}>
+                          <Mail size={12} />
+                          <span>{memberEmail}</span>
+                        </div>
+                      )}
                     </div>
                   </div>
                   <button className="mm-close-btn" onClick={() => setDrawer(null)}>
@@ -1041,12 +1079,32 @@ export default function SupervisorTeams() {
                     </div>
                   )}
 
-                  {drawer.email && (
-                    <div className="mm-email">
-                      <Mail size={14} />
-                      <span>{drawer.email}</span>
+                  {/* Contact Info section */}
+                  <div className="mm-section">
+                    <h4 className="mm-section-title"><Mail size={14} /> Contact Information</h4>
+                    <div className="mm-contact-grid">
+                      <div className="mm-contact-item">
+                        <span className="mm-contact-label">Email</span>
+                        <span className="mm-contact-value">
+                          {memberEmail ? (
+                            <a href={`mailto:${memberEmail}`} className="mm-contact-link">
+                              {memberEmail}
+                            </a>
+                          ) : (
+                            <span className="mm-no-data-inline">Not provided</span>
+                          )}
+                        </span>
+                      </div>
+                      {addedBy && (
+                        <div className="mm-contact-item">
+                          <span className="mm-contact-label">Added By</span>
+                          <span className="mm-contact-value">
+                            {addedBy.u_name || addedBy.name || '—'}
+                          </span>
+                        </div>
+                      )}
                     </div>
-                  )}
+                  </div>
 
                   <div className="mm-stats-row">
                     <div className="mm-stat-item">
@@ -1578,6 +1636,73 @@ export default function SupervisorTeams() {
           gap: 6px;
         }
 
+        /* ─── Email on the member card ─── */
+        .member-email {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 11.5px;
+          color: var(--text-muted);
+          margin: 4px 0 6px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .member-email svg { color: var(--text-muted); flex-shrink: 0; }
+
+        /* ─── Email in the modal header ─── */
+        .mm-header-email {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 12px;
+          color: var(--text-muted);
+          margin-top: 6px;
+        }
+        .mm-header-email svg { color: var(--text-muted); flex-shrink: 0; }
+
+        /* ─── Contact Information section ─── */
+        .mm-contact-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 10px;
+        }
+        .mm-contact-item {
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+          padding: 10px 12px;
+          background: var(--bg-card);
+          border: 1px solid var(--border-subtle);
+          border-radius: 8px;
+          min-width: 0;
+        }
+        .mm-contact-label {
+          font-size: 10px;
+          font-weight: 700;
+          color: var(--text-muted);
+          text-transform: uppercase;
+          letter-spacing: 0.4px;
+        }
+        .mm-contact-value {
+          font-size: 13px;
+          font-weight: 500;
+          color: var(--text-primary);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .mm-contact-link {
+          color: var(--accent-primary);
+          text-decoration: none;
+        }
+        .mm-contact-link:hover { text-decoration: underline; }
+        .mm-no-data-inline {
+          color: var(--text-muted);
+          font-style: italic;
+          font-size: 12px;
+        }
+
         /* ─── DELETE MODAL ─── */
         .delete-modal { max-width: 520px !important; }
         .delete-icon-wrapper {
@@ -1741,12 +1866,6 @@ export default function SupervisorTeams() {
           border: 1px solid var(--border-subtle);
         }
         .mm-description.muted { color: var(--text-muted); }
-        .mm-email {
-          display: flex; align-items: center; gap: 8px;
-          font-size: 13px; color: var(--text-secondary);
-          padding: 6px 0;
-        }
-        .mm-email svg { color: var(--text-muted); }
         .mm-stats-row {
           display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
         }
@@ -1984,7 +2103,7 @@ export default function SupervisorTeams() {
         }
         .lt-clear-filters-btn:hover { background: var(--bg-hover); color: var(--accent-primary); }
 
-        /* Members grid — SAME as LeadTeamMembers */
+        /* Members grid */
         .members-grid {
           display: grid;
           grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -2132,7 +2251,7 @@ export default function SupervisorTeams() {
         }
         .pagination-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-        /* Responsive — SAME breakpoints as lead */
+        /* Responsive */
         @media (max-width: 768px) {
           .lt-filters-container { padding: 14px 16px; gap: 12px; }
           .lt-filter-controls { flex-direction: column; align-items: stretch; gap: 10px; }
@@ -2144,6 +2263,7 @@ export default function SupervisorTeams() {
           .members-grid { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
           .member-modal { max-width: 100%; border-radius: 16px; max-height: 95vh; }
           .mm-stats-row { grid-template-columns: repeat(2, 1fr); }
+          .mm-contact-grid { grid-template-columns: 1fr; }
           .mm-header { padding: 16px 18px; }
           .mm-body { padding: 16px 18px; }
           .mm-footer { padding: 12px 18px 16px; }
