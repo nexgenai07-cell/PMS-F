@@ -301,9 +301,10 @@ export default function LeadProjectDetail() {
     });
   }, [projectMembers, project, supervisorIdSet]);
 
-  const projectLeadsFinal = asArray(projectLeads).length > 0
-    ? asArray(projectLeads)
-    : projectLeadsDerived;
+    const projectLeadsFinal = useMemo(() => {
+    const stored = asArray(projectLeads);
+    return stored.length > 0 ? stored : projectLeadsDerived;
+  }, [projectLeads, projectLeadsDerived]);
 
   const regularMembers = useMemo(
     () => asArray(projectMembers).filter(m => {
