@@ -27,13 +27,16 @@ import {
   FolderKanban,
   Gem,
   ArrowUpRight,
-  ChevronDown
+  ChevronDown,
+  Loader2,
+  Send,
 } from "lucide-react";
 
 // Import services
 import projectService from "../../services/projectService";
 import taskService from "../../services/taskService";
 import userService from "../../services/userService";
+import authService from "../../services/authService";
 
 /* ─────────── Pure UI component (no logic changes) ─────────── */
 const AnimatedNumber = ({ value, duration = 900, decimals = 0, suffix = "" }) => {
@@ -104,6 +107,9 @@ export default function ProfilePage() {
     new: false,
     confirm: false,
   });
+
+  // ⬇️ NEW: disables the button while the confirmation email is being sent
+  const [passwordSubmitting, setPasswordSubmitting] = useState(false);
 
   // Fetch real data
   useEffect(() => {
@@ -218,6 +224,11 @@ export default function ProfilePage() {
     }
   };
 
+  /**
+   * ⬇️ REPLACED: now sends a confirmation email instead of changing
+   * the password immediately. The change only happens when the user
+   * clicks the link in that email.
+   */
   const handlePasswordChange = async () => {
     if (!passwords.current || !passwords.new || !passwords.confirm) {
       toast.error("Please fill all fields");
@@ -227,17 +238,42 @@ export default function ProfilePage() {
       toast.error("New passwords do not match");
       return;
     }
-    if (passwords.new.length < 6) {
-      toast.error("Password must be at least 6 characters");
+    if (passwords.new.length < 8) {
+      toast.error("Password must be at least 8 characters");
+      return;
+    }
+    if (passwords.current === passwords.new) {
+      toast.error("New password must be different from the current one");
       return;
     }
 
+    setPasswordSubmitting(true);
     try {
-      toast.success("Password changed successfully");
+      await authService.requestPasswordChange({
+        current: passwords.current,
+        newPassword: passwords.new,
+      });
+
+      toast.success(
+        "Confirmation link sent — check your email to finish changing your password.",
+        { duration: 6000 }
+      );
+
       setPasswords({ current: "", new: "", confirm: "" });
+      setShowPw({ current: false, new: false, confirm: false });
     } catch (error) {
-      console.error('Error changing password:', error);
-      toast.error('Failed to change password');
+      console.error('Error requesting password change:', error);
+
+      // authService.handleError returns { message, code, status }
+      const detail =
+        error?.message ||
+        error?.data?.error?.detail ||
+        error?.data?.detail ||
+        "Failed to request password change";
+
+      toast.error(typeof detail === "string" ? detail : "Failed to request password change");
+    } finally {
+      setPasswordSubmitting(false);
     }
   };
 
@@ -281,7 +317,7 @@ export default function ProfilePage() {
       login: <LogOut size={12} />,
       update: <Settings size={12} />,
       task: <CheckCircle2 size={12} />,
-      project: <FolderKanban size={12} />
+      project: <FolderKanban size={12} />,
     };
     return icons[type] || <Activity size={12} />;
   };
@@ -525,7 +561,9 @@ export default function ProfilePage() {
                 </div>
                 <div className="section-content">
                   <h3 className="section-title-modern">Change Password</h3>
-                  <p className="section-sub-modern">Keep your account secure with a strong password</p>
+                  <p className="section-sub-modern">
+                    We'll email you a confirmation link before any change is applied
+                  </p>
                 </div>
               </div>
 
@@ -630,10 +668,23 @@ export default function ProfilePage() {
                 <motion.button
                   className="password-update-btn"
                   onClick={handlePasswordChange}
-                  whileHover={{ y: -1 }}
-                  whileTap={{ scale: 0.98 }}
+                  disabled={passwordSubmitting}
+                  whileHover={{ y: passwordSubmitting ? 0 : -1 }}
+                  whileTap={{ scale: passwordSubmitting ? 1 : 0.98 }}
+                  style={{
+                    opacity: passwordSubmitting ? 0.7 : 1,
+                    cursor: passwordSubmitting ? "not-allowed" : "pointer",
+                  }}
                 >
-                  <KeyRound size={14} /> Update Password
+                  {passwordSubmitting ? (
+                    <>
+                      <Loader2 size={14} className="spin" /> Sending link…
+                    </>
+                  ) : (
+                    <>
+                      <Send size={14} /> Send Confirmation Link
+                    </>
+                  )}
                 </motion.button>
               </div>
             </motion.div>
@@ -786,12 +837,9 @@ export default function ProfilePage() {
         }
         .search-clear:hover { background: var(--border-default); color: var(--text-primary); }
 
-                /* ─── STATS GRID ─── */
+        /* ─── STATS GRID ─── */
         .stats-grid-modern {
           display: grid;
-          /* Minimum card width is 180px. On a 950px container this gives
-             room for 4 cards (4×180 + 3×12 = 756) with space left over,
-             and it still drops to 3 / 2 / 1 as the viewport shrinks. */
           grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
           gap: 12px;
         }
@@ -863,10 +911,7 @@ export default function ProfilePage() {
         }
         .stat-card-modern:hover .stat-card-icon { transform: scale(1.1) rotate(-5deg); }
 
-        .stat-card-content {
-          flex: 1 1 auto;
-          min-width: 0;
-        }
+        .stat-card-content { flex: 1 1 auto; min-width: 0; }
 
         .stat-card-value {
           display: block;
@@ -877,8 +922,6 @@ export default function ProfilePage() {
           letter-spacing: -0.4px;
           font-variant-numeric: tabular-nums;
         }
-
-        /* Label may wrap to 2 lines. Never truncated. */
         .stat-card-label {
           display: block;
           font-size: 10px;
@@ -891,9 +934,6 @@ export default function ProfilePage() {
           word-break: break-word;
           margin-top: 1px;
         }
-
-        /* Badge — small, sits below-right of the value+label block on
-           narrow cards because the card wraps. Never clipped. */
         .stat-card-trend {
           display: inline-flex;
           align-items: center;
@@ -1352,11 +1392,12 @@ export default function ProfilePage() {
           margin-top: 4px;
           width: fit-content;
         }
-        .password-update-btn:hover {
+        .password-update-btn:hover:not(:disabled) {
           box-shadow: 0 8px 22px -8px var(--accent-primary);
           filter: brightness(1.05);
         }
-        .password-update-btn:active { transform: scale(0.98); }
+        .password-update-btn:active:not(:disabled) { transform: scale(0.98); }
+        .password-update-btn:disabled { cursor: not-allowed; }
 
         /* ─── ACTIVITY ─── */
         .activity-timeline {

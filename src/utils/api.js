@@ -6,17 +6,30 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 console.log('🔵 Environment:', import.meta.env.MODE);
 console.log('🔵 API Base URL:', API_BASE_URL || 'Using proxy (relative path)');
 
-// 🆕 Added verify-email and resend-verification — they should NOT trigger
-// the token-refresh interceptor. A 4xx from them is legitimate.
+// Endpoints that must NOT trigger the token-refresh interceptor.
+// A 4xx from any of these is a legitimate application response,
+// not a sign of an expired access token.
 const AUTH_ENDPOINTS = [
   '/auth/login',
   '/auth/register',
   '/auth/refresh',
   '/auth/verify-email',
   '/auth/resend-verification',
+  '/auth/request-password-change',
+  '/auth/confirm-password-change',
 ];
 
-const PUBLIC_PATHS = ['/login', '/register', '/verify-email', '/'];
+// Routes where a stale access token must NOT force a redirect
+// to /login. In particular, the password-change confirmation
+// page is public and may be hit while the user still has an
+// expired token sitting in sessionStorage.
+const PUBLIC_PATHS = [
+  '/login',
+  '/register',
+  '/verify-email',
+  '/confirm-password-change',
+  '/',
+];
 
 // ---------------------------------------------------------------------------
 // Storage helpers — sessionStorage only
@@ -119,8 +132,10 @@ export const endpoints = {
     logout: '/auth/logout',
     me: '/auth/me',
     refresh: '/auth/refresh',
-    verifyEmail: '/auth/verify-email',                 
-    resendVerification: '/auth/resend-verification',   
+    verifyEmail: '/auth/verify-email',
+    resendVerification: '/auth/resend-verification',
+    requestPasswordChange: '/auth/request-password-change',
+    confirmPasswordChange: '/auth/confirm-password-change',
   },
   users: {
     list: '/users',
@@ -140,7 +155,7 @@ export const endpoints = {
     byId: (id) => `/task/${id}`,
     comments: (id) => `/tasks/${id}/comments`,
   },
-   leads: {
+  leads: {
     stats: '/leads/stats/',
   },
   comments: {

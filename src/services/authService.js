@@ -108,41 +108,46 @@ class AuthService {
     }
   }
 
-  // ✅ Change password
-  async changePassword(passwordData) {
+  /**
+   * ⬇️ NEW: Request a password change.
+   *
+   * POST /api/auth/request-password-change
+   * body: { current, new }
+   *
+   * This does NOT change the password. It asks the backend to
+   * verify the current password and send a confirmation link
+   * to the user's inbox. The change only happens when the user
+   * clicks that link.
+   */
+  async requestPasswordChange({ current, newPassword }) {
     try {
-      const response = await api.post('/auth/change-password', {
-        current_password: passwordData.current_password,
-        new_password: passwordData.new_password,
+      const response = await api.post(endpoints.auth.requestPasswordChange, {
+        current,
+        new: newPassword,
       });
       return response.data;
     } catch (error) {
-      console.error('AuthService: Error changing password:', error);
+      console.error('AuthService: Error requesting password change:', error);
       throw this.handleError(error);
     }
   }
 
-  // ✅ Request password reset
-  async requestPasswordReset(email) {
+  /**
+   * ⬇️ NEW: Confirm a password change with the emailed token.
+   *
+   * POST /api/auth/confirm-password-change
+   * body: { uid, token, new_password }
+   */
+  async confirmPasswordChange({ uid, token, newPassword }) {
     try {
-      const response = await api.post('/auth/password-reset-request', { email });
-      return response.data;
-    } catch (error) {
-      console.error('AuthService: Error requesting password reset:', error);
-      throw this.handleError(error);
-    }
-  }
-
-  // ✅ Reset password with token
-  async resetPassword(token, newPassword) {
-    try {
-      const response = await api.post('/auth/password-reset', {
+      const response = await api.post(endpoints.auth.confirmPasswordChange, {
+        uid,
         token,
         new_password: newPassword,
       });
       return response.data;
     } catch (error) {
-      console.error('AuthService: Error resetting password:', error);
+      console.error('AuthService: Error confirming password change:', error);
       throw this.handleError(error);
     }
   }
@@ -163,12 +168,6 @@ class AuthService {
 
   /**
    * Normalize backend error shapes into a consistent object.
-   * Handles:
-   *   { success:false, error:{ detail, code } }
-   *   { detail: "...", code: "..." }
-   *   { non_field_errors: ["..."] }
-   *   { email: ["..."] }
-   *   plain strings
    */
   handleError(error) {
     if (error.response) {

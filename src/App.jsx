@@ -6,6 +6,7 @@ import { Toaster } from "react-hot-toast";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import ProfilePage from "./components/shared/ProfilePage";
+import ConfirmPasswordChange from "./components/auth/ConfirmPasswordChange";
 
 import LeadTaskDetail from "./components/lead/LeadTaskDetail";
 import SupervisorTaskDetail from "./components/supervisor/SupervisorTaskDetail";
@@ -154,6 +155,7 @@ function AppRoutes() {
 
       {/* Public — reachable without auth, no redirect */}
       <Route path="/verify-email" element={<EmailVerification />} />
+      <Route path="/confirm-password-change" element={<ConfirmPasswordChange />} />
 
       {/* SUPERVISOR — handles 'manager', 'supervisor', and 'admin' roles */}
       <Route
