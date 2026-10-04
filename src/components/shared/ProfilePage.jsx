@@ -786,7 +786,7 @@ export default function ProfilePage() {
         }
         .search-clear:hover { background: var(--border-default); color: var(--text-primary); }
 
-        /* ─── STATS GRID ─── */
+                /* ─── STATS GRID ─── */
         .stats-grid-modern {
           display: grid;
           grid-template-columns: repeat(4, 1fr);
@@ -798,12 +798,15 @@ export default function ProfilePage() {
           overflow: hidden;
           display: flex;
           align-items: center;
-          gap: 14px;
+          gap: 12px;
           padding: 16px 18px;
           background: var(--bg-card);
           border: 1px solid var(--border-subtle);
           border-radius: 14px;
           min-width: 0;
+          /* Wrap so the trend badge drops to its own line if needed
+             instead of overlapping the value/label column. */
+          flex-wrap: wrap;
           transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.25s ease, border-color 0.25s ease;
         }
         .stat-card-modern::before {
@@ -858,27 +861,37 @@ export default function ProfilePage() {
         }
         .stat-card-modern:hover .stat-card-icon { transform: scale(1.1) rotate(-5deg); }
 
-        .stat-card-content { flex: 1; min-width: 0; }
+        /* min-width:0 is critical — without it a long word like
+           "Completion" refuses to shrink and pushes the badge on top. */
+        .stat-card-content { flex: 1 1 0; min-width: 0; }
+
         .stat-card-value {
           display: block;
           font-size: 22px;
           font-weight: 800;
           color: var(--text-primary);
-          line-height: 1.2;
+          line-height: 1.15;
           letter-spacing: -0.4px;
           font-variant-numeric: tabular-nums;
         }
         .stat-card-label {
+          display: block;
           font-size: 11px;
           color: var(--text-muted);
           font-weight: 600;
           text-transform: uppercase;
           letter-spacing: 0.4px;
+          /* Let the label truncate rather than push the badge out */
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          max-width: 100%;
         }
 
         .stat-card-trend {
-          display: flex;
+          display: inline-flex;
           align-items: center;
+          justify-content: center;
           gap: 2px;
           font-size: 11px;
           font-weight: 700;
@@ -886,6 +899,10 @@ export default function ProfilePage() {
           border-radius: 20px;
           flex-shrink: 0;
           font-variant-numeric: tabular-nums;
+          white-space: nowrap;
+          /* Prevent the badge from ever sitting on top of the label */
+          margin-left: auto;
+          align-self: center;
         }
         .stat-card-trend.up {
           background: color-mix(in srgb, var(--accent-emerald) 14%, transparent);
@@ -899,6 +916,39 @@ export default function ProfilePage() {
           background: var(--bg-secondary);
           color: var(--text-muted);
           font-weight: 600;
+        }
+
+        /* When the card is narrow (grid shrinks or text is long),
+           drop the trend badge onto its own full-width line so it
+           can never overlap the value or label. */
+        @media (max-width: 1240px) {
+          .stat-card-modern {
+            /* Stack icon+content row and badge row */
+            flex-wrap: wrap;
+          }
+          .stat-card-trend {
+            /* Force the badge to occupy a full row of its own */
+            flex-basis: 100%;
+            margin-left: 52px; /* aligns under the content column, next to the 40px icon + 12px gap */
+            margin-top: 6px;
+          }
+        }
+        @media (max-width: 1024px) {
+          .stat-card-trend {
+            margin-left: 52px;
+          }
+        }
+        @media (max-width: 768px) {
+          .stat-card-trend {
+            margin-left: 52px;
+            margin-top: 4px;
+          }
+        }
+        @media (max-width: 480px) {
+          .stat-card-trend {
+            margin-left: 0;
+            width: 100%;
+          }
         }
 
         /* ─── PROFILE CARD ─── */
