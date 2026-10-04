@@ -206,6 +206,73 @@ function MemberMultiPicker({ selected = [], onChange, members = [], label = "Mem
   );
 }
 
+/* ─── Inline "add subtask to draft" row used inside the Create Task modal ─── */
+function SubtaskDraftRow({ onAdd, members, disabled }) {
+  const [draft, setDraft] = useState({
+    title: "", priority: "medium", status: "todo", assignees: [],
+  });
+  const [touched, setTouched] = useState(false);
+
+  const titleError = validators.taskTitle(draft.title);
+  const showError = touched && titleError;
+
+  const handleAdd = () => {
+    setTouched(true);
+    if (titleError) return;
+    onAdd({
+      title: draft.title.trim(),
+      priority: draft.priority,
+      status: draft.status,
+      assignees: asArray(draft.assignees).map(Number).filter(Number.isFinite),
+    });
+    setDraft({ title: "", priority: "medium", status: "todo", assignees: [] });
+    setTouched(false);
+  };
+
+  return (
+    <div className="subtask-draft-row">
+      <div className="subtask-draft-inputs">
+        <input
+          className={`form-input ${showError ? 'pd-input-error' : ''}`}
+          placeholder="Subtask title"
+          value={draft.title}
+          maxLength={LIMITS.taskTitle.max}
+          autoComplete="off"
+          onChange={(e) => setDraft(prev => ({ ...prev, title: e.target.value }))}
+          onBlur={() => setTouched(true)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAdd(); } }}
+          disabled={disabled}
+        />
+        <select
+          className="form-input subtask-draft-select"
+          value={draft.priority}
+          onChange={(e) => setDraft(prev => ({ ...prev, priority: e.target.value }))}
+          disabled={disabled}
+        >
+          {PRIORITY_OPTIONS.map(p => <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>)}
+        </select>
+      </div>
+      {showError && <FieldError message={titleError} />}
+      <div className="subtask-draft-actions">
+        <MemberMultiPicker
+          label="Assignees (optional)"
+          members={members}
+          selected={draft.assignees}
+          onChange={(ids) => setDraft(prev => ({ ...prev, assignees: ids }))}
+        />
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          onClick={handleAdd}
+          disabled={disabled || !draft.title.trim()}
+        >
+          <Plus size={13} /> Add Subtask
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* ═══════════════════════════════════════════════════════════
    MAIN COMPONENT
    ═══════════════════════════════════════════════════════════ */
@@ -252,16 +319,18 @@ export default function SupervisorProjectDetail() {
 
   const addTaskTitleRef  = useRef(null);
   const editTaskTitleRef = useRef(null);
-  const editTaskDescRef  = useRef(null);   // ← added
+  const editTaskDescRef  = useRef(null);
 
   const [stats, setStats] = useState({
     totalTasks: 0, completedTasks: 0, inProgressTasks: 0, todoTasks: 0,
     completionRate: 0, onTimeRate: 0, membersCount: 0, avgProgress: 0
   });
 
+  // subtasksDraft holds not-yet-saved subtasks for the task being created
   const [newTask, setNewTask] = useState({
     title: "", desc: "", priority: "medium", status: "todo",
     progress: 0, assignees: [], dueDate: "",
+    subtasksDraft: [],
   });
 
   const addTaskErrors = useMemo(() => ({
@@ -354,7 +423,7 @@ export default function SupervisorProjectDetail() {
     return () => clearTimeout(t);
   }, [showAddTask]);
 
-  /* ── AUTO-FOCUS FIX: keyed on task id ONLY ── */
+  // Keyed on task id only — prevents focus from being yanked on every keystroke
   useEffect(() => {
     if (!editTask) return;
     const t = setTimeout(() => editTaskTitleRef.current?.focus(), 60);
@@ -549,39 +618,25 @@ export default function SupervisorProjectDetail() {
     return matchedUser?.email || null;
   };
 
-    const openEditTask = async (task) => {
+  /* ─── Open edit with full detail fetch ─── */
+  const openEditTask = async (task) => {
     const tid = task.t_id || task.id;
     if (!tid) return;
-
-    // Show a lightweight toast so the user knows we're loading the full task
-    const loadingToast = toast.loading?.('Loading task…');
-
     try {
-      // Fetch the FULL task from the detail endpoint so `desc`,
-      // `due_date`, and `assignees` are guaranteed fresh.
       const detailResp = await taskService.getTask(tid);
       const full = detailResp?.data || detailResp || task;
-
-      // Merge so we never lose fields the detail endpoint doesn't return.
-      const merged = {
+      setEditTask({
         ...task,
         ...full,
-        // Always send a string for desc — never undefined/null — so the
-        // controlled textarea renders what the user actually saved.
         desc: full?.desc ?? task?.desc ?? '',
         assignees: Array.isArray(full?.assignees) && full.assignees.length > 0
           ? full.assignees.map(Number)
           : (Array.isArray(task?.assignees) && task.assignees.length > 0
               ? task.assignees.map(Number)
               : (task?.assign_to ? [Number(task.assign_to)] : [])),
-      };
-
-      setEditTask(merged);
+      });
       resetEditTaskTouched();
-    } catch (err) {
-      console.error('Failed to load task detail for edit:', err);
-      toast.error('Could not load task details');
-      // Fall back to whatever we had, still guaranteeing desc is a string
+    } catch {
       setEditTask({
         ...task,
         desc: task?.desc ?? '',
@@ -590,14 +645,10 @@ export default function SupervisorProjectDetail() {
           : (task?.assign_to ? [Number(task.assign_to)] : []),
       });
       resetEditTaskTouched();
-    } finally {
-      if (loadingToast !== undefined && toast.dismiss) {
-        try { toast.dismiss(loadingToast); } catch { /* noop */ }
-      }
     }
   };
-  
-  /* ─── Add task ─── */
+
+  /* ─── Add task (also saves draft subtasks) ─── */
   const handleAddTask = async () => {
     setAddTaskSubmitAttempted(true);
     if (!isAddTaskValid) {
@@ -623,6 +674,30 @@ export default function SupervisorProjectDetail() {
       });
 
       const createdTask = response?.data || response;
+      const createdId = createdTask?.t_id || createdTask?.id;
+
+      // Persist any draft subtasks against the freshly created parent
+      let subtaskFailures = 0;
+      if (createdId && asArray(newTask.subtasksDraft).length > 0) {
+        for (const sub of newTask.subtasksDraft) {
+          try {
+            await taskService.createSubtask(createdId, {
+              title: sub.title,
+              description: sub.desc || '',
+              status: sub.status || 'todo',
+              priority: sub.priority || 'medium',
+              progress: sub.progress ?? 0,
+              assignees: asArray(sub.assignees),
+              assignTo: asArray(sub.assignees)[0] ?? null,
+              dueDate: sub.dueDate || null,
+            });
+          } catch (e) {
+            console.warn('Failed to create subtask:', sub, e);
+            subtaskFailures += 1;
+          }
+        }
+      }
+
       try { await NotificationHelper.taskCreated(createdTask, user); } catch { /* silent */ }
 
       if (assignees.length > 0) {
@@ -643,9 +718,14 @@ export default function SupervisorProjectDetail() {
         toast.success('Task created successfully');
       }
 
+      if (subtaskFailures > 0) {
+        toast.error(`${subtaskFailures} subtask(s) could not be created — you can add them from the task detail page.`);
+      }
+
       setNewTask({
         title: "", desc: "", priority: "medium", status: "todo",
         progress: 0, assignees: [], dueDate: "",
+        subtasksDraft: [],
       });
       setShowAddTask(false);
       resetAddTaskTouched();
@@ -1028,7 +1108,7 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* ═══ ADD TASK MODAL ═══ */}
+      {/* ═══ ADD TASK MODAL — with Subtasks section ═══ */}
       <AnimatePresence>
         {showAddTask && (
           <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setShowAddTask(false); resetAddTaskTouched(); }}>
@@ -1107,6 +1187,53 @@ export default function SupervisorProjectDetail() {
                 <div className="form-group">
                   <label className="form-label">Initial Progress: <strong>{newTask.progress}%</strong></label>
                   <input type="range" min={0} max={100} className="range-input" value={newTask.progress} onChange={(e) => setNewTask(prev => ({ ...prev, progress: Number(e.target.value) }))} />
+                </div>
+
+                {/* ─── Subtasks section ─── */}
+                <div className="add-subtasks-block">
+                  <div className="add-subtasks-header">
+                    <label className="form-label" style={{ margin: 0 }}>
+                      <ListChecks size={13} style={{ verticalAlign: 'text-bottom', marginRight: 4 }} />
+                      Subtasks {newTask.subtasksDraft.length > 0 && (
+                        <span className="add-subtasks-count">{newTask.subtasksDraft.length}</span>
+                      )}
+                    </label>
+                    <span className="add-subtasks-hint">Optional — added after the task is created</span>
+                  </div>
+
+                  {newTask.subtasksDraft.length > 0 && (
+                    <div className="add-subtasks-list">
+                      {newTask.subtasksDraft.map((sub, idx) => (
+                        <div key={`${sub.title}-${idx}`} className="add-subtask-chip">
+                          <span className="add-subtask-chip-title">{sub.title}</span>
+                          <span className="add-subtask-chip-meta">
+                            {sub.priority}
+                            {asArray(sub.assignees).length > 0 && ` · ${asArray(sub.assignees).length} assignee(s)`}
+                          </span>
+                          <button
+                            type="button"
+                            className="add-subtask-chip-remove"
+                            title="Remove subtask"
+                            onClick={() => setNewTask(prev => ({
+                              ...prev,
+                              subtasksDraft: prev.subtasksDraft.filter((_, i) => i !== idx),
+                            }))}
+                          >
+                            <X size={11} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <SubtaskDraftRow
+                    members={assignableMembers}
+                    disabled={isSubmitting}
+                    onAdd={(draft) => setNewTask(prev => ({
+                      ...prev,
+                      subtasksDraft: [...prev.subtasksDraft, draft],
+                    }))}
+                  />
                 </div>
               </div>
               <div className="modal-footer">
@@ -1334,12 +1461,12 @@ export default function SupervisorProjectDetail() {
                               <ArrowLeft size={12} style={{ transform: 'rotate(180deg)' }} />
                             </button>
                             <button
-  className="task-action-btn"
-  title="Edit Task"
-  onClick={(e) => { e.stopPropagation(); openEditTask(t); }}
->
-  <Pencil size={12} />
-</button>
+                              className="task-action-btn"
+                              title="Edit Task"
+                              onClick={(e) => { e.stopPropagation(); openEditTask(t); }}
+                            >
+                              <Pencil size={12} />
+                            </button>
                             <button
                               className="task-action-btn danger"
                               title="Delete Task"
@@ -1785,6 +1912,99 @@ export default function SupervisorProjectDetail() {
         .confirm-title { font-size: 18px; font-weight: 800; color: var(--text-primary); margin: 0 0 6px; }
         .confirm-desc { font-size: 13px; color: var(--text-muted); margin: 0 0 16px; }
 
+        /* ─── NEW: Subtasks section inside Create Task modal ─── */
+        .add-subtasks-block {
+          margin-top: 8px;
+          padding: 12px;
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-subtle);
+          border-radius: 10px;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+        .add-subtasks-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+        }
+        .add-subtasks-count {
+          display: inline-block;
+          margin-left: 6px;
+          font-size: 10px;
+          font-weight: 700;
+          padding: 1px 8px;
+          border-radius: 10px;
+          background: var(--accent-primary);
+          color: #fff;
+        }
+        .add-subtasks-hint {
+          font-size: 10.5px;
+          color: var(--text-muted);
+          font-style: italic;
+        }
+        .add-subtasks-list {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .add-subtask-chip {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 6px 10px;
+          background: var(--bg-card);
+          border: 1px solid var(--border-subtle);
+          border-radius: 8px;
+          font-size: 12.5px;
+        }
+        .add-subtask-chip-title {
+          flex: 1;
+          min-width: 0;
+          font-weight: 500;
+          color: var(--text-primary);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .add-subtask-chip-meta {
+          font-size: 11px;
+          color: var(--text-muted);
+          flex-shrink: 0;
+        }
+        .add-subtask-chip-remove {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 20px;
+          height: 20px;
+          border-radius: 6px;
+          border: 1px solid var(--border-subtle);
+          background: transparent;
+          color: var(--text-muted);
+          cursor: pointer;
+          flex-shrink: 0;
+        }
+        .add-subtask-chip-remove:hover { color: #f87171; border-color: #f87171; }
+        .subtask-draft-row {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .subtask-draft-inputs {
+          display: grid;
+          grid-template-columns: 1fr 120px;
+          gap: 8px;
+        }
+        .subtask-draft-select { min-width: 0; }
+        .subtask-draft-actions {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .subtask-draft-actions .btn { align-self: flex-end; }
+
         @media (max-width: 1024px) { .project-body { grid-template-columns: 1fr 280px; padding: 16px 20px; } }
         @media (max-width: 768px) {
           .project-body { grid-template-columns: 1fr; padding: 14px 16px; gap: 14px; }
@@ -1792,6 +2012,7 @@ export default function SupervisorProjectDetail() {
           .overview-progress-ring { align-self: center; }
           .form-row-2 { grid-template-columns: 1fr; }
           .info-stats { grid-template-columns: 1fr 1fr; }
+          .subtask-draft-inputs { grid-template-columns: 1fr; }
         }
       `}</style>
     </div>
