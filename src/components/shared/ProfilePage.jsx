@@ -789,7 +789,11 @@ export default function ProfilePage() {
                 /* ─── STATS GRID ─── */
         .stats-grid-modern {
           display: grid;
-          grid-template-columns: repeat(4, 1fr);
+          /* auto-fit + minmax guarantees each card is wide enough for
+             "22px value / LABEL / badge" on one line. When there isn't
+             room for 4, it drops to 3, then 2, then 1 — no overlap, no
+             truncation, no media queries needed. */
+          grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
           gap: 14px;
         }
 
@@ -804,10 +808,9 @@ export default function ProfilePage() {
           border: 1px solid var(--border-subtle);
           border-radius: 14px;
           min-width: 0;
-          /* Wrap so the trend badge drops to its own line if needed
-             instead of overlapping the value/label column. */
-          flex-wrap: wrap;
-          transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.25s ease, border-color 0.25s ease;
+          transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1),
+                      box-shadow 0.25s ease,
+                      border-color 0.25s ease;
         }
         .stat-card-modern::before {
           content: '';
@@ -861,9 +864,10 @@ export default function ProfilePage() {
         }
         .stat-card-modern:hover .stat-card-icon { transform: scale(1.1) rotate(-5deg); }
 
-        /* min-width:0 is critical — without it a long word like
-           "Completion" refuses to shrink and pushes the badge on top. */
-        .stat-card-content { flex: 1 1 0; min-width: 0; }
+        .stat-card-content {
+          flex: 1 1 auto;      /* grows to fill available space */
+          min-width: 0;        /* allows the flex item to shrink and let text wrap naturally */
+        }
 
         .stat-card-value {
           display: block;
@@ -874,6 +878,10 @@ export default function ProfilePage() {
           letter-spacing: -0.4px;
           font-variant-numeric: tabular-nums;
         }
+
+        /* No truncation here — the label is allowed to wrap to two lines
+           if needed. Row-gap keeps it tight. The container grid ensures
+           there's enough width that wrapping is rare. */
         .stat-card-label {
           display: block;
           font-size: 11px;
@@ -881,13 +889,14 @@ export default function ProfilePage() {
           font-weight: 600;
           text-transform: uppercase;
           letter-spacing: 0.4px;
-          /* Let the label truncate rather than push the badge out */
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-          max-width: 100%;
+          line-height: 1.3;
+          overflow-wrap: anywhere;
+          word-break: break-word;
         }
 
+        /* Badge is a small pill. flex-shrink:0 means it never gets
+           squeezed; if the card is genuinely too narrow it wraps to a
+           second line via the card's flex-wrap fallback below. */
         .stat-card-trend {
           display: inline-flex;
           align-items: center;
@@ -900,9 +909,7 @@ export default function ProfilePage() {
           flex-shrink: 0;
           font-variant-numeric: tabular-nums;
           white-space: nowrap;
-          /* Prevent the badge from ever sitting on top of the label */
           margin-left: auto;
-          align-self: center;
         }
         .stat-card-trend.up {
           background: color-mix(in srgb, var(--accent-emerald) 14%, transparent);
@@ -916,39 +923,6 @@ export default function ProfilePage() {
           background: var(--bg-secondary);
           color: var(--text-muted);
           font-weight: 600;
-        }
-
-        /* When the card is narrow (grid shrinks or text is long),
-           drop the trend badge onto its own full-width line so it
-           can never overlap the value or label. */
-        @media (max-width: 1240px) {
-          .stat-card-modern {
-            /* Stack icon+content row and badge row */
-            flex-wrap: wrap;
-          }
-          .stat-card-trend {
-            /* Force the badge to occupy a full row of its own */
-            flex-basis: 100%;
-            margin-left: 52px; /* aligns under the content column, next to the 40px icon + 12px gap */
-            margin-top: 6px;
-          }
-        }
-        @media (max-width: 1024px) {
-          .stat-card-trend {
-            margin-left: 52px;
-          }
-        }
-        @media (max-width: 768px) {
-          .stat-card-trend {
-            margin-left: 52px;
-            margin-top: 4px;
-          }
-        }
-        @media (max-width: 480px) {
-          .stat-card-trend {
-            margin-left: 0;
-            width: 100%;
-          }
         }
 
         /* ─── PROFILE CARD ─── */
