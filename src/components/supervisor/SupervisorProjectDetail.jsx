@@ -549,6 +549,54 @@ export default function SupervisorProjectDetail() {
     return matchedUser?.email || null;
   };
 
+    const openEditTask = async (task) => {
+    const tid = task.t_id || task.id;
+    if (!tid) return;
+
+    // Show a lightweight toast so the user knows we're loading the full task
+    const loadingToast = toast.loading?.('Loading task…');
+
+    try {
+      // Fetch the FULL task from the detail endpoint so `desc`,
+      // `due_date`, and `assignees` are guaranteed fresh.
+      const detailResp = await taskService.getTask(tid);
+      const full = detailResp?.data || detailResp || task;
+
+      // Merge so we never lose fields the detail endpoint doesn't return.
+      const merged = {
+        ...task,
+        ...full,
+        // Always send a string for desc — never undefined/null — so the
+        // controlled textarea renders what the user actually saved.
+        desc: full?.desc ?? task?.desc ?? '',
+        assignees: Array.isArray(full?.assignees) && full.assignees.length > 0
+          ? full.assignees.map(Number)
+          : (Array.isArray(task?.assignees) && task.assignees.length > 0
+              ? task.assignees.map(Number)
+              : (task?.assign_to ? [Number(task.assign_to)] : [])),
+      };
+
+      setEditTask(merged);
+      resetEditTaskTouched();
+    } catch (err) {
+      console.error('Failed to load task detail for edit:', err);
+      toast.error('Could not load task details');
+      // Fall back to whatever we had, still guaranteeing desc is a string
+      setEditTask({
+        ...task,
+        desc: task?.desc ?? '',
+        assignees: Array.isArray(task?.assignees) && task.assignees.length > 0
+          ? task.assignees.map(Number)
+          : (task?.assign_to ? [Number(task.assign_to)] : []),
+      });
+      resetEditTaskTouched();
+    } finally {
+      if (loadingToast !== undefined && toast.dismiss) {
+        try { toast.dismiss(loadingToast); } catch { /* noop */ }
+      }
+    }
+  };
+  
   /* ─── Add task ─── */
   const handleAddTask = async () => {
     setAddTaskSubmitAttempted(true);
@@ -1286,22 +1334,12 @@ export default function SupervisorProjectDetail() {
                               <ArrowLeft size={12} style={{ transform: 'rotate(180deg)' }} />
                             </button>
                             <button
-                              className="task-action-btn"
-                              title="Edit Task"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setEditTask({
-                                  ...t,
-                                  desc: t.desc ?? '',
-                                  assignees: Array.isArray(t.assignees) && t.assignees.length > 0
-                                    ? t.assignees.map(Number)
-                                    : (t.assign_to ? [Number(t.assign_to)] : []),
-                                });
-                                resetEditTaskTouched();
-                              }}
-                            >
-                              <Pencil size={12} />
-                            </button>
+  className="task-action-btn"
+  title="Edit Task"
+  onClick={(e) => { e.stopPropagation(); openEditTask(t); }}
+>
+  <Pencil size={12} />
+</button>
                             <button
                               className="task-action-btn danger"
                               title="Delete Task"
