@@ -28,13 +28,15 @@ const LEAD_ROLES       = ['lead', 'member'];
 
 const asArray = (v) => (Array.isArray(v) ? v : []);
 
-/* ─── Helpers (unchanged from your version) ─── */
+/* ─── PTeam helpers ─── */
 function getPteamProjectId(entry) {
   return Number(entry?.p ?? entry?.p_id ?? entry?.project ?? entry?.projectId ?? entry?.project_id);
 }
 function getPteamTmId(entry) {
   return Number(entry?.tm ?? entry?.tm_id ?? entry?.team_member ?? entry?.member ?? entry?.member_id ?? entry?.teamMember);
 }
+
+/* ─── Task progress helper ─── */
 function computeTaskProgress(task) {
   if (task?.progress !== undefined && task?.progress !== null) {
     const raw = Number(task.progress);
@@ -228,13 +230,13 @@ export default function LeadProjectDetail() {
   const [comments, setComments]     = useState([]);
   const [pteamEntries, setPteamEntries] = useState([]);
 
-  const [editTask, setEditTask]                 = useState(null);
-  const [showAddTask, setShowAddTask]           = useState(false);
+  const [editTask, setEditTask]                   = useState(null);
+  const [showAddTask, setShowAddTask]             = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
-  const [isSubmitting, setIsSubmitting]         = useState(false);
+  const [isSubmitting, setIsSubmitting]           = useState(false);
 
-  const [addTaskTouched, setAddTaskTouched]     = useState({});
-  const [editTaskTouched, setEditTaskTouched]   = useState({});
+  const [addTaskTouched, setAddTaskTouched]       = useState({});
+  const [editTaskTouched, setEditTaskTouched]     = useState({});
   const [addTaskSubmitAttempted, setAddTaskSubmitAttempted]   = useState(false);
   const [editTaskSubmitAttempted, setEditTaskSubmitAttempted] = useState(false);
 
@@ -284,6 +286,7 @@ export default function LeadProjectDetail() {
   const isAddTaskValid  = Object.values(addTaskErrors).every(e => e === '');
   const isEditTaskValid = Object.values(editTaskErrors).every(e => e === '');
 
+  /* ─── Derived data ─── */
   const supervisorIdSet = useMemo(
     () => new Set(asArray(projectSupervisors).map(s => Number(s.userId))),
     [projectSupervisors]
@@ -301,7 +304,7 @@ export default function LeadProjectDetail() {
     });
   }, [projectMembers, project, supervisorIdSet]);
 
-    const projectLeadsFinal = useMemo(() => {
+  const projectLeadsFinal = useMemo(() => {
     const stored = asArray(projectLeads);
     return stored.length > 0 ? stored : projectLeadsDerived;
   }, [projectLeads, projectLeadsDerived]);
@@ -332,6 +335,7 @@ export default function LeadProjectDetail() {
     return Math.round(total / countable.length);
   }, [tasks, stats?.avgProgress]);
 
+  /* ─── Escape key handler ─── */
   useEffect(() => {
     const onKey = (e) => {
       if (e.key !== 'Escape') return;
@@ -371,6 +375,9 @@ export default function LeadProjectDetail() {
 
   useEffect(() => { fetchProjectData(); /* eslint-disable-next-line */ }, [projectId]);
 
+  /* ═══════════════════════════════════════════════════════════
+     FETCH PROJECT DATA
+     ═══════════════════════════════════════════════════════════ */
   const fetchProjectData = async () => {
     try {
       setLoading(true);
@@ -406,7 +413,7 @@ export default function LeadProjectDetail() {
         avgProgress:     Number(statsResponse.avgProgress) || 0,
       });
 
-      // Only top-level tasks
+      // Only top-level tasks (no parent) — subtasks are handled on the task detail page.
       const projectTasks = allTasks.filter(t => {
         const taskProjectId = t.p_id ?? t.p ?? t.project ?? t.project_id;
         const belongsToProject = Number(taskProjectId) === Number(projectId);
@@ -752,7 +759,7 @@ export default function LeadProjectDetail() {
     return "Unassigned";
   };
 
-  /* ─── Supervisor / Lead / Member adders ─── */
+  /* ─── Add supervisor / lead / member ─── */
   const handleAddSupervisor = async (userId) => {
     if (!userId) return;
     setAddSupervisorSaving(true);
@@ -873,7 +880,7 @@ export default function LeadProjectDetail() {
         }
       />
 
-      {/* ═══ EDIT TASK MODAL — fixed description bug ═══ */}
+      {/* ═══ EDIT TASK MODAL ═══ */}
       <AnimatePresence>
         {editTask && (
           <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setEditTask(null); resetEditTaskTouched(); }}>
@@ -900,11 +907,8 @@ export default function LeadProjectDetail() {
                   <FieldError message={showEditTaskError('title')} />
                 </div>
 
-                {/* THE DESCRIPTION BUG FIX:
-                    Using a controlled textarea tied ONLY to `editTask.desc`,
-                    and updating it via a functional setState so it can never
-                    accidentally read a stale closure. The old code was likely
-                    re-spreading `selectedTask` which reset `desc`. */}
+                {/* Description tied strictly to editTask.desc with a functional updater.
+                    This is what fixes the "typing in title field" bug. */}
                 <div className="form-group">
                   <label className="form-label">Description</label>
                   <textarea
@@ -1126,11 +1130,11 @@ export default function LeadProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* ═══ PROJECT BODY — new layout ═══ */}
+      {/* ═══ PROJECT BODY — Overview top-left, Tasks below, Team+Comments right ═══ */}
       <div className="project-body">
         <div className="project-left">
 
-          {/* ═════════ OVERVIEW (moved to top) ═════════ */}
+          {/* OVERVIEW — moved to top of left column */}
           <div className="project-overview-card">
             <div className="overview-header">
               <div className="overview-info">
@@ -1157,7 +1161,7 @@ export default function LeadProjectDetail() {
               </div>
             </div>
 
-            {/* Overview stats grid — inside the same card */}
+            {/* Stats grid inside the same card */}
             <div className="info-stats" style={{ marginTop: 16 }}>
               <div className="info-stat">
                 <div className="info-stat-icon" style={{ background: 'rgba(129, 140, 248, 0.12)', color: '#818cf8' }}><FolderKanban size={16} /></div>
@@ -1190,7 +1194,125 @@ export default function LeadProjectDetail() {
             </div>
           </div>
 
-          {/* ═════════ TEAM (above tasks) ═════════ */}
+          {/* TASKS — under overview, with scroller */}
+          <div className="tasks-card">
+            <div className="tasks-header">
+              <h3 className="tasks-title">
+                <BarChart2 size={16} /> Tasks
+                <span className="tasks-count">{asArray(tasks).length}</span>
+              </h3>
+              <button className="btn btn-primary btn-sm" onClick={() => setShowAddTask(true)}>
+                <Plus size={14} /> Add Task
+              </button>
+            </div>
+
+            <div className="tasks-scroll">
+              <div className="tasks-list">
+                {asArray(tasks).length === 0 ? (
+                  <div className="tasks-empty">
+                    <ListChecks size={32} style={{ opacity: 0.3 }} />
+                    <p>No tasks yet</p>
+                    <span>Create your first task to get started</span>
+                  </div>
+                ) : (
+                  asArray(tasks).map((t, idx) => {
+                    const taskKey = t.t_id || t.id || `task-${idx}`;
+                    const taskCommentCount = getTaskComments(t.t_id || t.id).length;
+                    const subtaskCount = Number(t.subtask_count) || 0;
+                    const completedSubtasks = Number(t.completed_subtasks) || 0;
+
+                    const assigneeIds = Array.isArray(t.assignees) && t.assignees.length > 0
+                      ? t.assignees.map(Number)
+                      : (t.assign_to != null ? [Number(t.assign_to)] : []);
+
+                    return (
+                      <motion.div
+                        key={taskKey}
+                        className="task-item"
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        onClick={() => navigate(`/lead/projects/${projectId}/tasks/${t.t_id || t.id}`)}
+                      >
+                        <div className="task-item-header">
+                          <div className="task-item-left">
+                            <span className="task-item-title">{t.title}</span>
+                          </div>
+                          <div className="task-item-badges">
+                            <PriorityBadge priority={t.priority} />
+                            {taskCommentCount > 0 && (
+                              <span className="task-comment-badge"><MessageSquare size={10} /> {taskCommentCount}</span>
+                            )}
+                            {subtaskCount > 0 && (
+                              <span className="task-comment-badge"><ListChecks size={10} /> {completedSubtasks}/{subtaskCount}</span>
+                            )}
+                            <span className="task-item-progress-badge" style={{
+                              background: t.progress >= 70 ? 'rgba(52, 211, 153, 0.15)' : t.progress >= 40 ? 'rgba(245, 158, 11, 0.15)' : 'rgba(248, 113, 113, 0.15)',
+                              color: t.progress >= 70 ? '#34d399' : t.progress >= 40 ? '#f59e0b' : '#f87171'
+                            }}>{t.progress || 0}%</span>
+                          </div>
+                        </div>
+                        {t.desc && <p className="task-item-desc">{t.desc}</p>}
+                        <div className="task-item-footer">
+                          <StatusBadge status={t.status} />
+                          <div className="task-item-assignee">
+                            <User size={12} />
+                            {assigneeIds.length === 0
+                              ? 'Unassigned'
+                              : assigneeIds.length === 1
+                                ? getMemberName(assigneeIds[0], t)
+                                : `${getMemberName(assigneeIds[0], t)} +${assigneeIds.length - 1}`}
+                          </div>
+                          {t.due_date && (
+                            <div className="task-item-assignee" style={{ marginLeft: 4 }}>
+                              <Calendar size={12} />
+                              {new Date(t.due_date).toLocaleDateString()}
+                            </div>
+                          )}
+                          <div className="task-item-actions">
+                            <button
+                              className="task-action-btn"
+                              title="Open task"
+                              onClick={(e) => { e.stopPropagation(); navigate(`/lead/projects/${projectId}/tasks/${t.t_id || t.id}`); }}
+                            >
+                              <ArrowLeft size={12} style={{ transform: 'rotate(180deg)' }} />
+                            </button>
+                            <button
+                              className="task-action-btn"
+                              title="Edit Task"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditTask({
+                                  ...t,
+                                  desc: t.desc ?? '',
+                                  assignees: Array.isArray(t.assignees) && t.assignees.length > 0
+                                    ? t.assignees.map(Number)
+                                    : (t.assign_to ? [Number(t.assign_to)] : []),
+                                });
+                                resetEditTaskTouched();
+                              }}
+                            >
+                              <Pencil size={12} />
+                            </button>
+                            <button
+                              className="task-action-btn danger"
+                              title="Delete Task"
+                              onClick={(e) => { e.stopPropagation(); setShowDeleteConfirm(t.t_id || t.id); }}
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        </div>
+                      </motion.div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* RIGHT COLUMN — Team + Comments (unchanged position) */}
+        <div className="project-right">
           <div className="info-card">
             <h4 className="info-card-title">
               <Users size={14} /> Team
@@ -1314,13 +1436,13 @@ export default function LeadProjectDetail() {
             </div>
           </div>
 
-          {/* ═════════ COMMENTS (above tasks) ═════════ */}
+          {/* Comments — right column, with its own scroller */}
           <div className="info-card comments-card">
             <h4 className="info-card-title">
-              <MessageSquare size={14} /> Recent Comments
+              <MessageSquare size={14} /> Comments
               <span className="info-badge">{asArray(comments).length}</span>
             </h4>
-            <div className="comment-list-scroll">
+            <div className="comment-list">
               {asArray(comments).length === 0 ? (
                 <div className="comment-empty">
                   <MessageSquare size={24} style={{ opacity: 0.3 }} />
@@ -1330,6 +1452,7 @@ export default function LeadProjectDetail() {
               ) : (
                 [...asArray(comments)]
                   .sort((a, b) => (b.pin || b.pinned) - (a.pin || a.pinned))
+                  .slice(0, 15)
                   .map((c, idx) => {
                     const commentKey = c.c_id || c.id || `comment-${idx}`;
                     const isPinned = c.pin || c.pinned;
@@ -1362,128 +1485,6 @@ export default function LeadProjectDetail() {
               )}
             </div>
           </div>
-
-          {/* ═════════ TASKS (bottom, with scroller) ═════════ */}
-          <div className="tasks-card">
-            <div className="tasks-header">
-              <h3 className="tasks-title">
-                <BarChart2 size={16} /> Tasks
-                <span className="tasks-count">{asArray(tasks).length}</span>
-              </h3>
-              <button className="btn btn-primary btn-sm" onClick={() => setShowAddTask(true)}>
-                <Plus size={14} /> Add Task
-              </button>
-            </div>
-
-            <div className="tasks-scroll">
-              <div className="tasks-list">
-                {asArray(tasks).length === 0 ? (
-                  <div className="tasks-empty">
-                    <ListChecks size={32} style={{ opacity: 0.3 }} />
-                    <p>No tasks yet</p>
-                    <span>Create your first task to get started</span>
-                  </div>
-                ) : (
-                  asArray(tasks).map((t, idx) => {
-                    const taskKey = t.t_id || t.id || `task-${idx}`;
-                    const taskCommentCount = getTaskComments(t.t_id || t.id).length;
-                    const subtaskCount = Number(t.subtask_count) || 0;
-                    const completedSubtasks = Number(t.completed_subtasks) || 0;
-
-                    // Assignees: prefer M2M array, fall back to single
-                    const assigneeIds = Array.isArray(t.assignees) && t.assignees.length > 0
-                      ? t.assignees.map(Number)
-                      : (t.assign_to != null ? [Number(t.assign_to)] : []);
-
-                    return (
-                      <motion.div
-                        key={taskKey}
-                        className="task-item"
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        onClick={() => navigate(`/lead/projects/${projectId}/tasks/${t.t_id || t.id}`)}
-                      >
-                        <div className="task-item-header">
-                          <div className="task-item-left">
-                            <span className="task-item-title">{t.title}</span>
-                          </div>
-                          <div className="task-item-badges">
-                            <PriorityBadge priority={t.priority} />
-                            {taskCommentCount > 0 && (
-                              <span className="task-comment-badge"><MessageSquare size={10} /> {taskCommentCount}</span>
-                            )}
-                            {subtaskCount > 0 && (
-                              <span className="task-comment-badge"><ListChecks size={10} /> {completedSubtasks}/{subtaskCount}</span>
-                            )}
-                            <span className="task-item-progress-badge" style={{
-                              background: t.progress >= 70 ? 'rgba(52, 211, 153, 0.15)' : t.progress >= 40 ? 'rgba(245, 158, 11, 0.15)' : 'rgba(248, 113, 113, 0.15)',
-                              color: t.progress >= 70 ? '#34d399' : t.progress >= 40 ? '#f59e0b' : '#f87171'
-                            }}>{t.progress || 0}%</span>
-                          </div>
-                        </div>
-                        {t.desc && <p className="task-item-desc">{t.desc}</p>}
-                        <div className="task-item-footer">
-                          <StatusBadge status={t.status} />
-                          <div className="task-item-assignee">
-                            <User size={12} />
-                            {assigneeIds.length === 0
-                              ? 'Unassigned'
-                              : assigneeIds.length === 1
-                                ? getMemberName(assigneeIds[0], t)
-                                : `${getMemberName(assigneeIds[0], t)} +${assigneeIds.length - 1}`}
-                          </div>
-                          {t.due_date && (
-                            <div className="task-item-assignee" style={{ marginLeft: 4 }}>
-                              <Calendar size={12} />
-                              {new Date(t.due_date).toLocaleDateString()}
-                            </div>
-                          )}
-                          <div className="task-item-actions">
-                            <button
-                              className="task-action-btn"
-                              title="Open task"
-                              onClick={(e) => { e.stopPropagation(); navigate(`/lead/projects/${projectId}/tasks/${t.t_id || t.id}`); }}
-                            >
-                              <ArrowLeft size={12} style={{ transform: 'rotate(180deg)' }} />
-                            </button>
-                            <button
-                              className="task-action-btn"
-                              title="Edit Task"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setEditTask({
-                                  ...t,
-                                  desc: t.desc ?? '',
-                                  assignees: Array.isArray(t.assignees) && t.assignees.length > 0
-                                    ? t.assignees.map(Number)
-                                    : (t.assign_to ? [Number(t.assign_to)] : []),
-                                });
-                                resetEditTaskTouched();
-                              }}
-                            >
-                              <Pencil size={12} />
-                            </button>
-                            <button
-                              className="task-action-btn danger"
-                              title="Delete Task"
-                              onClick={(e) => { e.stopPropagation(); setShowDeleteConfirm(t.t_id || t.id); }}
-                            >
-                              <Trash2 size={12} />
-                            </button>
-                          </div>
-                        </div>
-                      </motion.div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Right column — keep as-is if you had other widgets */}
-        <div className="project-right">
-          {/* Leave empty or add analytics later */}
         </div>
       </div>
 
@@ -1661,14 +1662,16 @@ export default function LeadProjectDetail() {
         .team-add-btn:hover { background: var(--accent-primary); color: #fff; border-color: var(--accent-primary); }
 
         /* ─── Comments (with scroller) ─── */
-        .comment-list-scroll { display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto; padding-right: 4px; }
+        .comments-card { flex: 1; }
+        .comment-list { display: flex; flex-direction: column; gap: 8px; max-height: 400px; overflow-y: auto; padding-right: 4px; }
         .comment-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px 0; color: var(--text-muted); text-align: center; }
         .comment-item { padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--bg-secondary); }
         .comment-item.pinned { border-color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-secondary)); }
         .comment-pin-badge { display: flex; align-items: center; gap: 4px; font-size: 9px; font-weight: 700; color: var(--accent-primary); text-transform: uppercase; margin-bottom: 4px; }
         .comment-text { font-size: 13px; color: var(--text-secondary); line-height: 1.5; margin: 0; white-space: pre-wrap; }
         .comment-meta-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
-        .comment-task-tag { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 12px; font-size: 10px; color: var(--text-muted); background: var(--bg-secondary); border: 1px solid var(--border-subtle); cursor: pointer; }
+        .comment-meta { font-size: 10px; color: var(--text-muted); }
+        .comment-task-tag { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 12px; font-size: 10px; color: var(--text-muted); background: var(--bg-secondary); border: 1px solid var(--border-subtle); cursor: pointer; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .comment-footer { display: flex; justify-content: flex-end; margin-top: 6px; }
         .comment-actions { display: flex; gap: 3px; }
         .comment-action-btn { display: inline-flex; align-items: center; justify-content: center; padding: 2px 4px; border: 1px solid var(--border-subtle); border-radius: 4px; background: var(--bg-card); color: var(--text-secondary); cursor: pointer; }
@@ -1683,6 +1686,8 @@ export default function LeadProjectDetail() {
         .tasks-scroll { max-height: 500px; overflow-y: auto; padding-right: 6px; }
         .tasks-list { display: flex; flex-direction: column; gap: 8px; }
         .tasks-empty { text-align: center; padding: 30px 0; color: var(--text-muted); }
+        .tasks-empty p { font-size: 14px; font-weight: 500; margin: 8px 0 4px; }
+        .tasks-empty span { font-size: 12px; }
         .task-item { padding: 12px 14px; background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: 10px; cursor: pointer; transition: all 0.15s; }
         .task-item:hover { border-color: var(--accent-primary); background: var(--bg-card); }
         .task-item-header { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
@@ -1736,10 +1741,13 @@ export default function LeadProjectDetail() {
         .btn-secondary { background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-default); }
         .add-picker-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: 10px; cursor: pointer; color: var(--text-primary); }
         .add-picker-row:hover:not(:disabled) { border-color: var(--accent-primary); background: var(--bg-card); }
+        .confirm-box { max-width: 380px; text-align: center; padding-bottom: 24px; }
+        .confirm-title { font-size: 18px; font-weight: 800; color: var(--text-primary); margin: 0 0 6px; }
+        .confirm-desc { font-size: 13px; color: var(--text-muted); margin: 0 0 16px; }
 
-        @media (max-width: 1024px) { .project-body { grid-template-columns: 1fr; } }
+        @media (max-width: 1024px) { .project-body { grid-template-columns: 1fr 280px; padding: 16px 20px; } }
         @media (max-width: 768px) {
-          .project-body { padding: 14px 16px; gap: 14px; }
+          .project-body { grid-template-columns: 1fr; padding: 14px 16px; gap: 14px; }
           .overview-header { flex-direction: column; align-items: stretch; text-align: center; }
           .overview-progress-ring { align-self: center; }
           .form-row-2 { grid-template-columns: 1fr; }
