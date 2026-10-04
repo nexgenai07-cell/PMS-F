@@ -789,12 +789,11 @@ export default function ProfilePage() {
                 /* ─── STATS GRID ─── */
         .stats-grid-modern {
           display: grid;
-          /* auto-fit + minmax guarantees each card is wide enough for
-             "22px value / LABEL / badge" on one line. When there isn't
-             room for 4, it drops to 3, then 2, then 1 — no overlap, no
-             truncation, no media queries needed. */
-          grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-          gap: 14px;
+          /* Minimum card width is 180px. On a 950px container this gives
+             room for 4 cards (4×180 + 3×12 = 756) with space left over,
+             and it still drops to 3 / 2 / 1 as the viewport shrinks. */
+          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+          gap: 12px;
         }
 
         .stat-card-modern {
@@ -802,11 +801,11 @@ export default function ProfilePage() {
           overflow: hidden;
           display: flex;
           align-items: center;
-          gap: 12px;
-          padding: 16px 18px;
+          gap: 10px;
+          padding: 12px 14px;
           background: var(--bg-card);
           border: 1px solid var(--border-subtle);
-          border-radius: 14px;
+          border-radius: 12px;
           min-width: 0;
           transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1),
                       box-shadow 0.25s ease,
@@ -826,10 +825,10 @@ export default function ProfilePage() {
         .stat-card-modern::after {
           content: '';
           position: absolute;
-          width: 130px;
-          height: 130px;
-          right: -40px;
-          top: -40px;
+          width: 110px;
+          height: 110px;
+          right: -35px;
+          top: -35px;
           border-radius: 50%;
           background: radial-gradient(circle, var(--ic, transparent) 0%, transparent 70%);
           opacity: 0.08;
@@ -850,9 +849,9 @@ export default function ProfilePage() {
         .accent-teal    { --sc: var(--accent-teal);    --ic: var(--accent-teal); }
 
         .stat-card-icon {
-          width: 40px;
-          height: 40px;
-          border-radius: 10px;
+          width: 34px;
+          height: 34px;
+          border-radius: 9px;
           display: flex;
           align-items: center;
           justify-content: center;
@@ -865,13 +864,13 @@ export default function ProfilePage() {
         .stat-card-modern:hover .stat-card-icon { transform: scale(1.1) rotate(-5deg); }
 
         .stat-card-content {
-          flex: 1 1 auto;      /* grows to fill available space */
-          min-width: 0;        /* allows the flex item to shrink and let text wrap naturally */
+          flex: 1 1 auto;
+          min-width: 0;
         }
 
         .stat-card-value {
           display: block;
-          font-size: 22px;
+          font-size: 19px;
           font-weight: 800;
           color: var(--text-primary);
           line-height: 1.15;
@@ -879,37 +878,36 @@ export default function ProfilePage() {
           font-variant-numeric: tabular-nums;
         }
 
-        /* No truncation here — the label is allowed to wrap to two lines
-           if needed. Row-gap keeps it tight. The container grid ensures
-           there's enough width that wrapping is rare. */
+        /* Label may wrap to 2 lines. Never truncated. */
         .stat-card-label {
           display: block;
-          font-size: 11px;
+          font-size: 10px;
           color: var(--text-muted);
           font-weight: 600;
           text-transform: uppercase;
-          letter-spacing: 0.4px;
-          line-height: 1.3;
+          letter-spacing: 0.35px;
+          line-height: 1.25;
           overflow-wrap: anywhere;
           word-break: break-word;
+          margin-top: 1px;
         }
 
-        /* Badge is a small pill. flex-shrink:0 means it never gets
-           squeezed; if the card is genuinely too narrow it wraps to a
-           second line via the card's flex-wrap fallback below. */
+        /* Badge — small, sits below-right of the value+label block on
+           narrow cards because the card wraps. Never clipped. */
         .stat-card-trend {
           display: inline-flex;
           align-items: center;
           justify-content: center;
           gap: 2px;
-          font-size: 11px;
+          font-size: 10px;
           font-weight: 700;
-          padding: 3px 9px;
+          padding: 2px 8px;
           border-radius: 20px;
           flex-shrink: 0;
           font-variant-numeric: tabular-nums;
           white-space: nowrap;
           margin-left: auto;
+          align-self: center;
         }
         .stat-card-trend.up {
           background: color-mix(in srgb, var(--accent-emerald) 14%, transparent);
