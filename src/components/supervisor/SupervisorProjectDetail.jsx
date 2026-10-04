@@ -3,9 +3,9 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, useNavigate, useOutletContext } from "react-router-dom";
 import {
   ArrowLeft, MessageSquare, Users, CheckCircle2, Pencil, Trash2,
-  Milestone, X, Pin, PinOff, BarChart2, RefreshCw, Plus, Loader2,
-  FolderKanban, Calendar, AlertCircle, Sparkles, User, Send, FileText,
-  Clock, Crown, UserMinus, Shield, Briefcase, Flag, TrendingUp,
+  X, Pin, PinOff, BarChart2, RefreshCw, Plus, Loader2,
+  FolderKanban, Calendar, AlertCircle, Sparkles, Crown,
+  User, Send, Clock, UserMinus, Shield, ListChecks, ChevronDown,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import toast from "react-hot-toast";
@@ -22,52 +22,13 @@ import { useAuth } from "../../context/AuthContext";
 import NotificationHelper from '../../services/notificationHelper';
 
 const PRIORITY_OPTIONS = ["low", "medium", "high", "critical"];
-const STATUS_OPTIONS = ["todo", "in_progress", "review", "done", "cancelled"];
+const STATUS_OPTIONS   = ["todo", "in_progress", "review", "done", "cancelled"];
 const SUPERVISOR_ROLES = ['manager', 'admin', 'supervisor'];
-const LEAD_ROLES = ['lead', 'member'];
+const LEAD_ROLES       = ['lead', 'member'];
 
-/* ─────────── Safe array helper ─────────── */
 const asArray = (v) => (Array.isArray(v) ? v : []);
 
-/* ─────────── Resolve TeamMember id → user-like object ─────────── */
-function resolveTeamMemberId(tmId, usersList, membersList) {
-  if (tmId == null) return null;
-  const numId = Number(tmId);
-  if (!Number.isFinite(numId)) return null;
-
-  const safeUsers = asArray(usersList);
-  const safeMembers = asArray(membersList);
-
-  const tm = safeMembers.find(m => Number(m.id) === numId);
-  if (tm) {
-    const userObj = safeUsers.find(u => {
-      const uName = (u.u_name || u.name || '').toLowerCase().trim();
-      const mName = (tm.name || '').toLowerCase().trim();
-      return uName && mName && uName === mName;
-    });
-    return {
-      id: tm.id,                                 // ← TeamMember.id
-      userId: userObj?.id ?? tm.id,              // ← User.id (or tm.id fallback)
-      name: tm.name || userObj?.u_name || `User ${tm.id}`,
-      email: tm.email || userObj?.email || '',
-      role: ((userObj?.role) || tm.role || '').toLowerCase(),
-    };
-  }
-
-  const userObj = safeUsers.find(u => Number(u.id) === numId);
-  if (userObj) {
-    return {
-      id: userObj.id,
-      userId: userObj.id,
-      name: userObj.u_name || userObj.name || `User ${userObj.id}`,
-      email: userObj.email || '',
-      role: (userObj.role || '').toLowerCase(),
-    };
-  }
-  return null;
-}
-
-/* ─────────── PTeam field getters ─────────── */
+/* ─── PTeam helpers ─── */
 function getPteamProjectId(entry) {
   return Number(entry?.p ?? entry?.p_id ?? entry?.project ?? entry?.projectId ?? entry?.project_id);
 }
@@ -75,76 +36,23 @@ function getPteamTmId(entry) {
   return Number(entry?.tm ?? entry?.tm_id ?? entry?.team_member ?? entry?.member ?? entry?.member_id ?? entry?.teamMember);
 }
 
-/* ─────────── Compute task progress ─────────── */
 function computeTaskProgress(task) {
   if (task?.progress !== undefined && task?.progress !== null) {
     const raw = Number(task.progress);
     if (Number.isFinite(raw)) return raw;
   }
-  const status = (task?.status || '').toLowerCase();
-  if (status === 'done' || status === 'completed') return 100;
-  if (status === 'review') return 75;
-  if (status === 'in_progress' || status === 'in-progress') return 50;
+  const s = (task?.status || '').toLowerCase();
+  if (s === 'done' || s === 'completed') return 100;
+  if (s === 'review') return 75;
+  if (s === 'in_progress' || s === 'in-progress') return 50;
   return 0;
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   🔧 FIX: findRealTeamMemberId
-
-   The original preferred `userIdOrObj.userId` (User.id) over
-   `userIdOrObj.id` (TeamMember.id). But Task.assign_to is a
-   TeamMember FK — so given { id: 8, userId: 11 } for Alii, the old
-   code looked up TeamMember #11 = "Admin" instead of TeamMember #8 = "alii".
-   That's why picking Alii showed "Admin" on the task card.
-
-   Fix: prefer `id` (TeamMember.id) when the input is an object.
-   ═══════════════════════════════════════════════════════════════ */
-function findRealTeamMemberId(userIdOrObj, teamMembersList, usersList) {
-  if (!userIdOrObj) return null;
-
-  // Task.assign_to is a TeamMember FK. Given an object:
-  //   - `id`     = TeamMember.id   ← the one the backend wants
-  //   - `userId` = User.id
-  // Prefer `id` when present.
-  const id = typeof userIdOrObj === 'object'
-    ? (userIdOrObj.id ?? userIdOrObj.userId)     // 🔧 FIX: was (userId ?? id)
-    : userIdOrObj;
-  const numId = Number(id);
-  if (!Number.isFinite(numId)) return null;
-
-  const safeMembers = asArray(teamMembersList);
-  const safeUsers = asArray(usersList);
-
-  // 1. Direct TeamMember.id match
-  const direct = safeMembers.find(m => !m._placeholder && Number(m.id) === numId);
-  if (direct) return Number(direct.id);
-
-  // 2. Fall back to matching by name/email (only useful when the caller
-  //    handed us a plain User id).
-  const userObj = safeUsers.find(u => Number(u.id) === numId);
-  if (userObj) {
-    const name = (userObj.u_name || userObj.name || '').toLowerCase().trim();
-    const email = (userObj.email || '').toLowerCase().trim();
-    const byName = safeMembers.find(m =>
-      !m._placeholder && (m.name || '').toLowerCase().trim() === name
-    );
-    if (byName) return Number(byName.id);
-    if (email) {
-      const byEmail = safeMembers.find(m =>
-        !m._placeholder && (m.email || '').toLowerCase().trim() === email
-      );
-      if (byEmail) return Number(byEmail.id);
-    }
-  }
-  return null;
-}
-
+/* ─── Validation ─── */
 const LIMITS = {
   taskTitle: { min: 3, max: 200 },
   taskDesc:  { max: 2000 },
-  comment:   { min: 1, max: 1000 },
 };
-
 const TASK_TITLE_REGEX = /^[\p{L}\p{N} &\-.'(),!?]+$/u;
 
 const validators = {
@@ -153,16 +61,12 @@ const validators = {
     if (!v) return 'Task title is required';
     if (v.length < LIMITS.taskTitle.min) return `Task title must be at least ${LIMITS.taskTitle.min} characters`;
     if (v.length > LIMITS.taskTitle.max) return `Task title must be less than ${LIMITS.taskTitle.max} characters`;
-    if (!TASK_TITLE_REGEX.test(v)) {
-      return 'Only letters, numbers, spaces, and the characters  & - . \' ( ) , ! ?  are allowed';
-    }
+    if (!TASK_TITLE_REGEX.test(v)) return 'Only letters, numbers, spaces, and  & - . \' ( ) , ! ?  are allowed';
     return '';
   },
   taskDesc: (value) => {
     const v = value ?? '';
     if (v.length > LIMITS.taskDesc.max) return `Description must be less than ${LIMITS.taskDesc.max} characters`;
-    const BLOCKED = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u202A-\u202E]|\p{So}/u;
-    if (BLOCKED.test(v)) return 'Description contains characters that are not allowed';
     return '';
   },
   priority: (value) => (!PRIORITY_OPTIONS.includes(value) ? 'Invalid priority selected' : ''),
@@ -171,15 +75,6 @@ const validators = {
     const n = Number(value);
     if (Number.isNaN(n)) return 'Progress must be a number';
     if (n < 0 || n > 100) return 'Progress must be between 0 and 100';
-    return '';
-  },
-  comment: (value) => {
-    const v = (value ?? '').trim();
-    if (!v) return 'Comment cannot be empty';
-    if (v.length < LIMITS.comment.min) return 'Comment is too short';
-    if (v.length > LIMITS.comment.max) return `Comment must be less than ${LIMITS.comment.max} characters`;
-    const BLOCKED = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u202A-\u202E]/;
-    if (BLOCKED.test(v)) return 'Comment contains characters that are not allowed';
     return '';
   },
 };
@@ -194,26 +89,126 @@ function FieldError({ message }) {
   );
 }
 
-const getStatusLabel = (status) => {
-  const labels = {
-    todo: "To Do", pending: "Pending",
-    in_progress: "In Progress", "in-progress": "In Progress",
-    review: "In Review", done: "Done",
-    completed: "Completed", cancelled: "Cancelled"
-  };
-  return labels[status?.toLowerCase()] || status || "Unknown";
-};
+/* ─── Multi-select member picker ─── */
+function MemberMultiPicker({ selected = [], onChange, members = [], label = "Members" }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const triggerRef = useRef(null);
+  const [dropdownStyle, setDropdownStyle] = useState({});
 
-const getStatusColor = (status) => {
-  const colors = {
-    todo: "#94a3b8", pending: "#94a3b8",
-    in_progress: "#818cf8", "in-progress": "#818cf8",
-    review: "#f59e0b", done: "#34d399",
-    completed: "#34d399", cancelled: "#f87171"
-  };
-  return colors[status?.toLowerCase()] || "#94a3b8";
-};
+  const safeMembers = asArray(members);
+  const selectedSet = new Set(selected.map(Number));
 
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return safeMembers;
+    return safeMembers.filter(m =>
+      (m.name || '').toLowerCase().includes(q) ||
+      (m.role || '').toLowerCase().includes(q)
+    );
+  }, [safeMembers, query]);
+
+  const selectedMembers = safeMembers.filter(m => selectedSet.has(Number(m.id)));
+
+  const toggle = (id) => {
+    const num = Number(id);
+    const next = selectedSet.has(num)
+      ? selected.map(Number).filter(x => x !== num)
+      : [...selected.map(Number), num];
+    onChange(next);
+  };
+
+  const updatePosition = () => {
+    if (!triggerRef.current) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    setDropdownStyle({
+      position: 'fixed',
+      left: rect.left,
+      width: rect.width,
+      top: rect.bottom + 6,
+      maxHeight: Math.min(spaceBelow - 12, 320),
+      zIndex: 10001,
+    });
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    updatePosition();
+    const onScroll = () => updatePosition();
+    window.addEventListener('resize', onScroll);
+    window.addEventListener('scroll', onScroll, true);
+    return () => {
+      window.removeEventListener('resize', onScroll);
+      window.removeEventListener('scroll', onScroll, true);
+    };
+  }, [open]);
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <label className="form-label">{label}</label>
+      <div ref={triggerRef} className="multi-trigger" onClick={() => setOpen(o => !o)}>
+        {selectedMembers.length === 0 ? (
+          <span style={{ color: 'var(--text-muted)' }}>Select members...</span>
+        ) : (
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', flex: 1 }}>
+            {selectedMembers.map(m => (
+              <span key={m.id} className="multi-chip">
+                <Avatar name={m.name} size="sm" />
+                {m.name}
+                <button type="button" onClick={(e) => { e.stopPropagation(); toggle(m.id); }}>
+                  <X size={10} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <ChevronDown size={14} style={{ marginLeft: 'auto', flexShrink: 0, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />
+      </div>
+      {open && (
+        <>
+          <div className="multi-backdrop" onClick={() => setOpen(false)} />
+          <div className="multi-dropdown" style={dropdownStyle}>
+            <div className="multi-search">
+              <input
+                autoFocus
+                placeholder="Search..."
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+              />
+              {query && <button onClick={() => setQuery('')}><X size={12} /></button>}
+            </div>
+            <div className="multi-list">
+              {filtered.length === 0 && <div className="multi-empty">No members match</div>}
+              {filtered.map(m => {
+                const isSelected = selectedSet.has(Number(m.id));
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    className={`multi-option ${isSelected ? 'selected' : ''}`}
+                    onClick={() => toggle(m.id)}
+                  >
+                    <Avatar name={m.name} size="sm" />
+                    <span style={{ flex: 1, textAlign: 'left' }}>
+                      <div style={{ fontSize: 13, fontWeight: 500 }}>{m.name}</div>
+                      {m.role && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{m.role}</div>}
+                    </span>
+                    {isSelected && <CheckCircle2 size={14} style={{ color: 'var(--accent-primary)' }} />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   MAIN COMPONENT
+   ═══════════════════════════════════════════════════════════ */
 export default function SupervisorProjectDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -222,44 +217,42 @@ export default function SupervisorProjectDetail() {
 
   const projectId = parseInt(id);
 
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading]       = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [project, setProject] = useState(null);
-  const [tasks, setTasks] = useState([]);
+  const [project, setProject]       = useState(null);
+  const [tasks, setTasks]           = useState([]);
   const [allTeamMembers, setAllTeamMembers] = useState([]);
   const [projectMembers, setProjectMembers] = useState([]);
   const [projectSupervisors, setProjectSupervisors] = useState([]);
   const [projectLeads, setProjectLeads] = useState([]);
-  const [users, setUsers] = useState([]);
-  const [comments, setComments] = useState([]);
+  const [users, setUsers]           = useState([]);
+  const [comments, setComments]     = useState([]);
   const [pteamEntries, setPteamEntries] = useState([]);
-  const [selectedTask, setSelectedTask] = useState(null);
-  const [editTask, setEditTask] = useState(null);
-  const [showAddTask, setShowAddTask] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [modalCommentText, setModalCommentText] = useState("");
-  const [isModalCommenting, setIsModalCommenting] = useState(false);
 
-  const [addTaskTouched, setAddTaskTouched] = useState({});
-  const [editTaskTouched, setEditTaskTouched] = useState({});
-  const [addTaskSubmitAttempted, setAddTaskSubmitAttempted] = useState(false);
+  const [editTask, setEditTask]                   = useState(null);
+  const [showAddTask, setShowAddTask]             = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
+  const [isSubmitting, setIsSubmitting]           = useState(false);
+
+  const [addTaskTouched, setAddTaskTouched]       = useState({});
+  const [editTaskTouched, setEditTaskTouched]     = useState({});
+  const [addTaskSubmitAttempted, setAddTaskSubmitAttempted]   = useState(false);
   const [editTaskSubmitAttempted, setEditTaskSubmitAttempted] = useState(false);
-  const [modalCommentTouched, setModalCommentTouched] = useState(false);
 
   const [removeMemberInfo, setRemoveMemberInfo] = useState(null);
-  const [reassignTo, setReassignTo] = useState('');
+  const [reassignTo, setReassignTo]             = useState('');
   const [removeMemberSaving, setRemoveMemberSaving] = useState(false);
 
   const [addSupervisorOpen, setAddSupervisorOpen] = useState(false);
-  const [addMemberOpen, setAddMemberOpen] = useState(false);
-  const [addLeadOpen, setAddLeadOpen] = useState(false);
+  const [addMemberOpen, setAddMemberOpen]         = useState(false);
+  const [addLeadOpen, setAddLeadOpen]             = useState(false);
   const [addSupervisorSaving, setAddSupervisorSaving] = useState(false);
-  const [addMemberSaving, setAddMemberSaving] = useState(false);
-  const [addLeadSaving, setAddLeadSaving] = useState(false);
+  const [addMemberSaving, setAddMemberSaving]         = useState(false);
+  const [addLeadSaving, setAddLeadSaving]             = useState(false);
 
-  const addTaskTitleRef = useRef(null);
+  const addTaskTitleRef  = useRef(null);
   const editTaskTitleRef = useRef(null);
+  const editTaskDescRef  = useRef(null);   // ← added
 
   const [stats, setStats] = useState({
     totalTasks: 0, completedTasks: 0, inProgressTasks: 0, todoTasks: 0,
@@ -268,7 +261,7 @@ export default function SupervisorProjectDetail() {
 
   const [newTask, setNewTask] = useState({
     title: "", desc: "", priority: "medium", status: "todo",
-    progress: 0, assignedTo: null, milestones: [],
+    progress: 0, assignees: [], dueDate: "",
   });
 
   const addTaskErrors = useMemo(() => ({
@@ -290,15 +283,10 @@ export default function SupervisorProjectDetail() {
     };
   }, [editTask]);
 
-  const modalCommentError = validators.comment(modalCommentText);
-
-  const isAddTaskValid = Object.values(addTaskErrors).every(e => e === '');
+  const isAddTaskValid  = Object.values(addTaskErrors).every(e => e === '');
   const isEditTaskValid = Object.values(editTaskErrors).every(e => e === '');
 
-  /* ═══════════════════════════════════════════════════════════
-     DERIVED DATA
-     ═══════════════════════════════════════════════════════════ */
-
+  /* ─── Derived data ─── */
   const supervisorIdSet = useMemo(
     () => new Set(asArray(projectSupervisors).map(s => Number(s.userId))),
     [projectSupervisors]
@@ -316,9 +304,10 @@ export default function SupervisorProjectDetail() {
     });
   }, [projectMembers, project, supervisorIdSet]);
 
-  const projectLeadsFinal = asArray(projectLeads).length > 0
-    ? asArray(projectLeads)
-    : projectLeadsDerived;
+  const projectLeadsFinal = useMemo(() => {
+    const stored = asArray(projectLeads);
+    return stored.length > 0 ? stored : projectLeadsDerived;
+  }, [projectLeads, projectLeadsDerived]);
 
   const regularMembers = useMemo(
     () => asArray(projectMembers).filter(m => {
@@ -340,20 +329,13 @@ export default function SupervisorProjectDetail() {
     const backendProgress = Number(stats?.avgProgress);
     if (Number.isFinite(backendProgress) && backendProgress > 0) return Math.round(backendProgress);
     if (!tasks || tasks.length === 0) return 0;
-    const countable = tasks.filter(
-      t => (t.status || '').toLowerCase() !== 'cancelled'
-    );
+    const countable = tasks.filter(t => (t.status || '').toLowerCase() !== 'cancelled');
     if (countable.length === 0) return 0;
-    const total = countable.reduce(
-      (sum, t) => sum + (Number(t.progress) || 0), 0
-    );
+    const total = countable.reduce((s, t) => s + (Number(t.progress) || 0), 0);
     return Math.round(total / countable.length);
   }, [tasks, stats?.avgProgress]);
 
-  /* ═══════════════════════════════════════════════════════════
-     EFFECTS
-     ═══════════════════════════════════════════════════════════ */
-
+  /* ─── Escape key handler ─── */
   useEffect(() => {
     const onKey = (e) => {
       if (e.key !== 'Escape') return;
@@ -361,11 +343,10 @@ export default function SupervisorProjectDetail() {
       if (showDeleteConfirm !== null) { setShowDeleteConfirm(null); return; }
       if (editTask) { setEditTask(null); setEditTaskTouched({}); setEditTaskSubmitAttempted(false); return; }
       if (showAddTask) { setShowAddTask(false); setAddTaskTouched({}); setAddTaskSubmitAttempted(false); return; }
-      if (selectedTask) { setSelectedTask(null); return; }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [removeMemberInfo, showDeleteConfirm, editTask, showAddTask, selectedTask]);
+  }, [removeMemberInfo, showDeleteConfirm, editTask, showAddTask]);
 
   useEffect(() => {
     if (!showAddTask) return;
@@ -373,81 +354,49 @@ export default function SupervisorProjectDetail() {
     return () => clearTimeout(t);
   }, [showAddTask]);
 
+  /* ── AUTO-FOCUS FIX: keyed on task id ONLY ── */
   useEffect(() => {
     if (!editTask) return;
     const t = setTimeout(() => editTaskTitleRef.current?.focus(), 60);
     return () => clearTimeout(t);
-  }, [editTask]);
+  }, [editTask?.t_id, editTask?.id]);
 
   const resetAddTaskTouched = () => { setAddTaskTouched({}); setAddTaskSubmitAttempted(false); };
-  const markAddTaskTouched = (field) => setAddTaskTouched(prev => ({ ...prev, [field]: true }));
-  const showAddTaskError = (field) => {
-    if (addTaskSubmitAttempted) return addTaskErrors[field];
-    return addTaskTouched[field] ? addTaskErrors[field] : '';
-  };
+  const markAddTaskTouched  = (f) => setAddTaskTouched(p => ({ ...p, [f]: true }));
+  const showAddTaskError = (f) => addTaskSubmitAttempted ? addTaskErrors[f] : (addTaskTouched[f] ? addTaskErrors[f] : '');
 
   const resetEditTaskTouched = () => { setEditTaskTouched({}); setEditTaskSubmitAttempted(false); };
-  const markEditTaskTouched = (field) => setEditTaskTouched(prev => ({ ...prev, [field]: true }));
-  const showEditTaskError = (field) => {
-    if (editTaskSubmitAttempted) return editTaskErrors[field];
-    return editTaskTouched[field] ? editTaskErrors[field] : '';
-  };
+  const markEditTaskTouched  = (f) => setEditTaskTouched(p => ({ ...p, [f]: true }));
+  const showEditTaskError = (f) => editTaskSubmitAttempted ? editTaskErrors[f] : (editTaskTouched[f] ? editTaskErrors[f] : '');
 
   const getTaskComments = (taskId) => {
     if (!taskId) return [];
     return asArray(comments).filter(c => Number(c.taskId || c.t) === Number(taskId));
   };
 
-  const modalTaskComments = selectedTask ? getTaskComments(selectedTask.t_id || selectedTask.id) : [];
-  const sortedModalComments = [...modalTaskComments].sort((a, b) =>
-    (b.pin || b.pinned) === (a.pin || a.pinned) ? 0 : (b.pin || b.pinned) ? 1 : -1
-  );
-
-  useEffect(() => {
-    fetchProjectData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]);
+  useEffect(() => { fetchProjectData(); /* eslint-disable-next-line */ }, [projectId]);
 
   /* ═══════════════════════════════════════════════════════════
      FETCH PROJECT DATA
      ═══════════════════════════════════════════════════════════ */
   const fetchProjectData = async () => {
-    console.log('🚀 [Supervisor] fetchProjectData STARTED for projectId:', projectId);
     try {
       setLoading(true);
-      console.log('📡 [Supervisor] Fetching project, tasks, members, users, pteam, stats...');
-
-      const [
-        projectData,
-        tasksData,
-        membersData,
-        usersData,
-        pteamData,
-        statsData,
-      ] = await Promise.all([
-        projectService.getProject(projectId).catch(e => { console.error('❌ getProject:', e); return { data: null }; }),
-        taskService.getTasks().catch(e => { console.error('❌ getTasks:', e); return { data: [] }; }),
-        teamService.getTeamMembers().catch(e => { console.error('❌ getTeamMembers:', e); return { data: [] }; }),
-        userService.getUsers().catch(e => { console.error('❌ getUsers:', e); return { data: [] }; }),
-        projectTeamService.getProjectTeams().catch(e => { console.error('❌ getProjectTeams:', e); return { data: [] }; }),
-        projectService.getProjectStats(projectId).catch(e => { console.error('❌ getProjectStats:', e); return { data: {} }; }),
+      const [projectData, tasksData, membersData, usersData, pteamData, statsData] = await Promise.all([
+        projectService.getProject(projectId).catch(() => ({ data: null })),
+        taskService.getTasks().catch(() => ({ data: [] })),
+        teamService.getTeamMembers().catch(() => ({ data: [] })),
+        userService.getUsers().catch(() => ({ data: [] })),
+        projectTeamService.getProjectTeams().catch(() => ({ data: [] })),
+        projectService.getProjectStats(projectId).catch(() => ({ data: {} })),
       ]);
 
-      const projectItem  = projectData?.data || projectData || null;
-      const allTasks     = asArray(tasksData?.data || tasksData);
-      const membersList  = asArray(membersData?.data || membersData);
-      const usersList    = asArray(usersData?.data || usersData);
-      const pteamList    = asArray(pteamData?.data || pteamData);
+      const projectItem   = projectData?.data || projectData || null;
+      const allTasks      = asArray(tasksData?.data || tasksData);
+      const membersList   = asArray(membersData?.data || membersData);
+      const usersList     = asArray(usersData?.data || usersData);
+      const pteamList     = asArray(pteamData?.data || pteamData);
       const statsResponse = statsData?.data || statsData || {};
-
-      console.log('✅ [Supervisor] Normalized:', {
-        project: projectItem?.p_name,
-        tasks: allTasks.length,
-        members: membersList.length,
-        users: usersList.length,
-        pteam: pteamList.length,
-        stats: statsResponse,
-      });
 
       setProject(projectItem);
       setAllTeamMembers(membersList);
@@ -467,45 +416,43 @@ export default function SupervisorProjectDetail() {
 
       const projectTasks = allTasks.filter(t => {
         const taskProjectId = t.p_id ?? t.p ?? t.project ?? t.project_id;
-        return Number(taskProjectId) === Number(projectId);
+        const belongsToProject = Number(taskProjectId) === Number(projectId);
+        const isTopLevel = t.parent == null;
+        return belongsToProject && isTopLevel;
       });
-      console.log('✅ [Supervisor] projectTasks filtered:', projectTasks.length);
 
-      // Build PTeam member map
       const memberMap = new Map();
       const projectPteamEntries = pteamList.filter(
         entry => getPteamProjectId(entry) === Number(projectId)
       );
-      console.log('✅ [Supervisor] projectPteamEntries:', projectPteamEntries.length);
 
       projectPteamEntries.forEach(entry => {
         const tmId = getPteamTmId(entry);
         if (!Number.isFinite(tmId)) return;
         if (memberMap.has(tmId)) return;
 
-        const resolved = resolveTeamMemberId(tmId, usersList, membersList);
-        if (resolved) {
-          memberMap.set(tmId, {
-            ...resolved,
-            pt_id: entry.pt_id ?? entry.id ?? null,
-            task_id: entry.t ?? entry.task_id ?? entry.task ?? null,
-          });
-        }
+        const tm = membersList.find(m => Number(m.id) === tmId);
+        if (!tm) return;
+        const matchedUser = usersList.find(u => {
+          const uName = (u.u_name || u.name || '').toLowerCase().trim();
+          const mName = (tm.name || '').toLowerCase().trim();
+          return uName && mName && uName === mName;
+        });
+        memberMap.set(tmId, {
+          id: tm.id,
+          userId: matchedUser?.id ?? tm.id,
+          name: tm.name || matchedUser?.u_name || `User ${tm.id}`,
+          email: tm.email || matchedUser?.email || '',
+          role: ((matchedUser?.role) || tm.role || '').toLowerCase(),
+          pt_id: entry.pt_id ?? entry.id ?? null,
+          task_id: entry.t ?? null,
+          tmId: tm.id,
+        });
       });
 
-      /* ═══════════════════════════════════════════════════════════
-         🔧 FIX: resolveTeamMemberId already put the real TeamMember.id
-         into `m.id`. Don't call findRealTeamMemberId again — that
-         second lookup used to prefer User.id and could return the
-         wrong TeamMember. We just take `m.id` directly.
-         ═══════════════════════════════════════════════════════════ */
-      const memberEntries = Array.from(memberMap.values()).map(m => ({
-        ...m,
-        tmId: Number.isFinite(Number(m.id)) ? Number(m.id) : null,
-      }));
-      console.log('✅ [Supervisor] memberEntries:', memberEntries.length, memberEntries);
+      const memberEntries = Array.from(memberMap.values());
 
-      const supervisorIds = asArray(projectItem?.supervisors).map(Number);
+      const supervisorIds   = asArray(projectItem?.supervisors).map(Number);
       const supervisorNames = asArray(projectItem?.supervisor_names);
 
       const supervisorEntries = supervisorIds
@@ -522,7 +469,6 @@ export default function SupervisorProjectDetail() {
         })
         .filter(Boolean);
 
-      console.log('✅ [Supervisor] supervisorEntries:', supervisorEntries);
       setProjectSupervisors(supervisorEntries);
 
       const supUserIdSet = new Set(supervisorEntries.map(s => Number(s.userId)));
@@ -531,7 +477,6 @@ export default function SupervisorProjectDetail() {
       );
       const allMembers = [...supervisorEntries, ...membersWithoutSupervisors];
       setProjectMembers(allMembers);
-      console.log('✅ [Supervisor] projectMembers:', allMembers.length);
 
       const creatorId = Number(projectItem?.created_by);
       const leadEntries = memberEntries.filter(m => {
@@ -542,16 +487,12 @@ export default function SupervisorProjectDetail() {
         return true;
       });
       setProjectLeads(leadEntries);
-      console.log('✅ [Supervisor] projectLeads:', leadEntries);
 
       const mappedTasks = projectTasks.map(t => ({
         ...t,
         progress: computeTaskProgress(t),
-        milestones: asArray(t.milestones),
-        assigneeId: t.assign_to ?? null,
       }));
       setTasks(mappedTasks);
-      console.log('✅ [Supervisor] mappedTasks:', mappedTasks.length);
 
       loadCommentsForTasks(mappedTasks);
 
@@ -564,7 +505,6 @@ export default function SupervisorProjectDetail() {
     } finally {
       setLoading(false);
       setRefreshing(false);
-      console.log('✅ [Supervisor] fetchProjectData COMPLETE');
     }
   };
 
@@ -584,12 +524,10 @@ export default function SupervisorProjectDetail() {
           commentsList.forEach(comment => {
             allComments.push({ ...comment, taskId: tid });
           });
-        } catch (e) { /* silent */ }
+        } catch { /* silent */ }
       }
       setComments(allComments);
-      console.log('✅ [Supervisor] comments loaded:', allComments.length);
-    } catch (e) {
-      console.error('❌ [Supervisor] comments load failed:', e);
+    } catch {
       setComments([]);
     }
   };
@@ -611,6 +549,7 @@ export default function SupervisorProjectDetail() {
     return matchedUser?.email || null;
   };
 
+  /* ─── Add task ─── */
   const handleAddTask = async () => {
     setAddTaskSubmitAttempted(true);
     if (!isAddTaskValid) {
@@ -618,10 +557,9 @@ export default function SupervisorProjectDetail() {
       return;
     }
     if (isSubmitting) return;
-
     setIsSubmitting(true);
     try {
-      const assignTo = newTask.assignedTo ? Number(newTask.assignedTo) : null;
+      const assignees = asArray(newTask.assignees).map(Number).filter(Number.isFinite);
 
       const response = await taskService.createTask({
         title: newTask.title.trim(),
@@ -629,62 +567,58 @@ export default function SupervisorProjectDetail() {
         status: newTask.status,
         priority: newTask.priority,
         projectId: projectId,
-        assignTo: assignTo,
-        dueDate: null,
+        assignees: assignees,
+        assignTo: assignees[0] ?? null,
+        dueDate: newTask.dueDate || null,
         startDate: null,
         progress: newTask.progress,
       });
 
       const createdTask = response?.data || response;
-      try { await NotificationHelper.taskCreated(createdTask, user); } catch (e) { /* silent */ }
+      try { await NotificationHelper.taskCreated(createdTask, user); } catch { /* silent */ }
 
-      if (createdTask?.assign_to) {
-        const assignee = allTeamMembers.find(m => Number(m.id) === Number(createdTask.assign_to));
-        if (assignee) {
-          const assigneeEmail = getAssigneeEmail(assignee);
-          if (assigneeEmail) {
-            const assigneeWithEmail = { ...assignee, email: assigneeEmail };
-            try {
-              await NotificationHelper.taskAssigned(createdTask, assigneeWithEmail, user, project);
-              toast.success(`Task created and notification sent to ${assignee.name}`);
-            } catch (e) {
-              toast.success('Task created successfully');
-            }
-          } else {
-            toast.success(`Task created but ${assignee.name} has no email on file`);
-          }
+      if (assignees.length > 0) {
+        let notified = 0;
+        for (const aid of assignees) {
+          const assignee = allTeamMembers.find(m => Number(m.id) === Number(aid));
+          if (!assignee) continue;
+          const email = getAssigneeEmail(assignee);
+          if (!email) continue;
+          try {
+            await NotificationHelper.taskAssigned(createdTask, { ...assignee, email }, user, project);
+            notified += 1;
+          } catch { /* silent */ }
         }
+        if (notified > 0) toast.success(`Task created · ${notified} notification(s) sent`);
+        else toast.success('Task created successfully');
       } else {
         toast.success('Task created successfully');
       }
 
       setNewTask({
         title: "", desc: "", priority: "medium", status: "todo",
-        progress: 0, assignedTo: null, milestones: [],
+        progress: 0, assignees: [], dueDate: "",
       });
       setShowAddTask(false);
       resetAddTaskTouched();
-
       await fetchProjectData();
     } catch (error) {
-      console.error('❌ Error adding task:', error);
-      const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
-      toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to add task');
+      console.error('❌ [Supervisor] Error adding task:', error);
+      toast.error('Failed to add task');
     } finally {
       setIsSubmitting(false);
     }
   };
 
+  /* ─── Update task ─── */
   const handleUpdateTask = async (updated) => {
     setEditTaskSubmitAttempted(true);
     if (!isEditTaskValid) {
       toast.error('Please fix the highlighted errors before saving');
       return;
     }
-
     try {
-      const previousAssignee = updated.assign_to || updated.assignTo;
-      const assignTo = previousAssignee ? Number(previousAssignee) : null;
+      const assignees = asArray(updated.assignees).map(Number).filter(Number.isFinite);
 
       const response = await taskService.updateTask(updated.t_id || updated.id, {
         title: updated.title.trim(),
@@ -692,50 +626,21 @@ export default function SupervisorProjectDetail() {
         status: updated.status,
         priority: updated.priority,
         progress: updated.progress,
-        assignTo: assignTo,
+        assignees: assignees,
+        assignTo: assignees[0] ?? null,
+        dueDate: updated.due_date || null,
       });
 
       const updatedTask = response?.data || response;
-
-      try { await NotificationHelper.taskUpdated(updatedTask, user); } catch (e) { /* silent */ }
-      if (updated.status === 'done' || updated.status === 'completed') {
-        try { await NotificationHelper.taskCompleted(updatedTask, user); } catch (e) { /* silent */ }
-      }
-
-      // If the assignee changed, DO NOT carry over the old `assign_to_name`.
-      // The cached name from the previous state is stale and would make the
-      // task card show the old assignee even though the assign_to id now
-      // points at someone else.
-      setTasks(prev => prev.map(t => {
-        if ((t.t_id || t.id) !== (updated.t_id || updated.id)) return t;
-
-        const prevAssignee = t.assign_to != null ? Number(t.assign_to) : null;
-        const nextAssignee = updatedTask.assign_to != null
-          ? Number(updatedTask.assign_to)
-          : (assignTo != null ? Number(assignTo) : null);
-        const assigneeChanged = prevAssignee !== nextAssignee;
-
-        return {
-          ...t,
-          ...updatedTask,
-          progress: computeTaskProgress({ ...t, ...updatedTask }),
-          assign_to: nextAssignee,
-          assign_to_name: assigneeChanged
-            ? null
-            : (updatedTask.assign_to_name ?? t.assign_to_name ?? null),
-        };
-      }));
+      try { await NotificationHelper.taskUpdated(updatedTask, user); } catch { /* silent */ }
 
       setEditTask(null);
       resetEditTaskTouched();
-      setSelectedTask(updated);
       toast.success("Task updated successfully");
-
       await fetchProjectData();
     } catch (error) {
-      console.error('❌ Error updating task:', error);
-      const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
-      toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to update task');
+      console.error('❌ [Supervisor] Error updating task:', error);
+      toast.error('Failed to update task');
     }
   };
 
@@ -744,79 +649,40 @@ export default function SupervisorProjectDetail() {
       await taskService.deleteTask(taskId);
       setTasks(prev => prev.filter(t => (t.t_id || t.id) !== taskId));
       setShowDeleteConfirm(null);
-      setSelectedTask(null);
       toast.success("Task deleted successfully");
       await fetchProjectData();
-    } catch (error) {
-      console.error('❌ Error deleting task:', error);
-      const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
-      toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to delete task');
-    }
-  };
-
-  const addModalComment = async () => {
-    setModalCommentTouched(true);
-    if (modalCommentError) { toast.error(modalCommentError); return; }
-    if (!selectedTask) { toast.error("Please select a task to comment on"); return; }
-
-    setIsModalCommenting(true);
-    try {
-      const response = await commentService.addComment({
-        taskId: selectedTask.t_id || selectedTask.id,
-        desc: modalCommentText.trim(),
-        priority: "normal",
-        pin: false,
-      });
-
-      const newComment = response?.data || response;
-      setComments(prev => [...prev, { ...newComment, taskId: selectedTask.t_id || selectedTask.id }]);
-      setModalCommentText("");
-      setModalCommentTouched(false);
-      toast.success("Comment added successfully");
-    } catch (error) {
-      console.error('❌ Error adding comment:', error);
-      const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
-      toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to add comment');
-    } finally {
-      setIsModalCommenting(false);
+    } catch {
+      toast.error('Failed to delete task');
     }
   };
 
   const togglePin = async (commentId) => {
     try {
-      const comment = asArray(comments).find(c => (c.c_id || c.id) === commentId);
-      if (comment) {
-        const response = await commentService.togglePin(commentId);
-        const updatedComment = response?.data || response;
-        if (updatedComment.pin) {
-          try { await NotificationHelper.commentPinned(updatedComment, user); } catch (e) { /* silent */ }
-        }
-        setComments(prev =>
-          prev.map(c => (c.c_id || c.id) === commentId ? { ...c, pin: updatedComment.pin || !c.pin } : c)
-        );
-        toast.success(updatedComment.pin ? "Comment pinned" : "Comment unpinned");
-      }
-    } catch (error) {
-      console.error('❌ Error toggling pin:', error);
+      const response = await commentService.togglePin(commentId);
+      const updatedComment = response?.data || response;
+      setComments(prev =>
+        prev.map(c => (c.c_id || c.id) === commentId ? { ...c, pin: updatedComment.pin || !c.pin } : c)
+      );
+      toast.success(updatedComment.pin ? "Comment pinned" : "Comment unpinned");
+    } catch {
       toast.error('Failed to update pin');
     }
   };
 
   const deleteComment = async (commentId) => {
-    if (!window.confirm("Are you sure you want to delete this comment?")) return;
+    if (!window.confirm("Delete this comment?")) return;
     try {
       await commentService.deleteComment(commentId);
       setComments(prev => prev.filter(c => (c.c_id || c.id) !== commentId));
-      toast.success("Comment deleted successfully");
-    } catch (error) {
-      console.error('❌ Error deleting comment:', error);
+      toast.success("Comment deleted");
+    } catch {
       toast.error('Failed to delete comment');
     }
   };
 
-  /* ═══════════════ REMOVE-MEMBER FLOW ═══════════════ */
-
+  /* ─── Remove member flow ─── */
   const promptRemoveMember = (member) => {
+    const memberTmId   = Number(member.id);
     const memberUserId = Number(member.userId ?? member.id);
 
     const assignedTasks = asArray(tasks).filter(t => {
@@ -824,8 +690,8 @@ export default function SupervisorProjectDetail() {
       if (!belongsToProject) return false;
       const ids = [];
       if (t.assign_to) ids.push(Number(t.assign_to));
-      if (Array.isArray(t.assignedTo)) t.assignedTo.forEach(a => a && ids.push(Number(a)));
-      return ids.includes(memberUserId);
+      if (Array.isArray(t.assignees)) t.assignees.forEach(a => a && ids.push(Number(a)));
+      return ids.includes(memberTmId) || ids.includes(memberUserId);
     });
 
     setRemoveMemberInfo({ projectId, member, assignedTasks });
@@ -835,49 +701,41 @@ export default function SupervisorProjectDetail() {
   const confirmRemoveMember = async () => {
     if (!removeMemberInfo) return;
     const { projectId: pId, member, assignedTasks } = removeMemberInfo;
-
     setRemoveMemberSaving(true);
     try {
       if (assignedTasks.length > 0) {
         for (const t of assignedTasks) {
           const tid = t.t_id || t.id;
           if (!tid) continue;
-
+          const remaining = asArray(t.assignees)
+            .map(Number)
+            .filter(x => x !== Number(member.id));
           const payload = {
             title: t.title,
             description: t.desc || '',
             status: t.status,
             priority: t.priority,
             progress: t.progress ?? 0,
-            assignTo: reassignTo ? Number(reassignTo) : null,
+            assignees: reassignTo ? [Number(reassignTo), ...remaining] : remaining,
+            assignTo: reassignTo ? Number(reassignTo) : (remaining[0] ?? null),
           };
-
           try { await taskService.updateTask(tid, payload); }
           catch (e) { console.warn(`Could not update task ${tid}:`, e); }
         }
       }
 
-      const currentPteam = asArray(pteamEntries).filter(entry => getPteamProjectId(entry) === Number(pId));
-      const realTmId = findRealTeamMemberId(member, allTeamMembers, users);
-      if (realTmId) {
-        const entry = currentPteam.find(e => getPteamTmId(e) === realTmId);
-        if (entry) {
-          try { await projectTeamService.removeMemberFromProject(entry.pt_id); }
-          catch (e) { console.warn('Could not remove PTeam entry:', e); }
-        }
+      const currentPteam = asArray(pteamEntries).filter(e => getPteamProjectId(e) === Number(pId));
+      const entry = currentPteam.find(e => getPteamTmId(e) === Number(member.id));
+      if (entry) {
+        try { await projectTeamService.removeMemberFromProject(entry.pt_id); }
+        catch (e) { console.warn('Could not remove PTeam entry:', e); }
       }
 
-      toast.success(
-        reassignTo
-          ? `${member.name} removed. Their tasks reassigned.`
-          : `${member.name} removed. Their tasks are now unassigned.`
-      );
-
+      toast.success(`${member.name} removed.`);
       setRemoveMemberInfo(null);
       setReassignTo('');
       await fetchProjectData();
-    } catch (error) {
-      console.error('❌ Error removing member:', error);
+    } catch {
       toast.error('Failed to remove member');
     } finally {
       setRemoveMemberSaving(false);
@@ -886,43 +744,28 @@ export default function SupervisorProjectDetail() {
 
   const progress = projectProgress;
 
-  /* ═══════════════════════════════════════════════════════════
-     getMemberName — resolves the assignee name from the FK id.
-     NEVER trusts a stale cached name when an id is present.
-     ═══════════════════════════════════════════════════════════ */
   const getMemberName = (memberId, taskRef = null) => {
-    // 1. Try to resolve by id — this is always the freshest source.
     if (memberId != null) {
       const numId = Number(memberId);
       if (Number.isFinite(numId)) {
         const tm = asArray(allTeamMembers).find(m => Number(m.id) === numId);
         if (tm) return tm.name;
-
         const u = asArray(users).find(x => Number(x.id) === numId);
         if (u) return u.u_name || u.name || "Unassigned";
-
-        // We HAD an id but couldn't resolve it. Never lie about it —
-        // show a placeholder instead of a stale cached name.
         return `Member #${numId}`;
       }
     }
-
-    // 2. Only when we have NO id at all do we trust the cached name.
     if (taskRef?.assign_to_name) return taskRef.assign_to_name;
-
-    // 3. Nothing to go on.
     return "Unassigned";
   };
 
-  /* ═══════════════ ADD SUPERVISOR / LEAD / MEMBER ═══════════════ */
-
+  /* ─── Add supervisor / lead / member ─── */
   const handleAddSupervisor = async (userId) => {
     if (!userId) return;
     setAddSupervisorSaving(true);
     try {
       const currentIds = asArray(project?.supervisors).map(Number);
       const nextIds = Array.from(new Set([...currentIds, Number(userId)]));
-
       await projectService.updateProject(projectId, {
         name: project.p_name || project.name,
         description: project.desc || '',
@@ -932,16 +775,11 @@ export default function SupervisorProjectDetail() {
         deadline: project.deadline || null,
         supervisors: nextIds,
       });
-
       toast.success('Supervisor added');
       setAddSupervisorOpen(false);
       await fetchProjectData();
-    } catch (error) {
-      console.error('❌ Error adding supervisor:', error);
-      const rawMsg = error?.response?.data?.message ||
-                     error?.response?.data?.detail ||
-                     error?.response?.data?.supervisors?.[0];
-      toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to add supervisor');
+    } catch {
+      toast.error('Failed to add supervisor');
     } finally {
       setAddSupervisorSaving(false);
     }
@@ -955,10 +793,8 @@ export default function SupervisorProjectDetail() {
       toast.success('Project Lead added');
       setAddLeadOpen(false);
       await fetchProjectData();
-    } catch (error) {
-      console.error('❌ Error adding lead:', error);
-      const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
-      toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to add project lead');
+    } catch {
+      toast.error('Failed to add project lead');
     } finally {
       setAddLeadSaving(false);
     }
@@ -972,10 +808,8 @@ export default function SupervisorProjectDetail() {
       toast.success('Team member added');
       setAddMemberOpen(false);
       await fetchProjectData();
-    } catch (error) {
-      console.error('❌ Error adding team member:', error);
-      const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
-      toast.error(typeof rawMsg === 'string' ? rawMsg : 'Failed to add team member');
+    } catch {
+      toast.error('Failed to add team member');
     } finally {
       setAddMemberSaving(false);
     }
@@ -984,7 +818,6 @@ export default function SupervisorProjectDetail() {
   /* ═══════════════════════════════════════════════════════════
      RENDER
      ═══════════════════════════════════════════════════════════ */
-
   if (loading) {
     return (
       <div>
@@ -1047,158 +880,34 @@ export default function SupervisorProjectDetail() {
         }
       />
 
-      {/* ─── TASK DETAIL MODAL ─── */}
-      <AnimatePresence>
-        {selectedTask && (
-          <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setSelectedTask(null)}>
-            <motion.div className="modal-box" initial={{ scale: 0.95, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.95, opacity: 0, y: 20 }} transition={{ duration: 0.2 }} onClick={(e) => e.stopPropagation()}>
-              <div className="modal-header">
-                <h2 className="modal-title">{selectedTask.title}</h2>
-                <button className="modal-close-btn" onClick={() => setSelectedTask(null)}><X size={18} /></button>
-              </div>
-
-              <div className="modal-body">
-                <p className="modal-desc">{selectedTask.desc || 'No description'}</p>
-
-                <div className="modal-meta-row">
-                  <StatusBadge status={selectedTask.status} />
-                  <PriorityBadge priority={selectedTask.priority} />
-                </div>
-
-                <div style={{ marginBottom: 12 }}>
-                  <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 4 }}>
-                    Assigned To
-                  </p>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-primary)' }}>
-                    <User size={13} />
-                    {getMemberName(selectedTask.assign_to, selectedTask)}
-                  </div>
-                </div>
-
-                {asArray(selectedTask.milestones).length > 0 && (
-                  <div className="modal-milestones">
-                    <h4 className="modal-subtitle"><Milestone size={14} /> Milestones</h4>
-                    {asArray(selectedTask.milestones).map((m, i) => (
-                      <div key={`milestone-${i}-${m.id || i}`} className="milestone-box">
-                        <div className="milestone-title">{m.title}</div>
-                        <div className="milestone-meta">
-                          <Calendar size={12} /> {m.dueDate}
-                          <User size={12} /> {getMemberName(m.assignedTo)}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <div className="modal-progress-section">
-                  <div className="modal-progress-header">
-                    <span className="modal-progress-label">Progress</span>
-                    <span className="modal-progress-value">{selectedTask.progress || 0}%</span>
-                  </div>
-                  <div className="modal-progress-track">
-                    <motion.div className="modal-progress-fill" initial={{ width: 0 }} animate={{ width: `${selectedTask.progress || 0}%` }} transition={{ duration: 0.5 }} />
-                  </div>
-                </div>
-
-                <div className="modal-comments-section">
-                  <h4 className="modal-subtitle" style={{ marginTop: 16 }}>
-                    <MessageSquare size={14} /> Comments ({sortedModalComments.length})
-                  </h4>
-
-                  <div className="modal-comment-input">
-                    <textarea
-                      className={`modal-comment-textarea ${modalCommentTouched && modalCommentError ? 'pd-input-error' : ''}`}
-                      value={modalCommentText}
-                      onChange={(e) => setModalCommentText(e.target.value)}
-                      onBlur={() => setModalCommentTouched(true)}
-                      placeholder={`Write a comment on "${selectedTask.title}"... (Ctrl+Enter to send)`}
-                      rows={2}
-                      maxLength={LIMITS.comment.max}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); addModalComment(); }
-                      }}
-                    />
-                    {modalCommentTouched && modalCommentError && <FieldError message={modalCommentError} />}
-                    <button className="modal-comment-send-btn" onClick={addModalComment} disabled={isModalCommenting || !modalCommentText.trim()}>
-                      {isModalCommenting ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
-                      {isModalCommenting ? 'Sending...' : 'Send'}
-                    </button>
-                  </div>
-
-                  <div className="modal-comment-list">
-                    {sortedModalComments.length === 0 ? (
-                      <div className="modal-comment-empty">
-                        <MessageSquare size={20} style={{ opacity: 0.3 }} />
-                        <p>No comments yet</p>
-                      </div>
-                    ) : (
-                      sortedModalComments.map((c, i) => {
-                        const commentKey = c.c_id || c.id || `comment-${i}`;
-                        const isPinned = c.pin || c.pinned;
-                        return (
-                          <motion.div key={commentKey} className={`modal-comment-item ${isPinned ? 'pinned' : ''}`} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.15 }}>
-                            {isPinned && <div className="modal-comment-pin-badge"><Pin size={10} /> Pinned</div>}
-                            <p className="modal-comment-text">{c.desc || c.content}</p>
-                            <div className="modal-comment-footer">
-                              <span className="modal-comment-meta">
-                                {c.u_name || c.user_name || 'User'} •
-                                {c.created_at ? new Date(c.created_at).toLocaleString() : 'Just now'}
-                              </span>
-                              <div className="modal-comment-actions">
-                                <button className={`modal-comment-action-btn ${isPinned ? 'active' : ''}`} title={isPinned ? "Unpin" : "Pin"} onClick={() => togglePin(c.c_id || c.id)}>
-                                  {isPinned ? <PinOff size={11} /> : <Pin size={11} />}
-                                </button>
-                                <button className="modal-comment-action-btn danger" title="Delete" onClick={() => deleteComment(c.c_id || c.id)}>
-                                  <Trash2 size={11} />
-                                </button>
-                              </div>
-                            </div>
-                          </motion.div>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="modal-footer">
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <button className="btn btn-secondary btn-sm" onClick={() => { setEditTask({ ...selectedTask, assignedTo: selectedTask.assign_to }); resetEditTaskTouched(); setSelectedTask(null); }}>
-                    <Pencil size={13} /> Edit Task
-                  </button>
-                  <button className="btn btn-danger btn-sm" onClick={() => { setShowDeleteConfirm(selectedTask.t_id || selectedTask.id); setSelectedTask(null); }}>
-                    <Trash2 size={13} /> Delete
-                  </button>
-                </div>
-                <button className="btn btn-secondary btn-sm" onClick={() => setSelectedTask(null)}>Close</button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* ─── EDIT TASK MODAL ─── */}
+      {/* ═══ EDIT TASK MODAL ═══ */}
       <AnimatePresence>
         {editTask && (
           <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setEditTask(null); resetEditTaskTouched(); }}>
-            <motion.div className="modal-box" initial={{ scale: 0.95, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.95, opacity: 0, y: 20 }} onClick={(e) => e.stopPropagation()}>
+            <motion.div className="modal-box" initial={{ scale: 0.95, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.95, opacity: 0, y: 20 }} onClick={e => e.stopPropagation()}>
               <div className="modal-header">
                 <h2 className="modal-title">Edit Task</h2>
                 <button className="modal-close-btn" onClick={() => { setEditTask(null); resetEditTaskTouched(); }}><X size={18} /></button>
               </div>
-
               <div className="modal-body edit-form">
                 <div className="form-group">
                   <label className="form-label">Title <span className="form-required">*</span></label>
                   <input
+                    key="edit-task-title-field"
                     ref={editTaskTitleRef}
                     className={`form-input ${showEditTaskError('title') ? 'pd-input-error' : ''}`}
-                    value={editTask.title}
+                    value={editTask.title ?? ''}
                     maxLength={LIMITS.taskTitle.max}
-                    onChange={(e) => setEditTask({ ...editTask, title: e.target.value })}
+                    autoComplete="off"
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setEditTask(prev => (prev ? { ...prev, title: value } : prev));
+                    }}
                     onBlur={(e) => {
                       const t = e.target.value.trim();
-                      if (t !== e.target.value) setEditTask(prev => ({ ...prev, title: t }));
+                      if (t !== e.target.value) {
+                        setEditTask(prev => (prev ? { ...prev, title: t } : prev));
+                      }
                       markEditTaskTouched('title');
                     }}
                   />
@@ -1208,11 +917,17 @@ export default function SupervisorProjectDetail() {
                 <div className="form-group">
                   <label className="form-label">Description</label>
                   <textarea
+                    key="edit-task-desc-field"
+                    ref={editTaskDescRef}
                     className={`form-input form-textarea ${showEditTaskError('desc') ? 'pd-input-error' : ''}`}
-                    value={editTask.desc || ''}
+                    value={editTask.desc ?? ''}
                     maxLength={LIMITS.taskDesc.max}
-                    onChange={(e) => setEditTask({ ...editTask, desc: e.target.value })}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setEditTask(prev => (prev ? { ...prev, desc: value } : prev));
+                    }}
                     onBlur={() => markEditTaskTouched('desc')}
+                    placeholder="Enter task description..."
                   />
                   <FieldError message={showEditTaskError('desc')} />
                 </div>
@@ -1220,48 +935,40 @@ export default function SupervisorProjectDetail() {
                 <div className="form-row-2">
                   <div className="form-group">
                     <label className="form-label">Priority</label>
-                    <select className="form-input" value={editTask.priority} onChange={(e) => setEditTask({ ...editTask, priority: e.target.value })} onBlur={() => markEditTaskTouched('priority')}>
-                      {PRIORITY_OPTIONS.map((p) => <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>)}
+                    <select className="form-input" value={editTask.priority || 'medium'} onChange={(e) => setEditTask(prev => (prev ? { ...prev, priority: e.target.value } : prev))}>
+                      {PRIORITY_OPTIONS.map(p => <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>)}
                     </select>
-                    <FieldError message={showEditTaskError('priority')} />
                   </div>
                   <div className="form-group">
                     <label className="form-label">Status</label>
-                    <select className="form-input" value={editTask.status} onChange={(e) => setEditTask({ ...editTask, status: e.target.value })} onBlur={() => markEditTaskTouched('status')}>
-                      {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{getStatusLabel(s)}</option>)}
+                    <select className="form-input" value={editTask.status || 'todo'} onChange={(e) => setEditTask(prev => (prev ? { ...prev, status: e.target.value } : prev))}>
+                      {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
                     </select>
-                    <FieldError message={showEditTaskError('status')} />
                   </div>
                 </div>
 
-                {/* 🔧 FIX: m.id is the TeamMember.id (what the backend wants).
-                    m.tmId should equal m.id, but we defensively prefer m.id
-                    if they somehow diverge. */}
+                <MemberMultiPicker
+                  label="Assign To"
+                  members={assignableMembers}
+                  selected={Array.isArray(editTask.assignees) ? editTask.assignees.map(Number) : (editTask.assign_to ? [Number(editTask.assign_to)] : [])}
+                  onChange={(ids) => setEditTask(prev => (prev ? { ...prev, assignees: ids } : prev))}
+                />
+
                 <div className="form-group">
-                  <label className="form-label">Assign To</label>
-                  <select
+                  <label className="form-label">Deadline</label>
+                  <input
+                    type="datetime-local"
                     className="form-input"
-                    value={editTask.assign_to || editTask.assignTo || ''}
-                    onChange={(e) => setEditTask({ ...editTask, assign_to: e.target.value ? parseInt(e.target.value) : null })}
-                  >
-                    <option value="">Unassigned</option>
-                    {assignableMembers.map((m) => {
-                      const value = Number.isFinite(Number(m.id)) ? Number(m.id) : m.tmId;
-                      return (
-                        <option key={m.id} value={value}>
-                          {m.name} {supervisorIdSet.has(Number(m.userId)) ? '👑' : ''}
-                        </option>
-                      );
-                    })}
-                  </select>
+                    value={editTask.due_date ? String(editTask.due_date).slice(0, 16) : ''}
+                    onChange={(e) => setEditTask(prev => (prev ? { ...prev, due_date: e.target.value || null } : prev))}
+                  />
                 </div>
 
                 <div className="form-group">
                   <label className="form-label">Progress: <strong>{editTask.progress || 0}%</strong></label>
-                  <input type="range" min={0} max={100} value={editTask.progress || 0} className="range-input" onChange={(e) => setEditTask({ ...editTask, progress: Number(e.target.value) })} />
+                  <input type="range" min={0} max={100} value={editTask.progress || 0} className="range-input" onChange={(e) => setEditTask(prev => (prev ? { ...prev, progress: Number(e.target.value) } : prev))} />
                 </div>
               </div>
-
               <div className="modal-footer">
                 <button className="btn btn-primary btn-sm" onClick={() => handleUpdateTask(editTask)}>
                   <CheckCircle2 size={14} /> Save Changes
@@ -1273,26 +980,27 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* ─── ADD TASK MODAL ─── */}
+      {/* ═══ ADD TASK MODAL ═══ */}
       <AnimatePresence>
         {showAddTask && (
           <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setShowAddTask(false); resetAddTaskTouched(); }}>
-            <motion.div className="modal-box" initial={{ scale: 0.95, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.95, opacity: 0, y: 20 }} onClick={(e) => e.stopPropagation()}>
+            <motion.div className="modal-box" initial={{ scale: 0.95, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.95, opacity: 0, y: 20 }} onClick={e => e.stopPropagation()}>
               <div className="modal-header">
                 <h2 className="modal-title"><Plus size={18} /> Create New Task</h2>
                 <button className="modal-close-btn" onClick={() => { setShowAddTask(false); resetAddTaskTouched(); }}><X size={18} /></button>
               </div>
-
               <div className="modal-body edit-form">
                 <div className="form-group">
                   <label className="form-label">Task Title <span className="form-required">*</span></label>
                   <input
+                    key="add-task-title-field"
                     ref={addTaskTitleRef}
                     className={`form-input ${showAddTaskError('title') ? 'pd-input-error' : ''}`}
                     placeholder="Enter task title"
                     value={newTask.title}
                     maxLength={LIMITS.taskTitle.max}
-                    onChange={(e) => setNewTask({ ...newTask, title: e.target.value })}
+                    autoComplete="off"
+                    onChange={(e) => setNewTask(prev => ({ ...prev, title: e.target.value }))}
                     onBlur={(e) => {
                       const t = e.target.value.trim();
                       if (t !== e.target.value) setNewTask(prev => ({ ...prev, title: t }));
@@ -1305,11 +1013,12 @@ export default function SupervisorProjectDetail() {
                 <div className="form-group">
                   <label className="form-label">Description</label>
                   <textarea
+                    key="add-task-desc-field"
                     className={`form-input form-textarea ${showAddTaskError('desc') ? 'pd-input-error' : ''}`}
                     placeholder="Enter task description..."
                     value={newTask.desc}
                     maxLength={LIMITS.taskDesc.max}
-                    onChange={(e) => setNewTask({ ...newTask, desc: e.target.value })}
+                    onChange={(e) => setNewTask(prev => ({ ...prev, desc: e.target.value }))}
                     onBlur={() => markAddTaskTouched('desc')}
                   />
                   <FieldError message={showAddTaskError('desc')} />
@@ -1318,45 +1027,40 @@ export default function SupervisorProjectDetail() {
                 <div className="form-row-2">
                   <div className="form-group">
                     <label className="form-label">Priority</label>
-                    <select className="form-input" value={newTask.priority} onChange={(e) => setNewTask({ ...newTask, priority: e.target.value })} onBlur={() => markAddTaskTouched('priority')}>
-                      {PRIORITY_OPTIONS.map((p) => <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>)}
+                    <select className="form-input" value={newTask.priority} onChange={(e) => setNewTask(prev => ({ ...prev, priority: e.target.value }))}>
+                      {PRIORITY_OPTIONS.map(p => <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>)}
                     </select>
-                    <FieldError message={showAddTaskError('priority')} />
                   </div>
                   <div className="form-group">
                     <label className="form-label">Status</label>
-                    <select className="form-input" value={newTask.status} onChange={(e) => setNewTask({ ...newTask, status: e.target.value })} onBlur={() => markAddTaskTouched('status')}>
-                      {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{getStatusLabel(s)}</option>)}
+                    <select className="form-input" value={newTask.status} onChange={(e) => setNewTask(prev => ({ ...prev, status: e.target.value }))}>
+                      {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
                     </select>
-                    <FieldError message={showAddTaskError('status')} />
                   </div>
                 </div>
 
+                <MemberMultiPicker
+                  label="Assign Team Members"
+                  members={assignableMembers}
+                  selected={newTask.assignees}
+                  onChange={(ids) => setNewTask(prev => ({ ...prev, assignees: ids }))}
+                />
+
                 <div className="form-group">
-                  <label className="form-label">Assign Team Member</label>
-                  <select
+                  <label className="form-label">Deadline</label>
+                  <input
+                    type="datetime-local"
                     className="form-input"
-                    value={newTask.assignedTo || ""}
-                    onChange={(e) => setNewTask({ ...newTask, assignedTo: e.target.value ? parseInt(e.target.value) : null })}
-                  >
-                    <option value="">Select Member</option>
-                    {assignableMembers.map((m) => {
-                      const value = Number.isFinite(Number(m.id)) ? Number(m.id) : m.tmId;
-                      return (
-                        <option key={m.id} value={value}>
-                          {m.name} {supervisorIdSet.has(Number(m.userId)) ? '👑' : ''}
-                        </option>
-                      );
-                    })}
-                  </select>
+                    value={newTask.dueDate || ''}
+                    onChange={(e) => setNewTask(prev => ({ ...prev, dueDate: e.target.value || "" }))}
+                  />
                 </div>
 
                 <div className="form-group">
                   <label className="form-label">Initial Progress: <strong>{newTask.progress}%</strong></label>
-                  <input type="range" min={0} max={100} className="range-input" value={newTask.progress} onChange={(e) => setNewTask({ ...newTask, progress: Number(e.target.value) })} />
+                  <input type="range" min={0} max={100} className="range-input" value={newTask.progress} onChange={(e) => setNewTask(prev => ({ ...prev, progress: Number(e.target.value) }))} />
                 </div>
               </div>
-
               <div className="modal-footer">
                 <button className="btn btn-primary btn-sm" onClick={handleAddTask} disabled={isSubmitting}>
                   {isSubmitting ? (<><Loader2 size={14} className="spin" /> Creating...</>) : 'Create Task'}
@@ -1368,86 +1072,48 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* ─── REMOVE MEMBER MODAL ─── */}
+      {/* ═══ REMOVE MEMBER MODAL ═══ */}
       <AnimatePresence>
         {removeMemberInfo && (
-          <motion.div
-            className="modal-overlay"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            onClick={() => { if (!removeMemberSaving) { setRemoveMemberInfo(null); setReassignTo(''); } }}
-          >
-            <motion.div
-              className="modal-box"
-              initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
-              onClick={e => e.stopPropagation()}
-              style={{ maxWidth: 480 }}
-            >
+          <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => { if (!removeMemberSaving) { setRemoveMemberInfo(null); setReassignTo(''); } }}>
+            <motion.div className="modal-box" initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
+              onClick={e => e.stopPropagation()} style={{ maxWidth: 480 }}>
               <div className="modal-header">
                 <h2 className="modal-title"><UserMinus size={16} /> Remove member</h2>
                 <button className="modal-close-btn" onClick={() => { setRemoveMemberInfo(null); setReassignTo(''); }} disabled={removeMemberSaving}>
                   <X size={16} />
                 </button>
               </div>
-
               <div className="modal-body edit-form">
                 <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
                   Remove <strong>{removeMemberInfo.member.name}</strong> from this project?
                 </p>
-
                 {removeMemberInfo.assignedTasks.length > 0 ? (
                   <>
-                    <div style={{
-                      padding: '10px 12px', background: 'rgba(245, 158, 11, 0.08)',
-                      border: '1px solid rgba(245, 158, 11, 0.25)', borderRadius: 8,
-                      fontSize: 12.5, color: 'var(--text-secondary)',
-                    }}>
+                    <div style={{ padding: '10px 12px', background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.25)', borderRadius: 8, fontSize: 12.5 }}>
                       <AlertCircle size={12} style={{ display: 'inline', marginRight: 4, color: '#f59e0b' }} />
-                      This member has <strong>{removeMemberInfo.assignedTasks.length}</strong> assigned
-                      task{removeMemberInfo.assignedTasks.length !== 1 ? 's' : ''} in this project.
+                      This member has <strong>{removeMemberInfo.assignedTasks.length}</strong> assigned task(s).
                     </div>
-
-                    <div style={{ maxHeight: 120, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      {removeMemberInfo.assignedTasks.map(t => (
-                        <div key={t.t_id || t.id} style={{
-                          fontSize: 12.5, padding: '6px 10px', background: 'var(--bg-secondary)',
-                          border: '1px solid var(--border-subtle)', borderRadius: 6, color: 'var(--text-primary)',
-                        }}>
-                          📋 {t.title}
-                        </div>
-                      ))}
-                    </div>
-
-                    <label className="form-label" style={{ marginTop: 6 }}>Reassign those tasks to</label>
+                    <label className="form-label">Reassign those tasks to</label>
                     <select className="form-input" value={reassignTo} onChange={e => setReassignTo(e.target.value)} disabled={removeMemberSaving}>
                       <option value="">— Leave unassigned —</option>
                       {assignableMembers
                         .filter(m => Number(m.id) !== Number(removeMemberInfo.member.id))
-                        .map(m => {
-                          const value = Number.isFinite(Number(m.id)) ? Number(m.id) : m.tmId;
-                          return <option key={m.id} value={value}>{m.name}</option>;
-                        })}
+                        .map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                     </select>
                   </>
                 ) : (
-                  <div style={{
-                    padding: '10px 12px', background: 'rgba(52, 211, 153, 0.08)',
-                    border: '1px solid rgba(52, 211, 153, 0.25)', borderRadius: 8,
-                    fontSize: 12.5, color: 'var(--text-secondary)',
-                  }}>
+                  <div style={{ padding: '10px 12px', background: 'rgba(52, 211, 153, 0.08)', border: '1px solid rgba(52, 211, 153, 0.25)', borderRadius: 8, fontSize: 12.5 }}>
                     <CheckCircle2 size={12} style={{ display: 'inline', marginRight: 4, color: '#34d399' }} />
-                    No tasks assigned to this member in this project.
+                    No tasks assigned in this project.
                   </div>
                 )}
               </div>
-
               <div className="modal-footer">
-                <button className="btn btn-secondary btn-sm" onClick={() => { setRemoveMemberInfo(null); setReassignTo(''); }} disabled={removeMemberSaving}>
-                  Cancel
-                </button>
+                <button className="btn btn-secondary btn-sm" onClick={() => { setRemoveMemberInfo(null); setReassignTo(''); }} disabled={removeMemberSaving}>Cancel</button>
                 <button className="btn btn-danger btn-sm" onClick={confirmRemoveMember} disabled={removeMemberSaving}>
-                  {removeMemberSaving
-                    ? <><Loader2 size={13} className="spin" /> Removing...</>
-                    : <><Trash2 size={13} /> Remove member</>}
+                  {removeMemberSaving ? <><Loader2 size={13} className="spin" /> Removing...</> : <><Trash2 size={13} /> Remove member</>}
                 </button>
               </div>
             </motion.div>
@@ -1455,14 +1121,14 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* ─── DELETE CONFIRM ─── */}
+      {/* ═══ DELETE TASK CONFIRM ═══ */}
       <AnimatePresence>
         {showDeleteConfirm !== null && (
           <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowDeleteConfirm(null)}>
-            <motion.div className="modal-box confirm-box" initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }} onClick={(e) => e.stopPropagation()}>
+            <motion.div className="modal-box confirm-box" initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }} onClick={e => e.stopPropagation()}>
               <AlertCircle size={40} style={{ color: '#f87171', marginBottom: 12 }} />
               <h3 className="confirm-title">Delete Task?</h3>
-              <p className="confirm-desc">This action cannot be undone. The task will be permanently removed.</p>
+              <p className="confirm-desc">This action cannot be undone.</p>
               <div className="modal-footer" style={{ justifyContent: 'center' }}>
                 <button className="btn btn-danger btn-sm" onClick={() => handleDeleteTask(showDeleteConfirm)}>
                   <Trash2 size={14} /> Yes, Delete
@@ -1474,9 +1140,11 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* ─── PROJECT BODY ─── */}
+      {/* ═══ PROJECT BODY ═══ */}
       <div className="project-body">
         <div className="project-left">
+
+          {/* OVERVIEW */}
           <div className="project-overview-card">
             <div className="overview-header">
               <div className="overview-info">
@@ -1487,7 +1155,13 @@ export default function SupervisorProjectDetail() {
                 <div className="ring-container">
                   <svg className="ring-svg" viewBox="0 0 120 120">
                     <circle className="ring-bg" cx="60" cy="60" r="50" />
-                    <circle className="ring-fill" cx="60" cy="60" r="50" strokeDasharray={Math.PI * 2 * 50} strokeDashoffset={Math.PI * 2 * 50 * (1 - progress / 100)} style={{ stroke: progress >= 70 ? '#34d399' : progress >= 40 ? '#f59e0b' : '#f87171' }} />
+                    <circle
+                      className="ring-fill"
+                      cx="60" cy="60" r="50"
+                      strokeDasharray={Math.PI * 2 * 50}
+                      strokeDashoffset={Math.PI * 2 * 50 * (1 - progress / 100)}
+                      style={{ stroke: progress >= 70 ? '#34d399' : progress >= 40 ? '#f59e0b' : '#f87171' }}
+                    />
                   </svg>
                   <div className="ring-center">
                     <span className="ring-value">{progress}%</span>
@@ -1496,91 +1170,8 @@ export default function SupervisorProjectDetail() {
                 </div>
               </div>
             </div>
-          </div>
 
-          <div className="tasks-card">
-            <div className="tasks-header">
-              <h3 className="tasks-title">
-                <BarChart2 size={16} /> Tasks
-                <span className="tasks-count">{asArray(tasks).length}</span>
-              </h3>
-              <button className="btn btn-primary btn-sm" onClick={() => setShowAddTask(true)}>
-                <Plus size={14} /> Add Task
-              </button>
-            </div>
-
-            <div className="tasks-scroll">
-              <div className="tasks-list">
-                {asArray(tasks).length === 0 ? (
-                  <div className="tasks-empty">
-                    <FileText size={32} style={{ opacity: 0.3 }} />
-                    <p>No tasks yet</p>
-                    <span>Create your first task to get started</span>
-                  </div>
-                ) : (
-                  asArray(tasks).map((t, idx) => {
-                    const taskKey = t.t_id || t.id || `task-${idx}`;
-                    const taskStatusColor = getStatusColor(t.status);
-                    const taskCommentCount = getTaskComments(t.t_id || t.id).length;
-                    return (
-                      <motion.div key={taskKey} className="task-item" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }} onClick={() => setSelectedTask(t)}>
-                        <div className="task-item-header">
-                          <div className="task-item-left">
-                            <div className="task-status-dot" style={{ background: taskStatusColor }} />
-                            <span className="task-item-title">{t.title}</span>
-                          </div>
-                          <div className="task-item-badges">
-                            <PriorityBadge priority={t.priority} />
-                            {taskCommentCount > 0 && (
-                              <span className="task-comment-badge"><MessageSquare size={10} /> {taskCommentCount}</span>
-                            )}
-                            <span className="task-item-progress-badge" style={{
-                              background: t.progress >= 70 ? 'rgba(52, 211, 153, 0.15)' : t.progress >= 40 ? 'rgba(245, 158, 11, 0.15)' : 'rgba(248, 113, 113, 0.15)',
-                              color: t.progress >= 70 ? '#34d399' : t.progress >= 40 ? '#f59e0b' : '#f87171'
-                            }}>{t.progress || 0}%</span>
-                          </div>
-                        </div>
-                        {t.desc && <p className="task-item-desc">{t.desc}</p>}
-                        <div className="task-item-footer">
-                          <StatusBadge status={t.status} />
-                          <div className="task-item-assignee"><User size={12} />{getMemberName(t.assign_to, t)}</div>
-                          <div className="task-item-actions">
-                            <button
-                              className="task-action-btn"
-                              title="Open comments"
-                              onClick={(e) => { e.stopPropagation(); setSelectedTask(t); }}
-                            >
-                              <MessageSquare size={12} />
-                            </button>
-                            <button
-                              className="task-action-btn"
-                              title="Edit Task"
-                              onClick={(e) => { e.stopPropagation(); setEditTask({ ...t, assignedTo: t.assign_to }); resetEditTaskTouched(); }}
-                            >
-                              <Pencil size={12} />
-                            </button>
-                            <button
-                              className="task-action-btn danger"
-                              title="Delete Task"
-                              onClick={(e) => { e.stopPropagation(); setShowDeleteConfirm(t.t_id || t.id); }}
-                            >
-                              <Trash2 size={12} />
-                            </button>
-                          </div>
-                        </div>
-                      </motion.div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="project-right">
-          <div className="info-card">
-            <h4 className="info-card-title"><Sparkles size={14} /> Overview</h4>
-            <div className="info-stats">
+            <div className="info-stats" style={{ marginTop: 16 }}>
               <div className="info-stat">
                 <div className="info-stat-icon" style={{ background: 'rgba(129, 140, 248, 0.12)', color: '#818cf8' }}><FolderKanban size={16} /></div>
                 <div>
@@ -1602,9 +1193,135 @@ export default function SupervisorProjectDetail() {
                   <span className="info-stat-label">In Progress</span>
                 </div>
               </div>
+              <div className="info-stat">
+                <div className="info-stat-icon" style={{ background: 'rgba(99, 102, 241, 0.12)', color: '#6366f1' }}><Users size={16} /></div>
+                <div>
+                  <span className="info-stat-value">{stats.membersCount}</span>
+                  <span className="info-stat-label">Members</span>
+                </div>
+              </div>
             </div>
           </div>
 
+          {/* TASKS */}
+          <div className="tasks-card">
+            <div className="tasks-header">
+              <h3 className="tasks-title">
+                <BarChart2 size={16} /> Tasks
+                <span className="tasks-count">{asArray(tasks).length}</span>
+              </h3>
+              <button className="btn btn-primary btn-sm" onClick={() => setShowAddTask(true)}>
+                <Plus size={14} /> Add Task
+              </button>
+            </div>
+
+            <div className="tasks-scroll">
+              <div className="tasks-list">
+                {asArray(tasks).length === 0 ? (
+                  <div className="tasks-empty">
+                    <ListChecks size={32} style={{ opacity: 0.3 }} />
+                    <p>No tasks yet</p>
+                    <span>Create your first task to get started</span>
+                  </div>
+                ) : (
+                  asArray(tasks).map((t, idx) => {
+                    const taskKey = t.t_id || t.id || `task-${idx}`;
+                    const taskCommentCount = getTaskComments(t.t_id || t.id).length;
+                    const subtaskCount = Number(t.subtask_count) || 0;
+                    const completedSubtasks = Number(t.completed_subtasks) || 0;
+
+                    const assigneeIds = Array.isArray(t.assignees) && t.assignees.length > 0
+                      ? t.assignees.map(Number)
+                      : (t.assign_to != null ? [Number(t.assign_to)] : []);
+
+                    return (
+                      <motion.div
+                        key={taskKey}
+                        className="task-item"
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        onClick={() => navigate(`/supervisor/projects/${projectId}/tasks/${t.t_id || t.id}`)}
+                      >
+                        <div className="task-item-header">
+                          <div className="task-item-left">
+                            <span className="task-item-title">{t.title}</span>
+                          </div>
+                          <div className="task-item-badges">
+                            <PriorityBadge priority={t.priority} />
+                            {taskCommentCount > 0 && (
+                              <span className="task-comment-badge"><MessageSquare size={10} /> {taskCommentCount}</span>
+                            )}
+                            {subtaskCount > 0 && (
+                              <span className="task-comment-badge"><ListChecks size={10} /> {completedSubtasks}/{subtaskCount}</span>
+                            )}
+                            <span className="task-item-progress-badge" style={{
+                              background: t.progress >= 70 ? 'rgba(52, 211, 153, 0.15)' : t.progress >= 40 ? 'rgba(245, 158, 11, 0.15)' : 'rgba(248, 113, 113, 0.15)',
+                              color: t.progress >= 70 ? '#34d399' : t.progress >= 40 ? '#f59e0b' : '#f87171'
+                            }}>{t.progress || 0}%</span>
+                          </div>
+                        </div>
+                        {t.desc && <p className="task-item-desc">{t.desc}</p>}
+                        <div className="task-item-footer">
+                          <StatusBadge status={t.status} />
+                          <div className="task-item-assignee">
+                            <User size={12} />
+                            {assigneeIds.length === 0
+                              ? 'Unassigned'
+                              : assigneeIds.length === 1
+                                ? getMemberName(assigneeIds[0], t)
+                                : `${getMemberName(assigneeIds[0], t)} +${assigneeIds.length - 1}`}
+                          </div>
+                          {t.due_date && (
+                            <div className="task-item-assignee" style={{ marginLeft: 4 }}>
+                              <Calendar size={12} />
+                              {new Date(t.due_date).toLocaleDateString()}
+                            </div>
+                          )}
+                          <div className="task-item-actions">
+                            <button
+                              className="task-action-btn"
+                              title="Open task"
+                              onClick={(e) => { e.stopPropagation(); navigate(`/supervisor/projects/${projectId}/tasks/${t.t_id || t.id}`); }}
+                            >
+                              <ArrowLeft size={12} style={{ transform: 'rotate(180deg)' }} />
+                            </button>
+                            <button
+                              className="task-action-btn"
+                              title="Edit Task"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditTask({
+                                  ...t,
+                                  desc: t.desc ?? '',
+                                  assignees: Array.isArray(t.assignees) && t.assignees.length > 0
+                                    ? t.assignees.map(Number)
+                                    : (t.assign_to ? [Number(t.assign_to)] : []),
+                                });
+                                resetEditTaskTouched();
+                              }}
+                            >
+                              <Pencil size={12} />
+                            </button>
+                            <button
+                              className="task-action-btn danger"
+                              title="Delete Task"
+                              onClick={(e) => { e.stopPropagation(); setShowDeleteConfirm(t.t_id || t.id); }}
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        </div>
+                      </motion.div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* RIGHT COLUMN */}
+        <div className="project-right">
           <div className="info-card">
             <h4 className="info-card-title">
               <Users size={14} /> Team
@@ -1612,6 +1329,7 @@ export default function SupervisorProjectDetail() {
             </h4>
 
             <div className="team-sections">
+              {/* Project Lead */}
               <div className="team-section team-section-lead">
                 <div className="team-section-header">
                   <div className="team-section-title">
@@ -1620,47 +1338,33 @@ export default function SupervisorProjectDetail() {
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <span className="team-section-count">{totalLeadCount}</span>
-                    <button
-                      className="team-add-btn"
-                      title="Add project lead"
-                      onClick={() => setAddLeadOpen(true)}
-                    >
+                    <button className="team-add-btn" title="Add project lead" onClick={() => setAddLeadOpen(true)}>
                       <Plus size={11} />
                     </button>
                   </div>
                 </div>
-
                 <div className="team-section-list">
                   <div className="team-member-item lead-item">
                     <Avatar name={creatorName} size="sm" />
                     <div className="team-member-info">
                       <span className="team-member-name">
                         {creatorName}
-                        <span className="lead-badge" title="Project Lead (Creator)">
-                          <Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} />
-                        </span>
+                        <span className="lead-badge"><Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} /></span>
                       </span>
                       <span className="team-member-role">Team Lead (Creator)</span>
                     </div>
                   </div>
-
                   {additionalLeads.map((m, idx) => (
                     <div key={m.id || `lead-${idx}`} className="team-member-item lead-item">
                       <Avatar name={m.name || 'Lead'} size="sm" />
                       <div className="team-member-info">
                         <span className="team-member-name">
                           {m.name || `User ${m.id}`}
-                          <span className="lead-badge" title="Project Lead">
-                            <Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} />
-                          </span>
+                          <span className="lead-badge"><Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} /></span>
                         </span>
                         <span className="team-member-role">Project Lead</span>
                       </div>
-                      <button
-                        className="task-action-btn danger"
-                        title={`Remove ${m.name || 'lead'}`}
-                        onClick={() => promptRemoveMember(m)}
-                      >
+                      <button className="task-action-btn danger" title={`Remove ${m.name || 'lead'}`} onClick={() => promptRemoveMember(m)}>
                         <UserMinus size={11} />
                       </button>
                     </div>
@@ -1668,6 +1372,7 @@ export default function SupervisorProjectDetail() {
                 </div>
               </div>
 
+              {/* Supervisors */}
               <div className="team-section team-section-supervisors">
                 <div className="team-section-header">
                   <div className="team-section-title">
@@ -1676,16 +1381,11 @@ export default function SupervisorProjectDetail() {
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <span className="team-section-count">{asArray(projectSupervisors).length}</span>
-                    <button
-                      className="team-add-btn"
-                      title="Add supervisor"
-                      onClick={() => setAddSupervisorOpen(true)}
-                    >
+                    <button className="team-add-btn" title="Add supervisor" onClick={() => setAddSupervisorOpen(true)}>
                       <Plus size={11} />
                     </button>
                   </div>
                 </div>
-
                 {asArray(projectSupervisors).length === 0 ? (
                   <div className="team-section-empty">No supervisors assigned</div>
                 ) : (
@@ -1696,17 +1396,11 @@ export default function SupervisorProjectDetail() {
                         <div className="team-member-info">
                           <span className="team-member-name">
                             {m.name || `User ${m.id}`}
-                            <span className="supervisor-badge" title="Supervisor">
-                              <Crown size={12} style={{ color: '#f59e0b', marginLeft: 4 }} />
-                            </span>
+                            <span className="supervisor-badge"><Crown size={12} style={{ color: '#f59e0b', marginLeft: 4 }} /></span>
                           </span>
                           <span className="team-member-role">Supervisor</span>
                         </div>
-                        <button
-                          className="task-action-btn danger"
-                          title={`Remove ${m.name || 'supervisor'}`}
-                          onClick={() => promptRemoveMember(m)}
-                        >
+                        <button className="task-action-btn danger" title={`Remove ${m.name || 'supervisor'}`} onClick={() => promptRemoveMember(m)}>
                           <UserMinus size={11} />
                         </button>
                       </div>
@@ -1715,6 +1409,7 @@ export default function SupervisorProjectDetail() {
                 )}
               </div>
 
+              {/* Team Members */}
               <div className="team-section team-section-members">
                 <div className="team-section-header">
                   <div className="team-section-title">
@@ -1723,16 +1418,11 @@ export default function SupervisorProjectDetail() {
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <span className="team-section-count">{regularMembers.length}</span>
-                    <button
-                      className="team-add-btn"
-                      title="Add team member"
-                      onClick={() => setAddMemberOpen(true)}
-                    >
+                    <button className="team-add-btn" title="Add team member" onClick={() => setAddMemberOpen(true)}>
                       <Plus size={11} />
                     </button>
                   </div>
                 </div>
-
                 {regularMembers.length === 0 ? (
                   <div className="team-section-empty">No team members assigned</div>
                 ) : (
@@ -1744,11 +1434,7 @@ export default function SupervisorProjectDetail() {
                           <span className="team-member-name">{m.name || `User ${m.id}`}</span>
                           <span className="team-member-role">{m.role || 'Member'}</span>
                         </div>
-                        <button
-                          className="task-action-btn danger"
-                          title={`Remove ${m.name || 'member'}`}
-                          onClick={() => promptRemoveMember(m)}
-                        >
+                        <button className="task-action-btn danger" title={`Remove ${m.name || 'member'}`} onClick={() => promptRemoveMember(m)}>
                           <UserMinus size={11} />
                         </button>
                       </div>
@@ -1759,20 +1445,18 @@ export default function SupervisorProjectDetail() {
             </div>
           </div>
 
+          {/* Comments */}
           <div className="info-card comments-card">
             <h4 className="info-card-title">
               <MessageSquare size={14} /> Comments
               <span className="info-badge">{asArray(comments).length}</span>
             </h4>
-
             <div className="comment-list">
               {asArray(comments).length === 0 ? (
                 <div className="comment-empty">
                   <MessageSquare size={24} style={{ opacity: 0.3 }} />
                   <p>No comments yet</p>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                    Open a task to add a comment
-                  </span>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Open a task to add a comment</span>
                 </div>
               ) : (
                 [...asArray(comments)]
@@ -1783,15 +1467,18 @@ export default function SupervisorProjectDetail() {
                     const isPinned = c.pin || c.pinned;
                     const task = asArray(tasks).find(t => Number(t.t_id || t.id) === Number(c.taskId || c.t));
                     return (
-                      <motion.div key={commentKey} className={`comment-item ${isPinned ? 'pinned' : ''}`} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.15 }}>
+                      <motion.div key={commentKey} className={`comment-item ${isPinned ? 'pinned' : ''}`} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }}>
                         {isPinned && <div className="comment-pin-badge"><Pin size={10} /> Pinned</div>}
                         <p className="comment-text">{c.desc || c.content}</p>
                         <div className="comment-meta-row">
                           <span className="comment-meta">
-                            {c.u_name || c.user_name || 'User'} •
-                            {c.created_at ? new Date(c.created_at).toLocaleString() : 'Just now'}
+                            {c.u_name || c.user_name || 'User'} • {c.created_at ? new Date(c.created_at).toLocaleString() : 'Just now'}
                           </span>
-                          {task && <span className="comment-task-tag">📋 {task.title}</span>}
+                          {task && (
+                            <button className="comment-task-tag" onClick={() => navigate(`/supervisor/projects/${projectId}/tasks/${task.t_id || task.id}`)}>
+                              📋 {task.title}
+                            </button>
+                          )}
                         </div>
                         <div className="comment-footer">
                           <div className="comment-actions">
@@ -1810,66 +1497,33 @@ export default function SupervisorProjectDetail() {
         </div>
       </div>
 
-      {/* ─── ADD SUPERVISOR MODAL ─── */}
+      {/* ═════════ ADD SUPERVISOR MODAL ═════════ */}
       <AnimatePresence>
         {addSupervisorOpen && (
-          <motion.div
-            className="modal-overlay"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            onClick={() => !addSupervisorSaving && setAddSupervisorOpen(false)}
-          >
-            <motion.div
-              className="modal-box"
-              initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
-              onClick={e => e.stopPropagation()}
-              style={{ maxWidth: 420 }}
-            >
+          <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => !addSupervisorSaving && setAddSupervisorOpen(false)}>
+            <motion.div className="modal-box" initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
+              onClick={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
               <div className="modal-header">
                 <h2 className="modal-title"><Crown size={16} /> Add Supervisor</h2>
-                <button className="modal-close-btn" onClick={() => setAddSupervisorOpen(false)} disabled={addSupervisorSaving}>
-                  <X size={16} />
-                </button>
+                <button className="modal-close-btn" onClick={() => setAddSupervisorOpen(false)} disabled={addSupervisorSaving}><X size={16} /></button>
               </div>
               <div className="modal-body">
-                <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 0, marginBottom: 12 }}>
-                  Select a user to add as a supervisor for this project.
-                </p>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
                   {asArray(users)
                     .filter(u => SUPERVISOR_ROLES.includes((u.role || '').toLowerCase()))
                     .filter(u => !asArray(projectSupervisors).some(s => Number(s.userId) === Number(u.id)))
                     .map(u => (
-                      <button
-                        key={u.id}
-                        className="add-picker-row"
-                        onClick={() => handleAddSupervisor(u.id)}
-                        disabled={addSupervisorSaving}
-                      >
+                      <button key={u.id} className="add-picker-row" onClick={() => handleAddSupervisor(u.id)} disabled={addSupervisorSaving}>
                         <Avatar name={u.u_name || u.name || 'Supervisor'} size="sm" />
                         <div style={{ flex: 1, textAlign: 'left' }}>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
-                            {u.u_name || u.name || `User ${u.id}`}
-                          </div>
-                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                            {u.email || ''}
-                          </div>
+                          <div style={{ fontSize: 13, fontWeight: 600 }}>{u.u_name || u.name || `User ${u.id}`}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{u.email || ''}</div>
                         </div>
                         <Plus size={14} style={{ color: 'var(--accent-primary)' }} />
                       </button>
                     ))
                   }
-                  {asArray(users)
-                    .filter(u => SUPERVISOR_ROLES.includes((u.role || '').toLowerCase()))
-                    .filter(u => !asArray(projectSupervisors).some(s => Number(s.userId) === Number(u.id)))
-                    .length === 0 && (
-                    <div style={{
-                      padding: '20px 16px', textAlign: 'center', fontSize: 13,
-                      color: 'var(--text-muted)', background: 'var(--bg-secondary)',
-                      borderRadius: 10, border: '1px dashed var(--border-subtle)',
-                    }}>
-                      All available supervisors are already on this project.
-                    </div>
-                  )}
                 </div>
               </div>
             </motion.div>
@@ -1877,69 +1531,34 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* ─── ADD LEAD MODAL ─── */}
+      {/* ═════════ ADD LEAD MODAL ═════════ */}
       <AnimatePresence>
         {addLeadOpen && (
-          <motion.div
-            className="modal-overlay"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            onClick={() => !addLeadSaving && setAddLeadOpen(false)}
-          >
-            <motion.div
-              className="modal-box"
-              initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
-              onClick={e => e.stopPropagation()}
-              style={{ maxWidth: 420 }}
-            >
+          <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => !addLeadSaving && setAddLeadOpen(false)}>
+            <motion.div className="modal-box" initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
+              onClick={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
               <div className="modal-header">
                 <h2 className="modal-title"><Shield size={16} /> Add Project Lead</h2>
-                <button className="modal-close-btn" onClick={() => setAddLeadOpen(false)} disabled={addLeadSaving}>
-                  <X size={16} />
-                </button>
+                <button className="modal-close-btn" onClick={() => setAddLeadOpen(false)} disabled={addLeadSaving}><X size={16} /></button>
               </div>
               <div className="modal-body">
-                <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 0, marginBottom: 12 }}>
-                  Select a Lead to add to this project. Leads must already exist as a Team Member profile.
-                </p>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
                   {asArray(allTeamMembers)
                     .filter(m => m.is_deleted !== 1)
                     .filter(m => LEAD_ROLES.includes((m.role || '').toLowerCase()))
                     .filter(m => !asArray(projectMembers).some(pm => Number(pm.userId) === Number(m.id)))
-                    .filter(m => Number(m.id) !== Number(project?.created_by))
                     .map(m => (
-                      <button
-                        key={m.id}
-                        className="add-picker-row"
-                        onClick={() => handleAddLead(m.id)}
-                        disabled={addLeadSaving}
-                      >
+                      <button key={m.id} className="add-picker-row" onClick={() => handleAddLead(m.id)} disabled={addLeadSaving}>
                         <Avatar name={m.name || 'Lead'} size="sm" />
                         <div style={{ flex: 1, textAlign: 'left' }}>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
-                            {m.name || `User ${m.id}`}
-                          </div>
-                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                            {m.role || 'Lead'}
-                          </div>
+                          <div style={{ fontSize: 13, fontWeight: 600 }}>{m.name || `User ${m.id}`}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{m.role || 'Lead'}</div>
                         </div>
                         <Plus size={14} style={{ color: '#6366f1' }} />
                       </button>
                     ))
                   }
-                  {asArray(allTeamMembers)
-                    .filter(m => m.is_deleted !== 1)
-                    .filter(m => LEAD_ROLES.includes((m.role || '').toLowerCase()))
-                    .filter(m => !asArray(projectMembers).some(pm => Number(pm.userId) === Number(m.id)))
-                    .length === 0 && (
-                    <div style={{
-                      padding: '20px 16px', textAlign: 'center', fontSize: 13,
-                      color: 'var(--text-muted)', background: 'var(--bg-secondary)',
-                      borderRadius: 10, border: '1px dashed var(--border-subtle)',
-                    }}>
-                      No additional leads available. Create Lead profiles from the Team page first.
-                    </div>
-                  )}
                 </div>
               </div>
             </motion.div>
@@ -1947,70 +1566,34 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* ─── ADD TEAM MEMBER MODAL ─── */}
+      {/* ═════════ ADD MEMBER MODAL ═════════ */}
       <AnimatePresence>
         {addMemberOpen && (
-          <motion.div
-            className="modal-overlay"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            onClick={() => !addMemberSaving && setAddMemberOpen(false)}
-          >
-            <motion.div
-              className="modal-box"
-              initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
-              onClick={e => e.stopPropagation()}
-              style={{ maxWidth: 420 }}
-            >
+          <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => !addMemberSaving && setAddMemberOpen(false)}>
+            <motion.div className="modal-box" initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
+              onClick={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
               <div className="modal-header">
                 <h2 className="modal-title"><Users size={16} /> Add Team Member</h2>
-                <button className="modal-close-btn" onClick={() => setAddMemberOpen(false)} disabled={addMemberSaving}>
-                  <X size={16} />
-                </button>
+                <button className="modal-close-btn" onClick={() => setAddMemberOpen(false)} disabled={addMemberSaving}><X size={16} /></button>
               </div>
               <div className="modal-body">
-                <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 0, marginBottom: 12 }}>
-                  Select a team member to add to this project.
-                </p>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
                   {asArray(allTeamMembers)
                     .filter(m => m.is_deleted !== 1)
                     .filter(m => !LEAD_ROLES.includes((m.role || '').toLowerCase()))
                     .filter(m => !asArray(projectMembers).some(pm => Number(pm.userId) === Number(m.id)))
-                    .filter(m => !asArray(projectSupervisors).some(s => Number(s.userId) === Number(m.id)))
                     .map(m => (
-                      <button
-                        key={m.id}
-                        className="add-picker-row"
-                        onClick={() => handleAddTeamMember(m.id)}
-                        disabled={addMemberSaving}
-                      >
+                      <button key={m.id} className="add-picker-row" onClick={() => handleAddTeamMember(m.id)} disabled={addMemberSaving}>
                         <Avatar name={m.name || 'Member'} size="sm" />
                         <div style={{ flex: 1, textAlign: 'left' }}>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
-                            {m.name || `User ${m.id}`}
-                          </div>
-                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                            {m.role || 'Member'}
-                          </div>
+                          <div style={{ fontSize: 13, fontWeight: 600 }}>{m.name || `User ${m.id}`}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{m.role || 'Member'}</div>
                         </div>
                         <Plus size={14} style={{ color: 'var(--accent-primary)' }} />
                       </button>
                     ))
                   }
-                  {asArray(allTeamMembers)
-                    .filter(m => m.is_deleted !== 1)
-                    .filter(m => !LEAD_ROLES.includes((m.role || '').toLowerCase()))
-                    .filter(m => !asArray(projectMembers).some(pm => Number(pm.userId) === Number(m.id)))
-                    .filter(m => !asArray(projectSupervisors).some(s => Number(s.userId) === Number(m.id)))
-                    .length === 0 && (
-                    <div style={{
-                      padding: '20px 16px', textAlign: 'center', fontSize: 13,
-                      color: 'var(--text-muted)', background: 'var(--bg-secondary)',
-                      borderRadius: 10, border: '1px dashed var(--border-subtle)',
-                    }}>
-                      All available team members are already on this project.
-                    </div>
-                  )}
                 </div>
               </div>
             </motion.div>
@@ -2018,6 +1601,7 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
+      {/* ─── STYLES ─── */}
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
         .spin { animation: spin 1s linear infinite; }
@@ -2025,86 +1609,86 @@ export default function SupervisorProjectDetail() {
         .loading-spinner { width: 40px; height: 40px; border: 3px solid var(--border-subtle); border-top-color: var(--accent-primary); border-radius: 50%; animation: spin 0.8s linear infinite; }
         .not-found-container { text-align: center; padding: 60px 20px; color: var(--text-muted); }
         .not-found-container h2 { font-size: 24px; font-weight: 700; color: var(--text-primary); margin: 16px 0 8px; }
-        .not-found-container p { margin-bottom: 20px; }
+
         .project-title-text { display: flex; align-items: center; gap: 12px; }
         .project-title-main { max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .project-title-badge { font-size: 10px; font-weight: 700; padding: 3px 10px; border-radius: 20px; color: #fff; flex-shrink: 0; }
         .topbar-actions { display: flex; gap: 8px; }
         .refresh-btn { display: flex; align-items: center; gap: 6px; }
-        .pd-field-error { display: flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 500; color: #f87171; margin-top: 4px; margin-bottom: 2px; }
+
+        .pd-field-error { display: flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 500; color: #f87171; margin-top: 4px; }
         .pd-input-error { border-color: #f87171 !important; background: rgba(248, 113, 113, 0.04) !important; }
-        .pd-input-error:focus { box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.12) !important; }
+
         .project-detail-page { min-height: 100vh; background: var(--bg-primary); }
         .project-body { display: grid; grid-template-columns: 1fr 340px; gap: 20px; padding: 20px 24px; max-width: 1440px; margin: 0 auto; }
-        .project-left { display: flex; flex-direction: column; gap: 16px; }
+        .project-left { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
         .project-right { display: flex; flex-direction: column; gap: 16px; }
-        .team-sections { display: flex; flex-direction: column; gap: 12px; }
-        .team-section { border-radius: 10px; padding: 10px 12px; border: 1px solid var(--border-subtle); transition: all 0.15s; }
-        .team-section-lead { background: rgba(99, 102, 241, 0.05); border-color: rgba(99, 102, 241, 0.18); }
-        .team-section-supervisors { background: rgba(245, 158, 11, 0.04); border-color: rgba(245, 158, 11, 0.18); }
-        .team-section-members { background: rgba(99, 102, 241, 0.04); border-color: rgba(99, 102, 241, 0.15); }
-        .team-section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-subtle); }
-        .team-section-title { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
-        .team-section-count { font-size: 10px; font-weight: 700; padding: 1px 8px; border-radius: 10px; background: var(--bg-secondary); color: var(--text-muted); border: 1px solid var(--border-subtle); }
-        .team-section-lead .team-section-count { background: rgba(99, 102, 241, 0.12); color: #6366f1; border-color: rgba(99, 102, 241, 0.25); }
-        .team-section-supervisors .team-section-count { background: rgba(245, 158, 11, 0.12); color: #f59e0b; border-color: rgba(245, 158, 11, 0.25); }
-        .team-section-members .team-section-count { background: rgba(99, 102, 241, 0.12); color: var(--accent-primary); border-color: rgba(99, 102, 241, 0.25); }
-        .team-section-list { display: flex; flex-direction: column; gap: 4px; }
-        .team-section-empty { font-size: 11.5px; color: var(--text-muted); font-style: italic; text-align: center; padding: 10px 0; }
-        .supervisor-item { background: rgba(245, 158, 11, 0.05); border: 1px solid rgba(245, 158, 11, 0.15); border-radius: 8px; padding: 6px 10px; }
-        .supervisor-item:hover { background: rgba(245, 158, 11, 0.1); }
-        .supervisor-badge { display: inline-flex; align-items: center; margin-left: 4px; }
-        .lead-item { background: rgba(99, 102, 241, 0.05); border: 1px solid rgba(99, 102, 241, 0.15); border-radius: 8px; padding: 6px 10px; }
-        .lead-item:hover { background: rgba(99, 102, 241, 0.1); }
-        .lead-badge { display: inline-flex; align-items: center; margin-left: 4px; }
-        .comment-meta-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
-        .comment-task-tag { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 12px; font-size: 10px; color: var(--text-muted); background: var(--bg-secondary); border: 1px solid var(--border-subtle); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
-        .task-comment-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 600; color: var(--text-muted); background: var(--bg-secondary); padding: 1px 8px; border-radius: 12px; border: 1px solid var(--border-subtle); }
-        .modal-comments-section { margin-top: 12px; border-top: 1px solid var(--border-subtle); padding-top: 12px; }
-        .modal-comment-input { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
-        .modal-comment-textarea { padding: 8px 12px; border: 1px solid var(--border-default); border-radius: 8px; background: var(--bg-secondary); color: var(--text-primary); font-size: 13px; resize: vertical; min-height: 50px; font-family: inherit; transition: border-color 0.2s; }
-        .modal-comment-textarea:focus { outline: none; border-color: var(--accent-primary); background: var(--bg-card); }
-        .modal-comment-textarea::placeholder { color: var(--text-muted); }
-        .modal-comment-send-btn { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 5px 14px; border: none; border-radius: 6px; background: var(--accent-primary); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; align-self: flex-end; }
-        .modal-comment-send-btn:hover:not(:disabled) { opacity: 0.85; }
-        .modal-comment-send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .modal-comment-list { display: flex; flex-direction: column; gap: 6px; max-height: 200px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border-default) transparent; }
-        .modal-comment-list::-webkit-scrollbar { width: 3px; }
-        .modal-comment-list::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 10px; }
-        .modal-comment-item { padding: 8px 10px; border: 1px solid var(--border-subtle); border-radius: 6px; background: var(--bg-secondary); transition: all 0.15s; }
-        .modal-comment-item.pinned { border-color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-secondary)); }
-        .modal-comment-pin-badge { display: flex; align-items: center; gap: 4px; font-size: 9px; font-weight: 700; color: var(--accent-primary); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 3px; }
-        .modal-comment-text { font-size: 12px; color: var(--text-secondary); line-height: 1.4; margin: 0; white-space: pre-wrap; }
-        .modal-comment-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
-        .modal-comment-meta { font-size: 9px; color: var(--text-muted); }
-        .modal-comment-actions { display: flex; gap: 2px; }
-        .modal-comment-action-btn { display: inline-flex; align-items: center; justify-content: center; padding: 2px 4px; border: 1px solid var(--border-subtle); border-radius: 4px; background: var(--bg-card); color: var(--text-secondary); cursor: pointer; transition: all 0.14s; }
-        .modal-comment-action-btn:hover { background: var(--bg-primary); color: var(--accent-primary); border-color: var(--accent-primary); }
-        .modal-comment-action-btn.active { color: var(--accent-primary); border-color: var(--accent-primary); }
-        .modal-comment-action-btn.danger:hover { color: #f87171; border-color: #f87171; }
-        .modal-comment-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 12px 0; color: var(--text-muted); text-align: center; }
-        .modal-comment-empty p { font-size: 12px; margin: 2px 0 0; }
+
         .project-overview-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 20px 24px; }
         .overview-header { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
         .overview-info { flex: 1; min-width: 0; }
-        .overview-title { font-size: 20px; font-weight: 800; color: var(--text-primary); margin: 0 0 4px; }
+        .overview-title { font-size: 22px; font-weight: 800; color: var(--text-primary); margin: 0 0 6px; }
         .overview-desc { font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin: 0; }
         .overview-progress-ring { flex-shrink: 0; }
-        .ring-container { position: relative; width: 80px; height: 80px; }
+        .ring-container { position: relative; width: 90px; height: 90px; }
         .ring-svg { transform: rotate(-90deg); width: 100%; height: 100%; }
         .ring-bg { fill: none; stroke: var(--border-subtle); stroke-width: 6; }
         .ring-fill { fill: none; stroke-width: 6; stroke-linecap: round; transition: stroke-dashoffset 0.8s ease; }
         .ring-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
         .ring-value { font-size: 18px; font-weight: 800; color: var(--text-primary); line-height: 1; }
         .ring-label { font-size: 8px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+
+        .info-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+        .info-stat { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--bg-secondary); border-radius: 8px; }
+        .info-stat-icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+        .info-stat-value { display: block; font-size: 15px; font-weight: 700; color: var(--text-primary); }
+        .info-stat-label { font-size: 11px; color: var(--text-muted); }
+
+        .info-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 16px 18px; }
+        .info-card-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--text-primary); margin: 0 0 12px; }
+        .info-badge { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--text-muted); background: var(--bg-secondary); padding: 1px 10px; border-radius: 20px; }
+        .team-sections { display: flex; flex-direction: column; gap: 12px; }
+        .team-section { border-radius: 10px; padding: 10px 12px; border: 1px solid var(--border-subtle); }
+        .team-section-lead { background: rgba(99, 102, 241, 0.05); border-color: rgba(99, 102, 241, 0.18); }
+        .team-section-supervisors { background: rgba(245, 158, 11, 0.04); border-color: rgba(245, 158, 11, 0.18); }
+        .team-section-members { background: rgba(99, 102, 241, 0.04); border-color: rgba(99, 102, 241, 0.15); }
+        .team-section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-subtle); }
+        .team-section-title { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+        .team-section-count { font-size: 10px; font-weight: 700; padding: 1px 8px; border-radius: 10px; background: var(--bg-secondary); color: var(--text-muted); border: 1px solid var(--border-subtle); }
+        .team-section-list { display: flex; flex-direction: column; gap: 4px; }
+        .team-section-empty { font-size: 11.5px; color: var(--text-muted); font-style: italic; text-align: center; padding: 10px 0; }
+        .team-member-item { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; }
+        .team-member-item:hover { background: var(--bg-secondary); }
+        .team-member-info { flex: 1; min-width: 0; }
+        .team-member-name { display: block; font-size: 13px; font-weight: 500; color: var(--text-primary); }
+        .team-member-role { font-size: 11px; color: var(--text-muted); }
+        .supervisor-item { background: rgba(245, 158, 11, 0.05); border: 1px solid rgba(245, 158, 11, 0.15); border-radius: 8px; padding: 6px 10px; }
+        .lead-item { background: rgba(99, 102, 241, 0.05); border: 1px solid rgba(99, 102, 241, 0.15); border-radius: 8px; padding: 6px 10px; }
+        .team-add-btn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--border-subtle); background: var(--bg-card); color: var(--text-secondary); cursor: pointer; padding: 0; }
+        .team-add-btn:hover { background: var(--accent-primary); color: #fff; border-color: var(--accent-primary); }
+
+        .comments-card { flex: 1; }
+        .comment-list { display: flex; flex-direction: column; gap: 8px; max-height: 400px; overflow-y: auto; padding-right: 4px; }
+        .comment-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px 0; color: var(--text-muted); text-align: center; }
+        .comment-item { padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--bg-secondary); }
+        .comment-item.pinned { border-color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-secondary)); }
+        .comment-pin-badge { display: flex; align-items: center; gap: 4px; font-size: 9px; font-weight: 700; color: var(--accent-primary); text-transform: uppercase; margin-bottom: 4px; }
+        .comment-text { font-size: 13px; color: var(--text-secondary); line-height: 1.5; margin: 0; white-space: pre-wrap; }
+        .comment-meta-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+        .comment-meta { font-size: 10px; color: var(--text-muted); }
+        .comment-task-tag { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 12px; font-size: 10px; color: var(--text-muted); background: var(--bg-secondary); border: 1px solid var(--border-subtle); cursor: pointer; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .comment-footer { display: flex; justify-content: flex-end; margin-top: 6px; }
+        .comment-actions { display: flex; gap: 3px; }
+        .comment-action-btn { display: inline-flex; align-items: center; justify-content: center; padding: 2px 4px; border: 1px solid var(--border-subtle); border-radius: 4px; background: var(--bg-card); color: var(--text-secondary); cursor: pointer; }
+        .comment-action-btn.active { color: var(--accent-primary); border-color: var(--accent-primary); }
+        .comment-action-btn.danger:hover { color: #f87171; border-color: #f87171; }
+
         .tasks-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 18px 20px; }
         .tasks-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
         .tasks-title { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; color: var(--text-primary); margin: 0; }
         .tasks-count { font-size: 11px; font-weight: 600; color: var(--text-muted); background: var(--bg-secondary); padding: 1px 10px; border-radius: 20px; }
-        .tasks-scroll { max-height: 480px; overflow-y: auto; padding-right: 4px; scrollbar-width: thin; scrollbar-color: var(--border-default) transparent; }
-        .tasks-scroll::-webkit-scrollbar { width: 4px; }
-        .tasks-scroll::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 10px; }
-        .tasks-list { display: flex; flex-direction: column; gap: 8px; }
+        .tasks-scroll { max-height: 500px; overflow-y: auto; padding-right: 6px; }
+        .tasks-list { display: flex; flex-direction: column; gap: 14px; }
         .tasks-empty { text-align: center; padding: 30px 0; color: var(--text-muted); }
         .tasks-empty p { font-size: 14px; font-weight: 500; margin: 8px 0 4px; }
         .tasks-empty span { font-size: 12px; }
@@ -2112,168 +1696,64 @@ export default function SupervisorProjectDetail() {
         .task-item:hover { border-color: var(--accent-primary); background: var(--bg-card); }
         .task-item-header { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
         .task-item-left { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
-        .task-status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
         .task-item-title { font-size: 13px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .task-item-badges { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+        .task-comment-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 600; color: var(--text-muted); background: var(--bg-secondary); padding: 1px 8px; border-radius: 12px; border: 1px solid var(--border-subtle); }
         .task-item-progress-badge { font-size: 10px; font-weight: 700; padding: 1px 8px; border-radius: 12px; }
         .task-item-desc { font-size: 12px; color: var(--text-secondary); margin: 6px 0 8px; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
         .task-item-footer { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
         .task-item-assignee { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted); }
         .task-item-actions { display: flex; gap: 4px; margin-left: auto; }
-        .task-action-btn { display: inline-flex; align-items: center; justify-content: center; padding: 3px 5px; border-radius: 4px; border: 1px solid var(--border-subtle); background: var(--bg-card); color: var(--text-secondary); cursor: pointer; transition: all 0.14s; }
-        .task-action-btn:hover { background: var(--bg-primary); color: var(--accent-primary); border-color: var(--accent-primary); }
+        .task-action-btn { display: inline-flex; align-items: center; justify-content: center; padding: 3px 5px; border-radius: 4px; border: 1px solid var(--border-subtle); background: var(--bg-card); color: var(--text-secondary); cursor: pointer; }
+        .task-action-btn:hover { color: var(--accent-primary); border-color: var(--accent-primary); }
         .task-action-btn.danger:hover { color: #f87171; border-color: #f87171; }
-        .info-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 16px 18px; }
-        .info-card-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--text-primary); margin: 0 0 12px; }
-        .info-badge { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--text-muted); background: var(--bg-secondary); padding: 1px 10px; border-radius: 20px; }
-        .info-stats { display: flex; flex-direction: column; gap: 8px; }
-        .info-stat { display: flex; align-items: center; gap: 12px; padding: 8px 10px; background: var(--bg-secondary); border-radius: 8px; }
-        .info-stat-icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-        .info-stat-value { display: block; font-size: 15px; font-weight: 700; color: var(--text-primary); }
-        .info-stat-label { font-size: 11px; color: var(--text-muted); }
-        .team-member-item { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; transition: background 0.15s; }
-        .team-member-item:hover { background: var(--bg-secondary); }
-        .team-member-info { flex: 1; min-width: 0; }
-        .team-member-name { display: block; font-size: 13px; font-weight: 500; color: var(--text-primary); }
-        .team-member-role { font-size: 11px; color: var(--text-muted); }
-        .comments-card { flex: 1; }
-        .comment-list { display: flex; flex-direction: column; gap: 8px; max-height: 400px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border-default) transparent; }
-        .comment-list::-webkit-scrollbar { width: 3px; }
-        .comment-list::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 10px; }
-        .comment-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px 0; color: var(--text-muted); text-align: center; }
-        .comment-empty p { font-size: 13px; margin: 4px 0 0; }
-        .comment-item { padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--bg-secondary); transition: all 0.15s; }
-        .comment-item.pinned { border-color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-secondary)); }
-        .comment-pin-badge { display: flex; align-items: center; gap: 4px; font-size: 9px; font-weight: 700; color: var(--accent-primary); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 4px; }
-        .comment-text { font-size: 13px; color: var(--text-secondary); line-height: 1.5; margin: 0; white-space: pre-wrap; }
-        .comment-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; }
-        .comment-meta { font-size: 10px; color: var(--text-muted); }
-        .comment-actions { display: flex; gap: 3px; }
-        .comment-action-btn { display: inline-flex; align-items: center; justify-content: center; padding: 2px 4px; border: 1px solid var(--border-subtle); border-radius: 4px; background: var(--bg-card); color: var(--text-secondary); cursor: pointer; transition: all 0.14s; }
-        .comment-action-btn:hover { background: var(--bg-primary); color: var(--accent-primary); border-color: var(--accent-primary); }
-        .comment-action-btn.active { color: var(--accent-primary); border-color: var(--accent-primary); }
-        .comment-action-btn.danger:hover { color: #f87171; border-color: #f87171; }
+
+        .multi-trigger { display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 6px 12px; border-radius: 9px; border: 1px solid var(--border-default); background: var(--bg-secondary); cursor: pointer; }
+        .multi-trigger:hover { border-color: var(--border-strong); }
+        .multi-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 20px; font-size: 12px; color: var(--text-primary); }
+        .multi-chip button { display: inline-flex; align-items: center; justify-content: center; border: none; background: transparent; color: var(--text-muted); cursor: pointer; padding: 0; }
+        .multi-backdrop { position: fixed; inset: 0; z-index: 10000; }
+        .multi-dropdown { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 12px; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28); overflow: hidden; display: flex; flex-direction: column; }
+        .multi-search { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border-subtle); }
+        .multi-search input { flex: 1; border: none; background: transparent; outline: none; font-size: 13px; color: var(--text-primary); }
+        .multi-search button { background: transparent; border: none; color: var(--text-muted); cursor: pointer; }
+        .multi-list { overflow-y: auto; padding: 6px; }
+        .multi-option { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: none; background: transparent; border-radius: 8px; cursor: pointer; color: var(--text-primary); }
+        .multi-option:hover { background: var(--bg-secondary); }
+        .multi-option.selected { background: color-mix(in srgb, var(--accent-primary) 10%, transparent); }
+        .multi-empty { padding: 20px; text-align: center; font-size: 13px; color: var(--text-muted); }
+
         .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 16px; }
-        .modal-box { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 20px; width: 100%; max-width: 520px; max-height: 90vh; overflow-y: auto; box-shadow: 0 24px 60px rgba(0,0,0,0.3); scrollbar-width: thin; scrollbar-color: var(--border-default) transparent; }
-        .modal-box::-webkit-scrollbar { width: 4px; }
-        .modal-box::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 10px; }
-        .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px 14px; border-bottom: 1px solid var(--border-subtle); position: sticky; top: 0; background: var(--bg-card); border-radius: 20px 20px 0 0; z-index: 2; }
+        .modal-box { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 20px; width: 100%; max-width: 520px; max-height: 90vh; overflow-y: auto; }
+        .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px 14px; border-bottom: 1px solid var(--border-subtle); }
         .modal-title { font-size: 17px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 8px; margin: 0; }
-        .modal-close-btn { display: inline-flex; align-items: center; justify-content: center; padding: 6px; border-radius: 8px; border: 1px solid var(--border-subtle); background: var(--bg-secondary); color: var(--text-secondary); cursor: pointer; transition: all 0.14s; }
-        .modal-close-btn:hover { border-color: var(--accent-primary); color: var(--accent-primary); background: var(--bg-primary); }
+        .modal-close-btn { display: inline-flex; padding: 6px; border-radius: 8px; border: 1px solid var(--border-subtle); background: var(--bg-secondary); color: var(--text-secondary); cursor: pointer; }
         .modal-body { padding: 18px 20px; }
-        .modal-desc { font-size: 14px; color: var(--text-secondary); line-height: 1.6; margin: 0 0 14px; }
-        .modal-meta-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
-        .modal-milestones { margin: 12px 0; }
-        .modal-subtitle { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--text-secondary); margin: 0 0 8px; }
-        .milestone-box { padding: 10px 12px; background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: 8px; margin-bottom: 6px; }
-        .milestone-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-        .milestone-meta { display: flex; gap: 12px; font-size: 11px; color: var(--text-muted); margin-top: 4px; }
-        .milestone-meta svg { width: 12px; height: 12px; }
-        .modal-progress-section { margin-top: 14px; }
-        .modal-progress-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-        .modal-progress-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
-        .modal-progress-value { font-size: 14px; font-weight: 800; color: var(--accent-primary); }
-        .modal-progress-track { width: 100%; height: 8px; background: var(--border-subtle); border-radius: 10px; overflow: hidden; }
-        .modal-progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent-primary), #a78bfa); border-radius: 10px; transition: width 0.5s ease; }
-        .modal-footer { display: flex; gap: 10px; padding: 14px 20px 20px; border-top: 1px solid var(--border-subtle); justify-content: space-between; align-items: center; }
-        .confirm-box { max-width: 380px; text-align: center; padding-bottom: 24px; }
-        .confirm-title { font-size: 18px; font-weight: 800; color: var(--text-primary); margin: 0 0 6px; }
-        .confirm-desc { font-size: 13px; color: var(--text-muted); margin: 0 0 16px; }
+        .modal-footer { display: flex; gap: 10px; padding: 14px 20px 20px; border-top: 1px solid var(--border-subtle); justify-content: flex-end; align-items: center; }
         .edit-form { display: flex; flex-direction: column; gap: 12px; }
         .form-group { display: flex; flex-direction: column; gap: 4px; }
         .form-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
         .form-required { color: #f87171; }
-        .form-input { padding: 9px 12px; border: 1px solid var(--border-default); border-radius: 8px; background: var(--bg-secondary); color: var(--text-primary); font-size: 13px; transition: all 0.2s; font-family: inherit; }
-        .form-input:focus { outline: none; border-color: var(--accent-primary); background: var(--bg-card); box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08); }
+        .form-input { padding: 9px 12px; border: 1px solid var(--border-default); border-radius: 8px; background: var(--bg-secondary); color: var(--text-primary); font-size: 13px; font-family: inherit; }
+        .form-input:focus { outline: none; border-color: var(--accent-primary); background: var(--bg-card); }
         .form-textarea { resize: vertical; min-height: 80px; }
         .form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
         .range-input { width: 100%; accent-color: var(--accent-primary); cursor: pointer; }
         .btn-danger { background: rgba(239, 68, 68, 0.1); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
-        .btn-danger:hover { background: rgba(239, 68, 68, 0.2); }
         .btn-secondary { background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-default); }
-        .btn-secondary:hover { border-color: var(--accent-primary); }
+        .add-picker-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: 10px; cursor: pointer; color: var(--text-primary); }
+        .add-picker-row:hover:not(:disabled) { border-color: var(--accent-primary); background: var(--bg-card); }
+        .confirm-box { max-width: 380px; text-align: center; padding-bottom: 24px; }
+        .confirm-title { font-size: 18px; font-weight: 800; color: var(--text-primary); margin: 0 0 6px; }
+        .confirm-desc { font-size: 13px; color: var(--text-muted); margin: 0 0 16px; }
+
         @media (max-width: 1024px) { .project-body { grid-template-columns: 1fr 280px; padding: 16px 20px; } }
         @media (max-width: 768px) {
           .project-body { grid-template-columns: 1fr; padding: 14px 16px; gap: 14px; }
           .overview-header { flex-direction: column; align-items: stretch; text-align: center; }
           .overview-progress-ring { align-self: center; }
-          .project-title-main { max-width: 180px; }
           .form-row-2 { grid-template-columns: 1fr; }
-          .modal-comment-list { max-height: 150px; }
-          .modal-footer { flex-direction: column; gap: 8px; }
-          .modal-footer > div { width: 100%; }
-          .modal-footer button { flex: 1; }
-        }
-        .team-add-btn {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          width: 22px;
-          height: 22px;
-          border-radius: 6px;
-          border: 1px solid var(--border-subtle);
-          background: var(--bg-card);
-          color: var(--text-secondary);
-          cursor: pointer;
-          transition: all 0.14s;
-          padding: 0;
-        }
-        .team-add-btn:hover {
-          background: var(--accent-primary);
-          color: #fff;
-          border-color: var(--accent-primary);
-        }
-        .add-picker-row {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          padding: 10px 12px;
-          background: var(--bg-secondary);
-          border: 1px solid var(--border-subtle);
-          border-radius: 10px;
-          cursor: pointer;
-          transition: all 0.14s;
-          color: var(--text-primary);
-        }
-        .add-picker-row:hover:not(:disabled) {
-          border-color: var(--accent-primary);
-          background: var(--bg-card);
-        }
-        .add-picker-row:disabled {
-          opacity: 0.6;
-          cursor: not-allowed;
-        }
-        @media (max-width: 480px) {
-          .project-body { padding: 10px 12px; gap: 12px; }
-          .project-overview-card { padding: 16px; }
-          .overview-title { font-size: 17px; }
-          .tasks-card { padding: 14px 16px; }
-          .task-item { padding: 10px 12px; }
-          .task-item-header { flex-direction: column; align-items: flex-start; gap: 6px; }
-          .task-item-badges { width: 100%; justify-content: flex-start; }
-          .task-item-footer { flex-wrap: wrap; }
-          .task-item-actions { margin-left: 0; }
-          .info-card { padding: 14px; }
-          .modal-box { max-width: 100%; border-radius: 16px; }
-          .modal-header { padding: 14px 16px; }
-          .modal-body { padding: 14px 16px; }
-          .modal-footer { padding: 12px 16px 16px; }
-          .project-title-text { flex-direction: column; align-items: flex-start; gap: 4px; }
-          .project-title-main { max-width: 150px; }
-          .topbar-actions { flex-direction: column; gap: 4px; }
-          .ring-container { width: 64px; height: 64px; }
-          .ring-value { font-size: 14px; }
-          .modal-comment-list { max-height: 120px; }
-        }
-        @media (max-width: 360px) {
-          .project-body { padding: 8px 10px; }
-          .project-overview-card { padding: 12px; }
-          .overview-title { font-size: 15px; }
-          .overview-desc { font-size: 11px; }
-          .tasks-card { padding: 12px; }
-          .tasks-title { font-size: 13px; }
-          .task-item-title { font-size: 12px; }
+          .info-stats { grid-template-columns: 1fr 1fr; }
         }
       `}</style>
     </div>

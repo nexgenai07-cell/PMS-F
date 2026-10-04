@@ -36,7 +36,6 @@ function getPteamTmId(entry) {
   return Number(entry?.tm ?? entry?.tm_id ?? entry?.team_member ?? entry?.member ?? entry?.member_id ?? entry?.teamMember);
 }
 
-/* ─── Task progress helper ─── */
 function computeTaskProgress(task) {
   if (task?.progress !== undefined && task?.progress !== null) {
     const raw = Number(task.progress);
@@ -253,6 +252,7 @@ export default function LeadProjectDetail() {
 
   const addTaskTitleRef  = useRef(null);
   const editTaskTitleRef = useRef(null);
+  const editTaskDescRef  = useRef(null);   // ← added
 
   const [stats, setStats] = useState({
     totalTasks: 0, completedTasks: 0, inProgressTasks: 0, todoTasks: 0,
@@ -354,11 +354,17 @@ export default function LeadProjectDetail() {
     return () => clearTimeout(t);
   }, [showAddTask]);
 
+  /* ── AUTO-FOCUS FIX ──
+     Key the effect on the task ID ONLY, not the whole editTask object.
+     With `[editTask]` the effect re-ran on every keystroke (because each
+     onChange creates a new object), so focus was yanked to the title
+     field mid-typing. Keyed by t_id, it only runs when a NEW task is
+     opened for editing. */
   useEffect(() => {
     if (!editTask) return;
     const t = setTimeout(() => editTaskTitleRef.current?.focus(), 60);
     return () => clearTimeout(t);
-  }, [editTask]);
+  }, [editTask?.t_id, editTask?.id]);
 
   const resetAddTaskTouched = () => { setAddTaskTouched({}); setAddTaskSubmitAttempted(false); };
   const markAddTaskTouched  = (f) => setAddTaskTouched(p => ({ ...p, [f]: true }));
@@ -413,7 +419,6 @@ export default function LeadProjectDetail() {
         avgProgress:     Number(statsResponse.avgProgress) || 0,
       });
 
-      // Only top-level tasks (no parent) — subtasks are handled on the task detail page.
       const projectTasks = allTasks.filter(t => {
         const taskProjectId = t.p_id ?? t.p ?? t.project ?? t.project_id;
         const belongsToProject = Number(taskProjectId) === Number(projectId);
@@ -893,31 +898,38 @@ export default function LeadProjectDetail() {
                 <div className="form-group">
                   <label className="form-label">Title <span className="form-required">*</span></label>
                   <input
+                    key="edit-task-title-field"
                     ref={editTaskTitleRef}
                     className={`form-input ${showEditTaskError('title') ? 'pd-input-error' : ''}`}
-                    value={editTask.title}
+                    value={editTask.title ?? ''}
                     maxLength={LIMITS.taskTitle.max}
-                    onChange={(e) => setEditTask(prev => ({ ...prev, title: e.target.value }))}
+                    autoComplete="off"
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setEditTask(prev => (prev ? { ...prev, title: value } : prev));
+                    }}
                     onBlur={(e) => {
                       const t = e.target.value.trim();
-                      if (t !== e.target.value) setEditTask(prev => ({ ...prev, title: t }));
+                      if (t !== e.target.value) {
+                        setEditTask(prev => (prev ? { ...prev, title: t } : prev));
+                      }
                       markEditTaskTouched('title');
                     }}
                   />
                   <FieldError message={showEditTaskError('title')} />
                 </div>
 
-                {/* Description tied strictly to editTask.desc with a functional updater.
-                    This is what fixes the "typing in title field" bug. */}
                 <div className="form-group">
                   <label className="form-label">Description</label>
                   <textarea
+                    key="edit-task-desc-field"
+                    ref={editTaskDescRef}
                     className={`form-input form-textarea ${showEditTaskError('desc') ? 'pd-input-error' : ''}`}
                     value={editTask.desc ?? ''}
                     maxLength={LIMITS.taskDesc.max}
                     onChange={(e) => {
                       const value = e.target.value;
-                      setEditTask(prev => prev ? { ...prev, desc: value } : prev);
+                      setEditTask(prev => (prev ? { ...prev, desc: value } : prev));
                     }}
                     onBlur={() => markEditTaskTouched('desc')}
                     placeholder="Enter task description..."
@@ -928,13 +940,13 @@ export default function LeadProjectDetail() {
                 <div className="form-row-2">
                   <div className="form-group">
                     <label className="form-label">Priority</label>
-                    <select className="form-input" value={editTask.priority || 'medium'} onChange={(e) => setEditTask(prev => ({ ...prev, priority: e.target.value }))}>
+                    <select className="form-input" value={editTask.priority || 'medium'} onChange={(e) => setEditTask(prev => (prev ? { ...prev, priority: e.target.value } : prev))}>
                       {PRIORITY_OPTIONS.map(p => <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>)}
                     </select>
                   </div>
                   <div className="form-group">
                     <label className="form-label">Status</label>
-                    <select className="form-input" value={editTask.status || 'todo'} onChange={(e) => setEditTask(prev => ({ ...prev, status: e.target.value }))}>
+                    <select className="form-input" value={editTask.status || 'todo'} onChange={(e) => setEditTask(prev => (prev ? { ...prev, status: e.target.value } : prev))}>
                       {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
                     </select>
                   </div>
@@ -944,7 +956,7 @@ export default function LeadProjectDetail() {
                   label="Assign To"
                   members={assignableMembers}
                   selected={Array.isArray(editTask.assignees) ? editTask.assignees.map(Number) : (editTask.assign_to ? [Number(editTask.assign_to)] : [])}
-                  onChange={(ids) => setEditTask(prev => ({ ...prev, assignees: ids }))}
+                  onChange={(ids) => setEditTask(prev => (prev ? { ...prev, assignees: ids } : prev))}
                 />
 
                 <div className="form-group">
@@ -953,13 +965,13 @@ export default function LeadProjectDetail() {
                     type="datetime-local"
                     className="form-input"
                     value={editTask.due_date ? String(editTask.due_date).slice(0, 16) : ''}
-                    onChange={(e) => setEditTask(prev => ({ ...prev, due_date: e.target.value || null }))}
+                    onChange={(e) => setEditTask(prev => (prev ? { ...prev, due_date: e.target.value || null } : prev))}
                   />
                 </div>
 
                 <div className="form-group">
                   <label className="form-label">Progress: <strong>{editTask.progress || 0}%</strong></label>
-                  <input type="range" min={0} max={100} value={editTask.progress || 0} className="range-input" onChange={(e) => setEditTask(prev => ({ ...prev, progress: Number(e.target.value) }))} />
+                  <input type="range" min={0} max={100} value={editTask.progress || 0} className="range-input" onChange={(e) => setEditTask(prev => (prev ? { ...prev, progress: Number(e.target.value) } : prev))} />
                 </div>
               </div>
               <div className="modal-footer">
@@ -986,11 +998,13 @@ export default function LeadProjectDetail() {
                 <div className="form-group">
                   <label className="form-label">Task Title <span className="form-required">*</span></label>
                   <input
+                    key="add-task-title-field"
                     ref={addTaskTitleRef}
                     className={`form-input ${showAddTaskError('title') ? 'pd-input-error' : ''}`}
                     placeholder="Enter task title"
                     value={newTask.title}
                     maxLength={LIMITS.taskTitle.max}
+                    autoComplete="off"
                     onChange={(e) => setNewTask(prev => ({ ...prev, title: e.target.value }))}
                     onBlur={(e) => {
                       const t = e.target.value.trim();
@@ -1004,6 +1018,7 @@ export default function LeadProjectDetail() {
                 <div className="form-group">
                   <label className="form-label">Description</label>
                   <textarea
+                    key="add-task-desc-field"
                     className={`form-input form-textarea ${showAddTaskError('desc') ? 'pd-input-error' : ''}`}
                     placeholder="Enter task description..."
                     value={newTask.desc}
@@ -1130,11 +1145,11 @@ export default function LeadProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* ═══ PROJECT BODY — Overview top-left, Tasks below, Team+Comments right ═══ */}
+      {/* ═══ PROJECT BODY ═══ */}
       <div className="project-body">
         <div className="project-left">
 
-          {/* OVERVIEW — moved to top of left column */}
+          {/* OVERVIEW */}
           <div className="project-overview-card">
             <div className="overview-header">
               <div className="overview-info">
@@ -1161,7 +1176,6 @@ export default function LeadProjectDetail() {
               </div>
             </div>
 
-            {/* Stats grid inside the same card */}
             <div className="info-stats" style={{ marginTop: 16 }}>
               <div className="info-stat">
                 <div className="info-stat-icon" style={{ background: 'rgba(129, 140, 248, 0.12)', color: '#818cf8' }}><FolderKanban size={16} /></div>
@@ -1194,7 +1208,7 @@ export default function LeadProjectDetail() {
             </div>
           </div>
 
-          {/* TASKS — under overview, with scroller */}
+          {/* TASKS */}
           <div className="tasks-card">
             <div className="tasks-header">
               <h3 className="tasks-title">
@@ -1311,7 +1325,7 @@ export default function LeadProjectDetail() {
           </div>
         </div>
 
-        {/* RIGHT COLUMN — Team + Comments (unchanged position) */}
+        {/* RIGHT COLUMN */}
         <div className="project-right">
           <div className="info-card">
             <h4 className="info-card-title">
@@ -1436,7 +1450,7 @@ export default function LeadProjectDetail() {
             </div>
           </div>
 
-          {/* Comments — right column, with its own scroller */}
+          {/* Comments */}
           <div className="info-card comments-card">
             <h4 className="info-card-title">
               <MessageSquare size={14} /> Comments
@@ -1615,7 +1629,6 @@ export default function LeadProjectDetail() {
         .project-left { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
         .project-right { display: flex; flex-direction: column; gap: 16px; }
 
-        /* ─── Overview card ─── */
         .project-overview-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 20px 24px; }
         .overview-header { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
         .overview-info { flex: 1; min-width: 0; }
@@ -1630,14 +1643,12 @@ export default function LeadProjectDetail() {
         .ring-value { font-size: 18px; font-weight: 800; color: var(--text-primary); line-height: 1; }
         .ring-label { font-size: 8px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
 
-        /* ─── Info stats grid ─── */
         .info-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
         .info-stat { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--bg-secondary); border-radius: 8px; }
         .info-stat-icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
         .info-stat-value { display: block; font-size: 15px; font-weight: 700; color: var(--text-primary); }
         .info-stat-label { font-size: 11px; color: var(--text-muted); }
 
-        /* ─── Team ─── */
         .info-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 16px 18px; }
         .info-card-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--text-primary); margin: 0 0 12px; }
         .info-badge { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--text-muted); background: var(--bg-secondary); padding: 1px 10px; border-radius: 20px; }
@@ -1661,7 +1672,6 @@ export default function LeadProjectDetail() {
         .team-add-btn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--border-subtle); background: var(--bg-card); color: var(--text-secondary); cursor: pointer; padding: 0; }
         .team-add-btn:hover { background: var(--accent-primary); color: #fff; border-color: var(--accent-primary); }
 
-        /* ─── Comments (with scroller) ─── */
         .comments-card { flex: 1; }
         .comment-list { display: flex; flex-direction: column; gap: 8px; max-height: 400px; overflow-y: auto; padding-right: 4px; }
         .comment-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px 0; color: var(--text-muted); text-align: center; }
@@ -1678,7 +1688,6 @@ export default function LeadProjectDetail() {
         .comment-action-btn.active { color: var(--accent-primary); border-color: var(--accent-primary); }
         .comment-action-btn.danger:hover { color: #f87171; border-color: #f87171; }
 
-        /* ─── Tasks card (scrolled) ─── */
         .tasks-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 18px 20px; }
         .tasks-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
         .tasks-title { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; color: var(--text-primary); margin: 0; }
@@ -1704,7 +1713,6 @@ export default function LeadProjectDetail() {
         .task-action-btn:hover { color: var(--accent-primary); border-color: var(--accent-primary); }
         .task-action-btn.danger:hover { color: #f87171; border-color: #f87171; }
 
-        /* ─── Multi picker ─── */
         .multi-trigger { display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 6px 12px; border-radius: 9px; border: 1px solid var(--border-default); background: var(--bg-secondary); cursor: pointer; }
         .multi-trigger:hover { border-color: var(--border-strong); }
         .multi-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 20px; font-size: 12px; color: var(--text-primary); }
@@ -1720,7 +1728,6 @@ export default function LeadProjectDetail() {
         .multi-option.selected { background: color-mix(in srgb, var(--accent-primary) 10%, transparent); }
         .multi-empty { padding: 20px; text-align: center; font-size: 13px; color: var(--text-muted); }
 
-        /* ─── Modal / forms ─── */
         .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 16px; }
         .modal-box { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 20px; width: 100%; max-width: 520px; max-height: 90vh; overflow-y: auto; }
         .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px 14px; border-bottom: 1px solid var(--border-subtle); }
