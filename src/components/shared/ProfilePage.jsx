@@ -116,80 +116,163 @@ export default function ProfilePage() {
     fetchProfileData();
   }, [user]);
 
-  const fetchProfileData = async () => {
+    const fetchProfileData = async () => {
     try {
       setLoading(true);
 
-      const [projectsData, tasksData] = await Promise.all([
+      const [projectsData, tasksData, membersData] = await Promise.all([
         projectService.getProjects(),
         taskService.getTasks(),
+        // NEW: we need TeamMember rows to map the current user → their
+        // TeamMember profile, because Task.assign_to is a TeamMember FK.
+        import('../../services/teamService')
+          .then((m) => m.default.getTeamMembers())
+          .catch(() => ({ data: [] })),
       ]);
 
       const projectsList = projectsData?.data || projectsData || [];
-      const tasksList = tasksData?.data || tasksData || [];
+      const tasksList    = tasksData?.data    || tasksData    || [];
+      const membersList  = membersData?.data  || membersData  || [];
 
-      const userId = user?.id || user?.u_id;
+      const userId   = user?.id || user?.u_id;
+      const userName = (user?.u_name || user?.name || '').toLowerCase().trim();
 
-      const userTasks = tasksList.filter(t =>
-        t.assign_to === userId ||
-        t.created_by === userId ||
-        t.assignedTo === userId
-      );
+      // ─────────────────────────────────────────────────────────────
+      // 1. Find the current user's TeamMember id(s) by matching name.
+      //    Task.assign_to and Task.assignees both point at TeamMember,
+      //    not User. Without this mapping, assigned tasks are invisible.
+      // ─────────────────────────────────────────────────────────────
+      const myTeamMemberIds = membersList
+        .filter(m => (m.name || '').toLowerCase().trim() === userName)
+        .map(m => Number(m.id))
+        .filter(Number.isFinite);
 
-      const completedTasks = userTasks.filter(t =>
-        t.status === 'done' || t.status === 'completed'
-      ).length;
+      const myTeamMemberIdSet = new Set(myTeamMemberIds);
 
-      const inProgressTasks = userTasks.filter(t =>
-        t.status === 'in_progress' || t.status === 'in-progress' ||
-        t.status === 'review' || t.status === 'in_review'
-      ).length;
+      // ─────────────────────────────────────────────────────────────
+      // 2. Match tasks by any relationship to the current user.
+      //    - assign_to         : legacy single-assignee TeamMember FK
+      //    - assignees         : new M2M list of TeamMember ids
+      //    - created_by        : User FK (task author)
+      //    - assign_by         : User FK (who assigned it)
+      //    - assignedTo        : camelCase fallback some endpoints use
+      // ─────────────────────────────────────────────────────────────
+      const userTasks = tasksList.filter(t => {
+        const singleAssignee = t.assign_to ?? t.assignedTo;
+        if (singleAssignee != null && myTeamMemberIdSet.has(Number(singleAssignee))) return true;
+
+        if (Array.isArray(t.assignees) &&
+            t.assignees.some(a => myTeamMemberIdSet.has(Number(a)))) return true;
+
+        if (t.created_by != null && Number(t.created_by) === Number(userId)) return true;
+        if (t.assign_by  != null && Number(t.assign_by)  === Number(userId)) return true;
+
+        return false;
+      });
+
+      // ─────────────────────────────────────────────────────────────
+      // 3. Count by status (unchanged from before)
+      // ─────────────────────────────────────────────────────────────
+      const completedTasks = userTasks.filter(t => {
+        const s = (t.status || '').toLowerCase();
+        return s === 'done' || s === 'completed';
+      }).length;
+
+      const inProgressTasks = userTasks.filter(t => {
+        const s = (t.status || '').toLowerCase();
+        return s === 'in_progress' || s === 'in-progress' ||
+               s === 'review' || s === 'in_review';
+      }).length;
 
       const completionRate = userTasks.length > 0
         ? Math.round((completedTasks / userTasks.length) * 100)
         : 0;
 
-      const recent = userTasks
-        .sort((a, b) => new Date(b.created_at || b.updated_at) - new Date(a.created_at || a.updated_at))
+      // ─────────────────────────────────────────────────────────────
+      // 4. Recent tasks — sorted by real timestamp, newest first
+      // ─────────────────────────────────────────────────────────────
+      const toMs = (val) => {
+        if (!val) return 0;
+        const d = new Date(val);
+        const t = d.getTime();
+        return Number.isFinite(t) ? t : 0;
+      };
+
+      const recent = [...userTasks]
+        .sort((a, b) => {
+          const ta = toMs(b.updated_at || b.update_last || b.created_at);
+          const tb = toMs(a.updated_at || a.update_last || a.created_at);
+          return ta - tb;
+        })
         .slice(0, 5);
 
-      const activityItems = userTasks
-        .filter(t => t.created_at || t.updated_at)
-        .slice(0, 10)
-        .map(t => ({
-          id: t.t_id || t.id,
-          text: t.status === 'done' || t.status === 'completed'
-            ? `Completed task: ${t.title}`
-            : `Updated task: ${t.title}`,
-          time: t.updated_at ? new Date(t.updated_at).toLocaleString() : 'Recently',
-          type: t.status === 'done' || t.status === 'completed' ? 'task' : 'update'
-        }));
+      // ─────────────────────────────────────────────────────────────
+      // 5. Activity feed — build with RAW timestamps so we can sort
+      //    correctly, then format for display.
+      // ─────────────────────────────────────────────────────────────
+      const activityItems = userTasks.map(t => {
+        const status = (t.status || '').toLowerCase();
+        const isDone = status === 'done' || status === 'completed';
+
+        // Prefer the most recent of update_last / updated_at / created_at
+        const rawTimestamp =
+          t.update_last || t.updated_at || t.created_at || null;
+        const rawMs = toMs(rawTimestamp);
+
+        return {
+          id:        `t-${t.t_id || t.id}`,
+          text:      isDone
+                       ? `Completed task: ${t.title}`
+                       : `Updated task: ${t.title}`,
+          rawMs,
+          time:      rawTimestamp
+                       ? new Date(rawTimestamp).toLocaleString()
+                       : 'Recently',
+          type:      isDone ? 'task' : 'update',
+        };
+      });
 
       const projectActivities = projectsList
-        .filter(p => p.created_by === userId)
-        .slice(0, 3)
-        .map(p => ({
-          id: `p-${p.p_id || p.id}`,
-          text: `Created project: ${p.p_name || p.name}`,
-          time: p.created_at ? new Date(p.created_at).toLocaleString() : 'Recently',
-          type: 'project'
-        }));
+        .filter(p => Number(p.created_by) === Number(userId))
+        .map(p => {
+          const rawTimestamp = p.created_at || null;
+          return {
+            id:   `p-${p.p_id || p.id}`,
+            text: `Created project: ${p.p_name || p.name}`,
+            rawMs: toMs(rawTimestamp),
+            time: rawTimestamp
+                    ? new Date(rawTimestamp).toLocaleString()
+                    : 'Recently',
+            type: 'project',
+          };
+        });
 
+      // Merge, sort newest-first, keep 8. Fall back to the welcome
+      // placeholder only if there's genuinely nothing.
       const allActivities = [...activityItems, ...projectActivities]
-        .sort((a, b) => a.time.localeCompare(b.time))
+        .sort((a, b) => b.rawMs - a.rawMs)
         .slice(0, 8);
 
+      // ─────────────────────────────────────────────────────────────
+      // 6. Commit state
+      // ─────────────────────────────────────────────────────────────
       setStats({
-        projects: projectsList.filter(p => p.created_by === userId || p.lead_id === userId).length || 0,
-        tasksCompleted: completedTasks,
+        projects: projectsList.filter(
+          p => Number(p.created_by) === Number(userId) ||
+               Number(p.lead_id)    === Number(userId)
+        ).length || 0,
+        tasksCompleted:  completedTasks,
         tasksInProgress: inProgressTasks,
-        completionRate: completionRate,
+        completionRate,
       });
 
       setRecentTasks(recent);
-      setActivities(allActivities.length > 0 ? allActivities : [
-        { id: 1, text: "Welcome to your profile!", time: "Just now", type: "update" }
-      ]);
+
+      setActivities(
+        allActivities.length > 0
+          ? allActivities
+          : [{ id: 1, text: "Welcome to your profile!", time: "Just now", type: "update", rawMs: 0 }]
+      );
 
     } catch (error) {
       console.error('Error fetching profile data:', error);
@@ -202,7 +285,7 @@ export default function ProfilePage() {
         completionRate: 0,
       });
       setActivities([
-        { id: 1, text: "Welcome to your profile!", time: "Just now", type: "update" }
+        { id: 1, text: "Welcome to your profile!", time: "Just now", type: "update", rawMs: 0 }
       ]);
     } finally {
       setLoading(false);
