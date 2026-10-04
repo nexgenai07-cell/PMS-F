@@ -1684,7 +1684,7 @@ export default function LeadProjectDetail() {
         .tasks-title { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; color: var(--text-primary); margin: 0; }
         .tasks-count { font-size: 11px; font-weight: 600; color: var(--text-muted); background: var(--bg-secondary); padding: 1px 10px; border-radius: 20px; }
         .tasks-scroll { max-height: 500px; overflow-y: auto; padding-right: 6px; }
-        .tasks-list { display: flex; flex-direction: column; gap: 8px; }
+        .tasks-list { display: flex; flex-direction: column; gap: 14px; }
         .tasks-empty { text-align: center; padding: 30px 0; color: var(--text-muted); }
         .tasks-empty p { font-size: 14px; font-weight: 500; margin: 8px 0 4px; }
         .tasks-empty span { font-size: 12px; }
