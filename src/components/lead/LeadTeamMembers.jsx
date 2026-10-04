@@ -18,7 +18,6 @@ import userService from '../../services/userService';
 import { useAuth } from '../../context/AuthContext';
 
 /* ─────────── Roles that are NOT team members ─────────── */
-// Leads & supervisors belong on their own pages — not the team-member grid.
 const NON_MEMBER_ROLES = ['lead', 'member', 'manager', 'admin', 'supervisor'];
 
 /* ─────────── Validation constants ─────────── */
@@ -113,14 +112,13 @@ const defaultForm = {
   description: ''
 };
 
-/* ─────────── Compute per-member task stats from a task list ─────────── */
+/* ─────────── Compute per-member task stats ─────────── */
 function computeTaskStatsForMember(memberId, allTasks, usersList = []) {
   const numId = Number(memberId);
 
   const memberTasks = (allTasks || []).filter(t => {
     const a1 = t.assign_to ?? t.assignedTo;
     if (a1 != null && Number(a1) === numId) return true;
-    // Also cover the new M2M `assignees` array so stats stay accurate.
     if (Array.isArray(t.assignees)) {
       if (t.assignees.some(a => Number(a) === numId)) return true;
     }
@@ -263,13 +261,11 @@ export default function LeadTeamMembers() {
       setTasks(tasksList);
       setUsers(usersList);
 
-      // Precompute local stats for every member
       const localStats = {};
       filteredMembers.forEach(m => {
         localStats[m.id] = computeTaskStatsForMember(m.id, tasksList);
       });
 
-      // Try to enrich with backend stats
       const mergedStats = { ...localStats };
       await Promise.all(
         filteredMembers.map(async (member) => {
@@ -334,13 +330,10 @@ export default function LeadTeamMembers() {
     }
   };
 
-  /* ─────────── Stats accessor (never returns 0 when data exists) ─────────── */
   const getMemberStats = (memberId) => {
     const numId = Number(memberId);
-
     const cached = memberStatsMap[numId] || memberStatsMap[memberId];
     if (cached) return cached;
-
     return computeTaskStatsForMember(numId, tasks);
   };
 
@@ -356,10 +349,10 @@ export default function LeadTeamMembers() {
 
   const getUserById = (id) => users.find(u => (u.id || u.u_id) === id);
 
-  /* ─────────── NEW: email resolver ───────────
-     The TeamMember row now has its own `email` column.
-     If it's empty (legacy rows created before the column existed), fall
-     back to a linked User by name so the UI doesn't look broken. */
+  /* ─────────── Email resolver ───────────
+     Prefer `member.email` (backend column). Fall back to a linked User
+     by matching name — legacy members created before the column existed
+     will still get their email prefilled this way. */
   const getMemberEmail = (member) => {
     if (!member) return '';
     if (member.email && String(member.email).trim()) return member.email;
@@ -451,17 +444,19 @@ export default function LeadTeamMembers() {
     }
   };
 
-  /* ─────────── Edit member ─────────── */
+  /* ─────────── Edit member — prefills the previous email ─────────── */
   const openEdit = (member) => {
     setSelected(member);
+    const prevEmail = getMemberEmail(member);
+
     setForm({
-      name: member.name || '',
-      role: member.role || '',
-      email: getMemberEmail(member),                       // ← was member.email
+      name:          member.name || '',
+      role:          member.role || '',
+      email:         prevEmail || '',                                  // ← prefilled
       qualification: member.qualitifcation || member.qualification || '',
-      experience: member.experience ?? '',
-      skills: member.skills || '',
-      description: member.desc || member.description || ''
+      experience:    member.experience ?? '',
+      skills:        member.skills || '',
+      description:   member.desc || member.description || '',
     });
     setFormTouched({});
     setFormSubmitAttempted(false);
@@ -488,7 +483,7 @@ export default function LeadTeamMembers() {
         qualification: qualification.trim(),
         experience: parseInt(experience) || 0,
         skills: skills.trim(),
-        description: description.trim()
+        description: description.trim(),
       });
 
       const updatedMember = response?.data || response;
@@ -840,6 +835,7 @@ export default function LeadTeamMembers() {
               const totalTasks = stats?.totalTasks || 0;
               const completedTasks = stats?.completedTasks || 0;
               const inProgressTasks = stats?.inProgressTasks || 0;
+              const memberEmail = getMemberEmail(member);
 
               return (
                 <motion.div
@@ -882,6 +878,14 @@ export default function LeadTeamMembers() {
                     <h3 className="member-name" title={member.name}>{member.name}</h3>
                     <span className="member-role">{member.role}</span>
                   </div>
+
+                  {/* ⬇️ email on the card */}
+                  {memberEmail && (
+                    <div className="member-email" title={memberEmail}>
+                      <Mail size={12} />
+                      <span>{memberEmail}</span>
+                    </div>
+                  )}
 
                   <p className="member-qualification">
                     {member.qualitifcation || member.qualification || ''} · {member.experience || 0} yrs exp
@@ -972,7 +976,7 @@ export default function LeadTeamMembers() {
           const totalTasks = stats?.totalTasks || 0;
           const completedTasks = stats?.completedTasks || 0;
           const inProgressTasks = stats?.inProgressTasks || 0;
-          const memberEmail = getMemberEmail(drawer);   // ← resolved email
+          const memberEmail = getMemberEmail(drawer);
 
           const currentProjects = tasks
             .filter(t => {
@@ -1038,6 +1042,13 @@ export default function LeadTeamMembers() {
                         <span className="badge badge-green">Active</span>
                         <span className="badge badge-gray">{drawer.experience || 0} yrs exp</span>
                       </div>
+                      {/* ⬇️ email in the header, right under the badges */}
+                      {memberEmail && (
+                        <div className="mm-header-email" title={memberEmail}>
+                          <Mail size={12} />
+                          <span>{memberEmail}</span>
+                        </div>
+                      )}
                     </div>
                   </div>
                   <button className="mm-close-btn" onClick={() => setDrawer(null)}>
@@ -1054,12 +1065,32 @@ export default function LeadTeamMembers() {
                     </div>
                   )}
 
-                  {memberEmail && (
-                    <div className="mm-email">
-                      <Mail size={14} />
-                      <span>{memberEmail}</span>
+                  {/* ⬇️ Contact Info section */}
+                  <div className="mm-section">
+                    <h4 className="mm-section-title"><Mail size={14} /> Contact Information</h4>
+                    <div className="mm-contact-grid">
+                      <div className="mm-contact-item">
+                        <span className="mm-contact-label">Email</span>
+                        <span className="mm-contact-value">
+                          {memberEmail ? (
+                            <a href={`mailto:${memberEmail}`} className="mm-contact-link">
+                              {memberEmail}
+                            </a>
+                          ) : (
+                            <span className="mm-no-data-inline">Not provided</span>
+                          )}
+                        </span>
+                      </div>
+                      {addedBy && (
+                        <div className="mm-contact-item">
+                          <span className="mm-contact-label">Added By</span>
+                          <span className="mm-contact-value">
+                            {addedBy.u_name || addedBy.name || '—'}
+                          </span>
+                        </div>
+                      )}
                     </div>
-                  )}
+                  </div>
 
                   <div className="mm-stats-row">
                     <div className="mm-stat-item">
@@ -1587,6 +1618,73 @@ export default function LeadTeamMembers() {
           display: flex;
           align-items: center;
           gap: 6px;
+        }
+
+        /* ─── Email on the member card ─── */
+        .member-email {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 11.5px;
+          color: var(--text-muted);
+          margin: 4px 0 6px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .member-email svg { color: var(--text-muted); flex-shrink: 0; }
+
+        /* ─── Email in the modal header ─── */
+        .mm-header-email {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 12px;
+          color: var(--text-muted);
+          margin-top: 6px;
+        }
+        .mm-header-email svg { color: var(--text-muted); flex-shrink: 0; }
+
+        /* ─── Contact Information section ─── */
+        .mm-contact-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 10px;
+        }
+        .mm-contact-item {
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+          padding: 10px 12px;
+          background: var(--bg-card);
+          border: 1px solid var(--border-subtle);
+          border-radius: 8px;
+          min-width: 0;
+        }
+        .mm-contact-label {
+          font-size: 10px;
+          font-weight: 700;
+          color: var(--text-muted);
+          text-transform: uppercase;
+          letter-spacing: 0.4px;
+        }
+        .mm-contact-value {
+          font-size: 13px;
+          font-weight: 500;
+          color: var(--text-primary);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .mm-contact-link {
+          color: var(--accent-primary);
+          text-decoration: none;
+        }
+        .mm-contact-link:hover { text-decoration: underline; }
+        .mm-no-data-inline {
+          color: var(--text-muted);
+          font-style: italic;
+          font-size: 12px;
         }
 
         /* ─── DELETE MODAL ─── */
@@ -2155,6 +2253,7 @@ export default function LeadTeamMembers() {
           .members-grid { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
           .member-modal { max-width: 100%; border-radius: 16px; max-height: 95vh; }
           .mm-stats-row { grid-template-columns: repeat(2, 1fr); }
+          .mm-contact-grid { grid-template-columns: 1fr; }
           .mm-header { padding: 16px 18px; }
           .mm-body { padding: 16px 18px; }
           .mm-footer { padding: 12px 18px 16px; }
