@@ -67,13 +67,14 @@ class TeamService {
   async addTeamMember(memberData) {
     try {
       const payload = {
-        name: memberData.name,
-        desc: memberData.description || '',
-        skills: memberData.skills || '',
-        role: memberData.role || 'Member',
-        qualitifcation: memberData.qualification || '',
-        experience: parseInt(memberData.experience) || 0,
-      };
+  name: memberData.name,
+  email: memberData.email || '',         // ← must be present
+  desc: memberData.description || '',
+  skills: memberData.skills || '',
+  role: memberData.role || 'Member',
+  qualitifcation: memberData.qualification || '',
+  experience: parseInt(memberData.experience) || 0,
+};
       
       console.log('📤 Adding team member with payload:', payload);
       

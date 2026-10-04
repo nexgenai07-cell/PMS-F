@@ -114,19 +114,16 @@ const defaultForm = {
 };
 
 /* ─────────── Compute per-member task stats from a task list ─────────── */
-/* ─────────── Compute per-member task stats from a task list ─────────── */
 function computeTaskStatsForMember(memberId, allTasks, usersList = []) {
   const numId = Number(memberId);
-
-  // The member might be identified in tasks by:
-  //   - assign_to (TeamMember.id — the normal case)
-  //   - assign_to_name (string match — fallback)
-  //   - assignedTo (camelCase variant from some serializers)
-  const member = null; // not passed here; name lookup happens below if needed
 
   const memberTasks = (allTasks || []).filter(t => {
     const a1 = t.assign_to ?? t.assignedTo;
     if (a1 != null && Number(a1) === numId) return true;
+    // Also cover the new M2M `assignees` array so stats stay accurate.
+    if (Array.isArray(t.assignees)) {
+      if (t.assignees.some(a => Number(a) === numId)) return true;
+    }
     return false;
   });
 
@@ -229,113 +226,88 @@ export default function LeadTeamMembers() {
 
   /* ─────────── Fetch data ─────────── */
   const fetchData = async () => {
-  try {
-    setLoading(true);
-    const [membersData, tasksData, usersData] = await Promise.all([
-      teamService.getTeamMembers(),
-      taskService.getTasks(),
-      userService.getUsers(),
-    ]);
+    try {
+      setLoading(true);
+      const [membersData, tasksData, usersData] = await Promise.all([
+        teamService.getTeamMembers(),
+        taskService.getTasks(),
+        userService.getUsers(),
+      ]);
 
-    let rawMembers = membersData?.data || membersData || [];
-    const tasksList = tasksData?.data || tasksData || [];
-    const usersList = usersData?.data || usersData || [];
+      let rawMembers = membersData?.data || membersData || [];
+      const tasksList = tasksData?.data || tasksData || [];
+      const usersList = usersData?.data || usersData || [];
 
-    if (!Array.isArray(rawMembers)) rawMembers = [];
+      if (!Array.isArray(rawMembers)) rawMembers = [];
 
-    // ─── DIAGNOSTICS ───
-    console.log('🔍 [Diagnostic] rawMembers count:', rawMembers.length);
-    console.log('🔍 [Diagnostic] usersList count:', usersList.length);
-    console.log('🔍 [Diagnostic] tasksList count:', tasksList.length);
-    console.log('🔍 [Diagnostic] sample member:', rawMembers[0]);
-    console.log('🔍 [Diagnostic] sample user:', usersList[0]);
-    console.log('🔍 [Diagnostic] sample task:', tasksList[0]);
-    console.log('🔍 [Diagnostic] task assign_to values:',
-      tasksList.map(t => ({
-        t_id: t.t_id || t.id,
-        title: t.title,
-        assign_to: t.assign_to ?? t.assignedTo ?? null,
-        assign_to_name: t.assign_to_name ?? null,
-      }))
-    );
-    console.log('🔍 [Diagnostic] member ids:',
-      rawMembers.map(m => ({ id: m.id, name: m.name, role: m.role }))
-    );
+      const activeMembers = rawMembers.filter(m => m.is_deleted !== 1);
 
-    const activeMembers = rawMembers.filter(m => m.is_deleted !== 1);
+      const filteredMembers = activeMembers.filter(m => {
+        const memberName = (m.name || '').toLowerCase().trim();
+        const memberEmail = (m.email || '').toLowerCase().trim();
 
-    const filteredMembers = activeMembers.filter(m => {
-      const memberName = (m.name || '').toLowerCase().trim();
-      const memberEmail = (m.email || '').toLowerCase().trim();
+        const linkedUser = usersList.find(u => {
+          const uEmail = (u.email || '').toLowerCase().trim();
+          const uName = (u.u_name || u.name || '').toLowerCase().trim();
+          if (memberEmail && uEmail && memberEmail === uEmail) return true;
+          if (memberName && uName && memberName === uName) return true;
+          return false;
+        });
 
-      const linkedUser = usersList.find(u => {
-        const uEmail = (u.email || '').toLowerCase().trim();
-        const uName = (u.u_name || u.name || '').toLowerCase().trim();
-        if (memberEmail && uEmail && memberEmail === uEmail) return true;
-        if (memberName && uName && memberName === uName) return true;
-        return false;
+        if (!linkedUser) return true;
+        const role = (linkedUser.role || '').toLowerCase();
+        return !NON_MEMBER_ROLES.includes(role);
       });
 
-      if (!linkedUser) return true;
-      const role = (linkedUser.role || '').toLowerCase();
-      return !NON_MEMBER_ROLES.includes(role);
-    });
+      setMembers(filteredMembers);
+      setTasks(tasksList);
+      setUsers(usersList);
 
-    setMembers(filteredMembers);
-    setTasks(tasksList);
-    setUsers(usersList);
+      // Precompute local stats for every member
+      const localStats = {};
+      filteredMembers.forEach(m => {
+        localStats[m.id] = computeTaskStatsForMember(m.id, tasksList);
+      });
 
-    // Precompute local stats for every member
-    const localStats = {};
-    filteredMembers.forEach(m => {
-      localStats[m.id] = computeTaskStatsForMember(m.id, tasksList);
-    });
+      // Try to enrich with backend stats
+      const mergedStats = { ...localStats };
+      await Promise.all(
+        filteredMembers.map(async (member) => {
+          try {
+            const response = await teamService.getTeamMemberStats(member.id);
+            const backend = response?.data || response || {};
+            const local = localStats[member.id];
 
-    // Try to enrich with backend stats
-    const mergedStats = { ...localStats };
-    await Promise.all(
-      filteredMembers.map(async (member) => {
-        try {
-          const response = await teamService.getTeamMemberStats(member.id);
-          const backend = response?.data || response || {};
-          const local = localStats[member.id];
+            mergedStats[member.id] = {
+              totalTasks:      Number(backend.totalTasks)      || local.totalTasks      || 0,
+              completedTasks:  Number(backend.completedTasks)  || local.completedTasks  || 0,
+              inProgressTasks: Number(backend.inProgressTasks) || local.inProgressTasks || 0,
+              todoTasks:       Number(backend.todoTasks)       || local.todoTasks       || 0,
+              completionRate:  Number(backend.completionRate)  || local.completionRate  || 0,
+              onTimeRate:      Number(backend.onTimeRate)      || local.onTimeRate      || 0,
+              avgProgress:     Number(backend.avgProgress)     || local.avgProgress     || 0,
+              projectsCount:   Number(backend.projectsCount)   || local.projectsCount   || 0,
+              tasks: local.tasks,
+            };
+          } catch (err) {
+            // keep local
+          }
+        })
+      );
 
-          mergedStats[member.id] = {
-            totalTasks:      Number(backend.totalTasks)      || local.totalTasks      || 0,
-            completedTasks:  Number(backend.completedTasks)  || local.completedTasks  || 0,
-            inProgressTasks: Number(backend.inProgressTasks) || local.inProgressTasks || 0,
-            todoTasks:       Number(backend.todoTasks)       || local.todoTasks       || 0,
-            completionRate:  Number(backend.completionRate)  || local.completionRate  || 0,
-            onTimeRate:      Number(backend.onTimeRate)      || local.onTimeRate      || 0,
-            avgProgress:     Number(backend.avgProgress)     || local.avgProgress     || 0,
-            projectsCount:   Number(backend.projectsCount)   || local.projectsCount   || 0,
-            tasks: local.tasks,
-          };
-        } catch (err) {
-          // keep local
-        }
-      })
-    );
-
-    setMemberStatsMap(mergedStats);
-
-    console.log('📊 [LeadTeamMembers] Members (after filter):', filteredMembers.length);
-    console.log('📊 [LeadTeamMembers] Stats map keys:', Object.keys(mergedStats).length);
-    console.log('📊 [LeadTeamMembers] First member stats:',
-      mergedStats[filteredMembers[0]?.id]
-    );
-  } catch (error) {
-    console.error('Error fetching data:', error);
-    toast.error('Failed to load team members');
-    setMembers([]);
-    setTasks([]);
-    setUsers([]);
-    setMemberStatsMap({});
-  } finally {
-    setLoading(false);
-    setRefreshing(false);
-  }
-};
+      setMemberStatsMap(mergedStats);
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      toast.error('Failed to load team members');
+      setMembers([]);
+      setTasks([]);
+      setUsers([]);
+      setMemberStatsMap({});
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -366,11 +338,9 @@ export default function LeadTeamMembers() {
   const getMemberStats = (memberId) => {
     const numId = Number(memberId);
 
-    // 1. Use precomputed map when present
     const cached = memberStatsMap[numId] || memberStatsMap[memberId];
     if (cached) return cached;
 
-    // 2. Fall back to fresh computation from tasks
     return computeTaskStatsForMember(numId, tasks);
   };
 
@@ -385,6 +355,20 @@ export default function LeadTeamMembers() {
   };
 
   const getUserById = (id) => users.find(u => (u.id || u.u_id) === id);
+
+  /* ─────────── NEW: email resolver ───────────
+     The TeamMember row now has its own `email` column.
+     If it's empty (legacy rows created before the column existed), fall
+     back to a linked User by name so the UI doesn't look broken. */
+  const getMemberEmail = (member) => {
+    if (!member) return '';
+    if (member.email && String(member.email).trim()) return member.email;
+
+    const name = (member.name || '').toLowerCase().trim();
+    if (!name) return '';
+    const match = users.find(u => (u.u_name || u.name || '').toLowerCase().trim() === name);
+    return match?.email || '';
+  };
 
   const getInitials = (name) => {
     if (!name) return '?';
@@ -444,7 +428,6 @@ export default function LeadTeamMembers() {
       const newMember = response?.data || response;
 
       if (newMember && newMember.id) {
-        // Add to local list + seed stats
         setMembers(prev => [newMember, ...prev]);
         setMemberStatsMap(prev => ({
           ...prev,
@@ -474,7 +457,7 @@ export default function LeadTeamMembers() {
     setForm({
       name: member.name || '',
       role: member.role || '',
-      email: member.email || '',
+      email: getMemberEmail(member),                       // ← was member.email
       qualification: member.qualitifcation || member.qualification || '',
       experience: member.experience ?? '',
       skills: member.skills || '',
@@ -986,15 +969,18 @@ export default function LeadTeamMembers() {
           const initials = getInitials(drawer.name);
           const color = drawer.avatar_color || '#818cf8';
           const addedBy = getUserById(drawer.added_by);
-          const completionRate = stats?.completionRate || 0;
           const totalTasks = stats?.totalTasks || 0;
           const completedTasks = stats?.completedTasks || 0;
           const inProgressTasks = stats?.inProgressTasks || 0;
+          const memberEmail = getMemberEmail(drawer);   // ← resolved email
 
           const currentProjects = tasks
             .filter(t => {
               const assignTo = t.assign_to || t.assignedTo;
-              return Number(assignTo) === Number(memberId) && t.status !== 'done' && t.status !== 'completed';
+              const inSingle = Number(assignTo) === Number(memberId);
+              const inMulti = Array.isArray(t.assignees) &&
+                t.assignees.some(a => Number(a) === Number(memberId));
+              return (inSingle || inMulti) && t.status !== 'done' && t.status !== 'completed';
             })
             .slice(0, 3)
             .map(t => ({
@@ -1007,7 +993,10 @@ export default function LeadTeamMembers() {
           const completedProjects = tasks
             .filter(t => {
               const assignTo = t.assign_to || t.assignedTo;
-              return Number(assignTo) === Number(memberId) && (t.status === 'done' || t.status === 'completed');
+              const inSingle = Number(assignTo) === Number(memberId);
+              const inMulti = Array.isArray(t.assignees) &&
+                t.assignees.some(a => Number(a) === Number(memberId));
+              return (inSingle || inMulti) && (t.status === 'done' || t.status === 'completed');
             })
             .slice(0, 3)
             .map(t => ({
@@ -1065,10 +1054,10 @@ export default function LeadTeamMembers() {
                     </div>
                   )}
 
-                  {drawer.email && (
+                  {memberEmail && (
                     <div className="mm-email">
                       <Mail size={14} />
-                      <span>{drawer.email}</span>
+                      <span>{memberEmail}</span>
                     </div>
                   )}
 
