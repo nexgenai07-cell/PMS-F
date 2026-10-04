@@ -1,3 +1,4 @@
+// src/components/shared/ProfilePage.jsx
 import { useState, useEffect, useRef } from "react";
 import { useOutletContext } from "react-router-dom";
 import Topbar from "./Topbar";
@@ -30,6 +31,9 @@ import {
   ChevronDown,
   Loader2,
   Send,
+  UserPlus,
+  MessageSquare,
+  FileText,
 } from "lucide-react";
 
 // Import services
@@ -37,8 +41,12 @@ import projectService from "../../services/projectService";
 import taskService from "../../services/taskService";
 import userService from "../../services/userService";
 import authService from "../../services/authService";
+import teamService from "../../services/teamService";
+import commentService from "../../services/commentService";
+import notificationService from "../../services/notificationService";
+import projectTeamService from "../../services/projectTeamService";
 
-/* ─────────── Pure UI component (no logic changes) ─────────── */
+/* ─────────── Animated number (unchanged) ─────────── */
 const AnimatedNumber = ({ value, duration = 900, decimals = 0, suffix = "" }) => {
   const [display, setDisplay] = useState(0);
   const fromRef = useRef(0);
@@ -90,6 +98,7 @@ export default function ProfilePage() {
 
   const [activities, setActivities] = useState([]);
   const [recentTasks, setRecentTasks] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
 
   const [form, setForm] = useState({
     name: user?.u_name || user?.name || "",
@@ -108,7 +117,6 @@ export default function ProfilePage() {
     confirm: false,
   });
 
-  // ⬇️ NEW: disables the button while the confirmation email is being sent
   const [passwordSubmitting, setPasswordSubmitting] = useState(false);
 
   // Fetch real data
@@ -116,63 +124,76 @@ export default function ProfilePage() {
     fetchProfileData();
   }, [user]);
 
-    const fetchProfileData = async () => {
+  const fetchProfileData = async () => {
     try {
       setLoading(true);
 
-      const [projectsData, tasksData, membersData] = await Promise.all([
-        projectService.getProjects(),
-        taskService.getTasks(),
-        // NEW: we need TeamMember rows to map the current user → their
-        // TeamMember profile, because Task.assign_to is a TeamMember FK.
-        import('../../services/teamService')
-          .then((m) => m.default.getTeamMembers())
-          .catch(() => ({ data: [] })),
-      ]);
-
-      const projectsList = projectsData?.data || projectsData || [];
-      const tasksList    = tasksData?.data    || tasksData    || [];
-      const membersList  = membersData?.data  || membersData  || [];
-
       const userId   = user?.id || user?.u_id;
+      const userRole = user?.role || 'member';
       const userName = (user?.u_name || user?.name || '').toLowerCase().trim();
 
       // ─────────────────────────────────────────────────────────────
-      // 1. Find the current user's TeamMember id(s) by matching name.
-      //    Task.assign_to and Task.assignees both point at TeamMember,
-      //    not User. Without this mapping, assigned tasks are invisible.
+      // Pull everything the feed needs in parallel.
+      // ─────────────────────────────────────────────────────────────
+      const [
+        projectsData,
+        tasksData,
+        membersData,
+        commentsData,
+        notificationsResult,
+        pteamData,
+      ] = await Promise.all([
+        projectService.getProjects().catch(() => ({ data: [] })),
+        taskService.getTasks().catch(() => ({ data: [] })),
+        teamService.getTeamMembers().catch(() => ({ data: [] })),
+        commentService.getComments().catch(() => ({ data: [] })),
+        notificationService.getNotifications(userId, userRole).catch(() => ({ data: [] })),
+        projectTeamService.getProjectTeams().catch(() => ({ data: [] })),
+      ]);
+
+      const projectsList = projectsData?.data      || projectsData      || [];
+      const tasksList    = tasksData?.data         || tasksData         || [];
+      const membersList  = membersData?.data       || membersData       || [];
+      const commentsList = commentsData?.data      || commentsData      || [];
+      const pteamList    = pteamData?.data         || pteamData         || [];
+
+      const teamActivities = Array.isArray(notificationsResult?.data)
+        ? notificationsResult.data
+        : [];
+
+      // ─────────────────────────────────────────────────────────────
+      // Resolve current user → their TeamMember id(s).
+      // Task.assign_to and Task.assignees point at TeamMember, not User.
       // ─────────────────────────────────────────────────────────────
       const myTeamMemberIds = membersList
-        .filter(m => (m.name || '').toLowerCase().trim() === userName)
+        .filter(m => (m.name || '').toLowerCase().trim() === userName && userName)
         .map(m => Number(m.id))
         .filter(Number.isFinite);
-
-      const myTeamMemberIdSet = new Set(myTeamMemberIds);
+      const myTmSet = new Set(myTeamMemberIds);
 
       // ─────────────────────────────────────────────────────────────
-      // 2. Match tasks by any relationship to the current user.
-      //    - assign_to         : legacy single-assignee TeamMember FK
-      //    - assignees         : new M2M list of TeamMember ids
-      //    - created_by        : User FK (task author)
-      //    - assign_by         : User FK (who assigned it)
-      //    - assignedTo        : camelCase fallback some endpoints use
+      // Helpers
+      // ─────────────────────────────────────────────────────────────
+      const toMs = (val) => {
+        if (!val) return 0;
+        const t = new Date(val).getTime();
+        return Number.isFinite(t) ? t : 0;
+      };
+      const fmt = (val) => (val ? new Date(val).toLocaleString() : 'Recently');
+
+      // ─────────────────────────────────────────────────────────────
+      // Stats
       // ─────────────────────────────────────────────────────────────
       const userTasks = tasksList.filter(t => {
-        const singleAssignee = t.assign_to ?? t.assignedTo;
-        if (singleAssignee != null && myTeamMemberIdSet.has(Number(singleAssignee))) return true;
-
+        const single = t.assign_to ?? t.assignedTo;
+        if (single != null && myTmSet.has(Number(single))) return true;
         if (Array.isArray(t.assignees) &&
-            t.assignees.some(a => myTeamMemberIdSet.has(Number(a)))) return true;
-
-        if (t.created_by != null && Number(t.created_by) === Number(userId)) return true;
-        if (t.assign_by  != null && Number(t.assign_by)  === Number(userId)) return true;
-
+            t.assignees.some(a => myTmSet.has(Number(a)))) return true;
+        if (Number(t.created_by) === Number(userId)) return true;
+        if (Number(t.assign_by)  === Number(userId)) return true;
         return false;
       });
 
-      // ─────────────────────────────────────────────────────────────
-      // 3. Count by status (unchanged from before)
-      // ─────────────────────────────────────────────────────────────
       const completedTasks = userTasks.filter(t => {
         const s = (t.status || '').toLowerCase();
         return s === 'done' || s === 'completed';
@@ -188,105 +209,249 @@ export default function ProfilePage() {
         ? Math.round((completedTasks / userTasks.length) * 100)
         : 0;
 
-      // ─────────────────────────────────────────────────────────────
-      // 4. Recent tasks — sorted by real timestamp, newest first
-      // ─────────────────────────────────────────────────────────────
-      const toMs = (val) => {
-        if (!val) return 0;
-        const d = new Date(val);
-        const t = d.getTime();
-        return Number.isFinite(t) ? t : 0;
-      };
-
       const recent = [...userTasks]
-        .sort((a, b) => {
-          const ta = toMs(b.updated_at || b.update_last || b.created_at);
-          const tb = toMs(a.updated_at || a.update_last || a.created_at);
-          return ta - tb;
-        })
+        .sort((a, b) =>
+          toMs(b.update_last || b.updated_at || b.created_at) -
+          toMs(a.update_last || a.updated_at || a.created_at)
+        )
         .slice(0, 5);
 
-      // ─────────────────────────────────────────────────────────────
-      // 5. Activity feed — build with RAW timestamps so we can sort
-      //    correctly, then format for display.
-      // ─────────────────────────────────────────────────────────────
-      const activityItems = userTasks.map(t => {
-        const status = (t.status || '').toLowerCase();
-        const isDone = status === 'done' || status === 'completed';
+      // ═════════════════════════════════════════════════════════════
+      // BUILD THE ACTIVITY FEED
+      // Two streams merged:
+      //   A. TEAM    — from notificationService (project-scoped)
+      //   B. PERSONAL — events the current user caused
+      // ═════════════════════════════════════════════════════════════
+      const activityItems = [];
 
-        // Prefer the most recent of update_last / updated_at / created_at
-        const rawTimestamp =
-          t.update_last || t.updated_at || t.created_at || null;
-        const rawMs = toMs(rawTimestamp);
-
-        return {
-          id:        `t-${t.t_id || t.id}`,
-          text:      isDone
-                       ? `Completed task: ${t.title}`
-                       : `Updated task: ${t.title}`,
-          rawMs,
-          time:      rawTimestamp
-                       ? new Date(rawTimestamp).toLocaleString()
-                       : 'Recently',
-          type:      isDone ? 'task' : 'update',
-        };
+      // ─── A. Team stream (already scoped by the service)
+      teamActivities.forEach(n => {
+        const id = n.n_id || n.id || `team-${activityItems.length}`;
+        activityItems.push({
+          id,
+          text: n.message || `${n.type}`,
+          time: fmt(n.created_at),
+          rawMs: toMs(n.created_at),
+          type:
+            n.type === 'project_created'  ? 'project' :
+            n.type === 'project_updated'  ? 'project' :
+            n.type === 'task_created'     ? 'update'  :
+            n.type === 'task_updated'     ? 'update'  :
+            n.type === 'task_assigned'    ? 'update'  :
+            n.type === 'task_completed'   ? 'task'    :
+            n.type === 'comment_added'    ? 'comment' :
+            n.type === 'comment_pinned'   ? 'comment' :
+            n.type === 'member_added'     ? 'member'  :
+            'update',
+          scope: 'team',
+          entityType: n.entity_type,
+          entityId:   n.entity_id,
+        });
       });
 
-      const projectActivities = projectsList
+      // ─── B. Personal stream — only events the current user caused
+
+      // B1. Tasks the user completed
+      userTasks.forEach(t => {
+        const s = (t.status || '').toLowerCase();
+        const isDone = s === 'done' || s === 'completed';
+        if (!isDone) return;
+        const raw = t.update_last || t.updated_at || t.created_at;
+        activityItems.push({
+          id:   `mine-t-done-${t.t_id || t.id}`,
+          text: `You completed task: ${t.title}`,
+          time: fmt(raw),
+          rawMs: toMs(raw),
+          type: 'task',
+          scope: 'mine',
+        });
+      });
+
+      // B2. Tasks the user created
+      userTasks.forEach(t => {
+        if (Number(t.created_by) !== Number(userId)) return;
+        const raw = t.created_at;
+        activityItems.push({
+          id:   `mine-t-create-${t.t_id || t.id}`,
+          text: `You created task: ${t.title}`,
+          time: fmt(raw),
+          rawMs: toMs(raw),
+          type: 'update',
+          scope: 'mine',
+        });
+      });
+
+      // B3. Projects the user created
+      projectsList
         .filter(p => Number(p.created_by) === Number(userId))
-        .map(p => {
-          const rawTimestamp = p.created_at || null;
-          return {
-            id:   `p-${p.p_id || p.id}`,
-            text: `Created project: ${p.p_name || p.name}`,
-            rawMs: toMs(rawTimestamp),
-            time: rawTimestamp
-                    ? new Date(rawTimestamp).toLocaleString()
-                    : 'Recently',
+        .forEach(p => {
+          const pid = Number(p.p_id || p.id);
+          activityItems.push({
+            id:   `mine-p-create-${pid}`,
+            text: `You created project: ${p.p_name || p.name}`,
+            time: fmt(p.created_at),
+            rawMs: toMs(p.created_at),
             type: 'project',
-          };
+            scope: 'mine',
+          });
         });
 
-      // Merge, sort newest-first, keep 8. Fall back to the welcome
-      // placeholder only if there's genuinely nothing.
-      const allActivities = [...activityItems, ...projectActivities]
-        .sort((a, b) => b.rawMs - a.rawMs)
-        .slice(0, 8);
+      // B4. Projects the user supervises
+      projectsList.forEach(p => {
+        const pid = Number(p.p_id || p.id);
+        const isSup = Array.isArray(p.supervisors) &&
+          p.supervisors.map(Number).includes(Number(userId));
+        if (!isSup) return;
+        activityItems.push({
+          id:   `mine-p-sup-${pid}`,
+          text: `You supervise project: ${p.p_name || p.name}`,
+          time: fmt(p.updated_at || p.created_at),
+          rawMs: toMs(p.updated_at || p.created_at),
+          type: 'project',
+          scope: 'mine',
+        });
+      });
+
+      // B5. Comments the user posted
+      commentsList
+        .filter(c => Number(c.u) === Number(userId))
+        .forEach(c => {
+          const raw = c.created_at || c.updated_at;
+          const snippet = (c.desc || '').trim();
+          const short = snippet.length > 40 ? `${snippet.slice(0, 40)}…` : snippet;
+          activityItems.push({
+            id:   `mine-c-${c.c_id || c.id}`,
+            text: `You commented${short ? `: "${short}"` : ''}`,
+            time: fmt(raw),
+            rawMs: toMs(raw),
+            type: 'comment',
+            scope: 'mine',
+          });
+        });
+
+      // B6. Team members the user added
+      membersList
+        .filter(m =>
+          Number(m.added_by) === Number(userId) &&
+          m.is_deleted !== 1
+        )
+        .forEach(m => {
+          const raw = m.updated_at || m.created_at;
+          activityItems.push({
+            id:   `mine-tm-${m.id}`,
+            text: `You added team member: ${m.name}`,
+            time: fmt(raw),
+            rawMs: toMs(raw),
+            type: 'member',
+            scope: 'mine',
+          });
+        });
+
+      // B7. Account created
+      if (user?.created_at) {
+        activityItems.push({
+          id:   'mine-account-created',
+          text: 'Your account was created',
+          time: fmt(user.created_at),
+          rawMs: toMs(user.created_at),
+          type: 'update',
+          scope: 'mine',
+        });
+      }
 
       // ─────────────────────────────────────────────────────────────
-      // 6. Commit state
+      // Optional de-dupe: drop "You completed task X" when the team
+      // stream already announced the same completion.
+      // ─────────────────────────────────────────────────────────────
+      const teamTaskIds = new Set(
+        teamActivities
+          .filter(n =>
+            n.type === 'task_completed' ||
+            n.type === 'task_updated'   ||
+            n.type === 'task_created'
+          )
+          .map(n => Number(n.entity_id))
+          .filter(Number.isFinite)
+      );
+
+      const trimmed = activityItems.filter(item => {
+        const m = /^mine-t-(done|create)-(\d+)$/.exec(item.id);
+        if (!m) return true;
+        return !teamTaskIds.has(Number(m[2]));
+      });
+
+      // ─────────────────────────────────────────────────────────────
+      // Dedupe by id, sort newest first, cap at 30.
+      // ─────────────────────────────────────────────────────────────
+      const seen = new Set();
+      const deduped = trimmed.filter(item => {
+        if (!item.id || seen.has(item.id)) return false;
+        seen.add(item.id);
+        return true;
+      });
+
+      const allActivities = deduped
+        .sort((a, b) => b.rawMs - a.rawMs)
+        .slice(0, 30);
+
+      // ─────────────────────────────────────────────────────────────
+      // Unread count (from notificationService — respects read state
+      // stored in localStorage per-user).
+      // ─────────────────────────────────────────────────────────────
+      let unread = 0;
+      try {
+        const unreadRes = await notificationService.getUnreadCount(userId, userRole);
+        unread = unreadRes?.count || 0;
+      } catch { unread = 0; }
+
+      // ─────────────────────────────────────────────────────────────
+      // Commit state
       // ─────────────────────────────────────────────────────────────
       setStats({
-        projects: projectsList.filter(
-          p => Number(p.created_by) === Number(userId) ||
-               Number(p.lead_id)    === Number(userId)
-        ).length || 0,
+        projects:
+          projectsList.filter(p =>
+            Number(p.created_by) === Number(userId) ||
+            Number(p.lead_id)    === Number(userId)
+          ).length || 0,
         tasksCompleted:  completedTasks,
         tasksInProgress: inProgressTasks,
         completionRate,
       });
 
       setRecentTasks(recent);
+      setUnreadCount(unread);
 
       setActivities(
         allActivities.length > 0
           ? allActivities
-          : [{ id: 1, text: "Welcome to your profile!", time: "Just now", type: "update", rawMs: 0 }]
+          : [{
+              id: 'welcome',
+              text: 'Welcome to your profile!',
+              time: 'Just now',
+              type: 'update',
+              scope: 'mine',
+              rawMs: 0,
+            }]
       );
 
     } catch (error) {
       console.error('Error fetching profile data:', error);
       toast.error('Failed to load profile data');
-
       setStats({
         projects: 0,
         tasksCompleted: 0,
         tasksInProgress: 0,
         completionRate: 0,
       });
-      setActivities([
-        { id: 1, text: "Welcome to your profile!", time: "Just now", type: "update", rawMs: 0 }
-      ]);
+      setUnreadCount(0);
+      setActivities([{
+        id: 'welcome',
+        text: 'Welcome to your profile!',
+        time: 'Just now',
+        type: 'update',
+        scope: 'mine',
+        rawMs: 0,
+      }]);
     } finally {
       setLoading(false);
     }
@@ -307,11 +472,6 @@ export default function ProfilePage() {
     }
   };
 
-  /**
-   * ⬇️ REPLACED: now sends a confirmation email instead of changing
-   * the password immediately. The change only happens when the user
-   * clicks the link in that email.
-   */
   const handlePasswordChange = async () => {
     if (!passwords.current || !passwords.new || !passwords.confirm) {
       toast.error("Please fill all fields");
@@ -346,14 +506,11 @@ export default function ProfilePage() {
       setShowPw({ current: false, new: false, confirm: false });
     } catch (error) {
       console.error('Error requesting password change:', error);
-
-      // authService.handleError returns { message, code, status }
       const detail =
         error?.message ||
         error?.data?.error?.detail ||
         error?.data?.detail ||
         "Failed to request password change";
-
       toast.error(typeof detail === "string" ? detail : "Failed to request password change");
     } finally {
       setPasswordSubmitting(false);
@@ -378,7 +535,7 @@ export default function ProfilePage() {
   };
 
   const strength = pwStrength(passwords.new);
-  const displayedActivities = showFullActivity ? activities : activities.slice(0, 4);
+  const displayedActivities = showFullActivity ? activities : activities.slice(0, 5);
 
   const initials = (user?.u_name || user?.name || "U").split(" ").map(n => n[0]).join("").toUpperCase() || "U";
 
@@ -397,10 +554,12 @@ export default function ProfilePage() {
 
   const getActivityIcon = (type) => {
     const icons = {
-      login: <LogOut size={12} />,
-      update: <Settings size={12} />,
-      task: <CheckCircle2 size={12} />,
+      login:   <LogOut size={12} />,
+      update:  <Settings size={12} />,
+      task:    <CheckCircle2 size={12} />,
       project: <FolderKanban size={12} />,
+      comment: <MessageSquare size={12} />,
+      member:  <UserPlus size={12} />,
     };
     return icons[type] || <Activity size={12} />;
   };
@@ -787,19 +946,29 @@ export default function ProfilePage() {
                   <h3 className="section-title-modern">Activity History</h3>
                   <p className="section-sub-modern">Your recent account activity</p>
                 </div>
-                <span className="activity-badge">{activities.length} events</span>
+                <span className="activity-badge">
+                  {activities.length} events
+                  {unreadCount > 0 && (
+                    <span className="activity-badge-unread"> · {unreadCount} new</span>
+                  )}
+                </span>
               </div>
 
               <div className="activity-timeline">
                 {displayedActivities.map((a, index) => (
                   <motion.div
                     key={a.id}
-                    className="activity-item"
+                    className={`activity-item ${a.scope === 'mine' ? 'activity-item-mine' : ''}`}
                     initial={{ opacity: 0, x: -12 }}
                     animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: index * 0.06, duration: 0.4, ease: EASE }}
+                    transition={{ delay: index * 0.04, duration: 0.4, ease: EASE }}
                   >
-                    <div className="activity-dot" style={{ background: roleColor }}>
+                    <div
+                      className="activity-dot"
+                      style={{
+                        background: a.scope === 'mine' ? roleColor : 'var(--text-muted)',
+                      }}
+                    >
                       {getActivityIcon(a.type)}
                     </div>
                     <div className="activity-content">
@@ -810,7 +979,7 @@ export default function ProfilePage() {
                 ))}
               </div>
 
-              {activities.length > 4 && (
+              {activities.length > 5 && (
                 <motion.button
                   className="show-more-btn"
                   onClick={() => setShowFullActivity(!showFullActivity)}
@@ -1354,6 +1523,10 @@ export default function ProfilePage() {
           flex-shrink: 0;
           font-variant-numeric: tabular-nums;
         }
+        .activity-badge-unread {
+          color: var(--accent-primary);
+          font-weight: 700;
+        }
 
         /* ─── PASSWORD ─── */
         .password-grid {
@@ -1506,6 +1679,9 @@ export default function ProfilePage() {
           align-items: flex-start;
           min-width: 0;
           max-width: 100%;
+        }
+        .activity-item-mine .activity-content {
+          border-left: 2px solid color-mix(in srgb, var(--accent-primary) 40%, transparent);
         }
         .activity-dot {
           width: 30px;
