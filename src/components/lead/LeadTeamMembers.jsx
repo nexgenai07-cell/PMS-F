@@ -17,9 +17,6 @@ import projectTeamService from '../../services/projectTeamService';
 import userService from '../../services/userService';
 import { useAuth } from '../../context/AuthContext';
 
-/* ─────────── Roles that are NOT team members ─────────── */
-const NON_MEMBER_ROLES = ['lead', 'member', 'manager', 'admin', 'supervisor'];
-
 /* ─────────── Validation constants ─────────── */
 const LIMITS = {
   name:          { min: 2, max: 100 },
@@ -238,24 +235,10 @@ export default function LeadTeamMembers() {
 
       if (!Array.isArray(rawMembers)) rawMembers = [];
 
-      const activeMembers = rawMembers.filter(m => m.is_deleted !== 1);
-
-      const filteredMembers = activeMembers.filter(m => {
-        const memberName = (m.name || '').toLowerCase().trim();
-        const memberEmail = (m.email || '').toLowerCase().trim();
-
-        const linkedUser = usersList.find(u => {
-          const uEmail = (u.email || '').toLowerCase().trim();
-          const uName = (u.u_name || u.name || '').toLowerCase().trim();
-          if (memberEmail && uEmail && memberEmail === uEmail) return true;
-          if (memberName && uName && memberName === uName) return true;
-          return false;
-        });
-
-        if (!linkedUser) return true;
-        const role = (linkedUser.role || '').toLowerCase();
-        return !NON_MEMBER_ROLES.includes(role);
-      });
+      // Show every active TeamMember row. Do NOT drop members based on a
+      // name/email collision with a User account — that silently hides real
+      // team members whenever a Lead/Supervisor happens to share a name.
+      const filteredMembers = rawMembers.filter(m => m.is_deleted !== 1);
 
       setMembers(filteredMembers);
       setTasks(tasksList);
@@ -286,7 +269,7 @@ export default function LeadTeamMembers() {
               tasks: local.tasks,
             };
           } catch (err) {
-            // keep local
+            // keep local stats on error
           }
         })
       );
@@ -452,7 +435,7 @@ export default function LeadTeamMembers() {
     setForm({
       name:          member.name || '',
       role:          member.role || '',
-      email:         prevEmail || '',                                  // ← prefilled
+      email:         prevEmail || '',
       qualification: member.qualitifcation || member.qualification || '',
       experience:    member.experience ?? '',
       skills:        member.skills || '',
@@ -879,7 +862,6 @@ export default function LeadTeamMembers() {
                     <span className="member-role">{member.role}</span>
                   </div>
 
-                  {/* ⬇️ email on the card */}
                   {memberEmail && (
                     <div className="member-email" title={memberEmail}>
                       <Mail size={12} />
@@ -1042,7 +1024,6 @@ export default function LeadTeamMembers() {
                         <span className="badge badge-green">Active</span>
                         <span className="badge badge-gray">{drawer.experience || 0} yrs exp</span>
                       </div>
-                      {/* ⬇️ email in the header, right under the badges */}
                       {memberEmail && (
                         <div className="mm-header-email" title={memberEmail}>
                           <Mail size={12} />
@@ -1065,7 +1046,6 @@ export default function LeadTeamMembers() {
                     </div>
                   )}
 
-                  {/* ⬇️ Contact Info section */}
                   <div className="mm-section">
                     <h4 className="mm-section-title"><Mail size={14} /> Contact Information</h4>
                     <div className="mm-contact-grid">
@@ -1620,7 +1600,6 @@ export default function LeadTeamMembers() {
           gap: 6px;
         }
 
-        /* ─── Email on the member card ─── */
         .member-email {
           display: flex;
           align-items: center;
@@ -1634,7 +1613,6 @@ export default function LeadTeamMembers() {
         }
         .member-email svg { color: var(--text-muted); flex-shrink: 0; }
 
-        /* ─── Email in the modal header ─── */
         .mm-header-email {
           display: inline-flex;
           align-items: center;
@@ -1645,7 +1623,6 @@ export default function LeadTeamMembers() {
         }
         .mm-header-email svg { color: var(--text-muted); flex-shrink: 0; }
 
-        /* ─── Contact Information section ─── */
         .mm-contact-grid {
           display: grid;
           grid-template-columns: 1fr 1fr;
@@ -1687,7 +1664,6 @@ export default function LeadTeamMembers() {
           font-size: 12px;
         }
 
-        /* ─── DELETE MODAL ─── */
         .delete-modal { max-width: 520px !important; }
         .delete-icon-wrapper {
           width: 40px; height: 40px; border-radius: 50%;
@@ -1775,7 +1751,6 @@ export default function LeadTeamMembers() {
           display: inline-block;
         }
 
-        /* ─── MEMBER MODAL ─── */
         .member-modal-overlay {
           position: fixed; inset: 0;
           background: rgba(0, 0, 0, 0.65);
@@ -1957,7 +1932,6 @@ export default function LeadTeamMembers() {
           color: var(--accent-primary);
         }
 
-        /* Badges */
         .badge {
           display: inline-flex; align-items: center; gap: 4px;
           padding: 2px 10px; border-radius: 20px;
@@ -1968,7 +1942,6 @@ export default function LeadTeamMembers() {
         .badge-blue   { background: rgba(99, 102, 241, 0.15); color: #6366f1; }
         .badge-gray   { background: var(--bg-secondary); color: var(--text-muted); border: 1px solid var(--border-subtle); }
 
-        /* Filters */
         .lt-filters-container {
           display: flex; flex-direction: column; gap: 14px;
           margin-bottom: 24px;
@@ -2093,7 +2066,6 @@ export default function LeadTeamMembers() {
         }
         .lt-clear-filters-btn:hover { background: var(--bg-hover); color: var(--accent-primary); }
 
-        /* Members grid */
         .members-grid {
           display: grid;
           grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -2217,7 +2189,6 @@ export default function LeadTeamMembers() {
           color: var(--text-primary); margin: 8px 0 4px;
         }
 
-        /* Pagination */
         .pagination {
           display: flex; justify-content: center; gap: 8px;
           margin-top: 24px; flex-wrap: wrap;
@@ -2241,7 +2212,6 @@ export default function LeadTeamMembers() {
         }
         .pagination-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-        /* Responsive */
         @media (max-width: 768px) {
           .lt-filters-container { padding: 14px 16px; gap: 12px; }
           .lt-filter-controls { flex-direction: column; align-items: stretch; gap: 10px; }
