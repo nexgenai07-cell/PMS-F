@@ -17,9 +17,6 @@ import userService from '../../services/userService';
 import projectTeamService from '../../services/projectTeamService';
 import { useAuth } from '../../context/AuthContext';
 
-/* ─────────── Roles that are NOT team members ─────────── */
-const NON_MEMBER_ROLES = ['lead', 'member', 'manager', 'admin', 'supervisor'];
-
 /* ─────────── Validation constants ─────────── */
 const LIMITS = {
   name:          { min: 2,   max: 100 },
@@ -35,7 +32,6 @@ const EMAIL_REGEX   = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
 const NAME_REGEX    = /^[\p{L}\p{N} &\-.'()]+$/u;
 const ROLE_REGEX    = /^[\p{L}\p{N} &\-.'()/]+$/u;
 
-/* ─────────── Validators ─────────── */
 const validators = {
   name: (value) => {
     const v = (value ?? '').trim();
@@ -45,7 +41,6 @@ const validators = {
     if (!NAME_REGEX.test(v)) return 'Name can only contain letters, numbers, spaces and  & - . \' ( )';
     return '';
   },
-
   role: (value) => {
     const v = (value ?? '').trim();
     if (!v) return 'Role is required';
@@ -54,7 +49,6 @@ const validators = {
     if (!ROLE_REGEX.test(v)) return 'Role contains invalid characters';
     return '';
   },
-
   email: (value) => {
     const v = (value ?? '').trim();
     if (!v) return 'Email is required';
@@ -62,7 +56,6 @@ const validators = {
     if (!EMAIL_REGEX.test(v)) return 'Please enter a valid email address';
     return '';
   },
-
   qualification: (value) => {
     const v = (value ?? '').trim();
     if (!v) return 'Qualification is required';
@@ -70,7 +63,6 @@ const validators = {
     if (v.length > LIMITS.qualification.max) return `Qualification must be less than ${LIMITS.qualification.max} characters`;
     return '';
   },
-
   experience: (value) => {
     const v = String(value ?? '').trim();
     if (v === '') return 'Experience is required';
@@ -81,7 +73,6 @@ const validators = {
     if (n > LIMITS.experience.max) return `Experience must be less than ${LIMITS.experience.max} years`;
     return '';
   },
-
   skills: (value) => {
     const v = (value ?? '').trim();
     if (!v) return 'Skills are required';
@@ -89,7 +80,6 @@ const validators = {
     if (v.length > LIMITS.skills.max) return `Skills must be less than ${LIMITS.skills.max} characters`;
     return '';
   },
-
   description: (value) => {
     const v = value ?? '';
     if (v.length > LIMITS.description.max) return `Description must be less than ${LIMITS.description.max} characters`;
@@ -99,7 +89,6 @@ const validators = {
   },
 };
 
-/* ─────────── Inline error ─────────── */
 function FieldError({ message }) {
   if (!message) return null;
   return (
@@ -120,7 +109,6 @@ const defaultForm = {
   description: ''
 };
 
-/* ─────────── Compute per-member task stats locally ─────────── */
 function computeTaskStatsForMember(memberId, allTasks) {
   const numId = Number(memberId);
   const memberTasks = (allTasks || []).filter(t => {
@@ -245,24 +233,9 @@ export default function SupervisorTeams() {
 
       if (!Array.isArray(rawMembers)) rawMembers = [];
 
-      const activeMembers = rawMembers.filter(m => m.is_deleted !== 1);
-
-      const filteredMembers = activeMembers.filter(m => {
-        const memberName = (m.name || '').toLowerCase().trim();
-        const memberEmail = (m.email || '').toLowerCase().trim();
-
-        const linkedUser = usersList.find(u => {
-          const uEmail = (u.email || '').toLowerCase().trim();
-          const uName = (u.u_name || u.name || '').toLowerCase().trim();
-          if (memberEmail && uEmail && memberEmail === uEmail) return true;
-          if (memberName && uName && memberName === uName) return true;
-          return false;
-        });
-
-        if (!linkedUser) return true;
-        const role = (linkedUser.role || '').toLowerCase();
-        return !NON_MEMBER_ROLES.includes(role);
-      });
+      // Show every active TeamMember row. Do NOT drop members based on a
+      // name/email collision with a User account.
+      const filteredMembers = rawMembers.filter(m => m.is_deleted !== 1);
 
       setMembers(filteredMembers);
       setTasks(tasksList);
@@ -356,10 +329,6 @@ export default function SupervisorTeams() {
 
   const getUserById = (id) => users.find(u => (u.id || u.u_id) === id);
 
-  /* ─────────── Email resolver ───────────
-     Prefer `member.email` (backend column). Fall back to a linked User
-     by matching name — legacy members created before the column existed
-     will still get their email prefilled this way. */
   const getMemberEmail = (member) => {
     if (!member) return '';
     if (member.email && String(member.email).trim()) return member.email;
@@ -449,7 +418,6 @@ export default function SupervisorTeams() {
     }
   };
 
-  /* ─────────── Edit — prefills the previous email ─────────── */
   const openEdit = (member) => {
     setSelected(member);
     const prevEmail = getMemberEmail(member);
@@ -457,7 +425,7 @@ export default function SupervisorTeams() {
     setForm({
       name: member.name || '',
       role: member.role || '',
-      email: prevEmail || '',                                          // ← prefilled
+      email: prevEmail || '',
       qualification: member.qualitifcation || member.qualification || '',
       experience: member.experience ?? '',
       skills: member.skills || '',
@@ -739,7 +707,6 @@ export default function SupervisorTeams() {
           </button>
         </div>
 
-        {/* Filters */}
         <div className="lt-filters-container">
           <div className="lt-search-wrapper">
             <Search size={16} className="lt-search-icon" />
@@ -829,7 +796,6 @@ export default function SupervisorTeams() {
           </div>
         </div>
 
-        {/* Members Grid */}
         <div className="members-grid">
           {paginatedMembers.length === 0 ? (
             <div className="members-empty">
@@ -893,7 +859,6 @@ export default function SupervisorTeams() {
                     <span className="member-role">{member.role}</span>
                   </div>
 
-                  {/* email on the card */}
                   {memberEmail && (
                     <div className="member-email" title={memberEmail}>
                       <Mail size={12} />
@@ -948,7 +913,6 @@ export default function SupervisorTeams() {
           )}
         </div>
 
-        {/* Pagination */}
         {totalPages > 1 && (
           <div className="pagination">
             <button
@@ -1056,7 +1020,6 @@ export default function SupervisorTeams() {
                         <span className="badge badge-green">Active</span>
                         <span className="badge badge-gray">{drawer.experience || 0} yrs exp</span>
                       </div>
-                      {/* email in the header, right under the badges */}
                       {memberEmail && (
                         <div className="mm-header-email" title={memberEmail}>
                           <Mail size={12} />
@@ -1079,7 +1042,6 @@ export default function SupervisorTeams() {
                     </div>
                   )}
 
-                  {/* Contact Info section */}
                   <div className="mm-section">
                     <h4 className="mm-section-title"><Mail size={14} /> Contact Information</h4>
                     <div className="mm-contact-grid">
@@ -1636,7 +1598,6 @@ export default function SupervisorTeams() {
           gap: 6px;
         }
 
-        /* ─── Email on the member card ─── */
         .member-email {
           display: flex;
           align-items: center;
@@ -1650,7 +1611,6 @@ export default function SupervisorTeams() {
         }
         .member-email svg { color: var(--text-muted); flex-shrink: 0; }
 
-        /* ─── Email in the modal header ─── */
         .mm-header-email {
           display: inline-flex;
           align-items: center;
@@ -1661,7 +1621,6 @@ export default function SupervisorTeams() {
         }
         .mm-header-email svg { color: var(--text-muted); flex-shrink: 0; }
 
-        /* ─── Contact Information section ─── */
         .mm-contact-grid {
           display: grid;
           grid-template-columns: 1fr 1fr;
@@ -1703,7 +1662,6 @@ export default function SupervisorTeams() {
           font-size: 12px;
         }
 
-        /* ─── DELETE MODAL ─── */
         .delete-modal { max-width: 520px !important; }
         .delete-icon-wrapper {
           width: 40px; height: 40px; border-radius: 50%;
@@ -1791,7 +1749,6 @@ export default function SupervisorTeams() {
           display: inline-block;
         }
 
-        /* ─── MEMBER MODAL ─── */
         .member-modal-overlay {
           position: fixed; inset: 0;
           background: rgba(0, 0, 0, 0.65);
@@ -1967,7 +1924,6 @@ export default function SupervisorTeams() {
           color: var(--accent-primary);
         }
 
-        /* Badges */
         .badge {
           display: inline-flex; align-items: center; gap: 4px;
           padding: 2px 10px; border-radius: 20px;
@@ -1978,7 +1934,6 @@ export default function SupervisorTeams() {
         .badge-blue   { background: rgba(99, 102, 241, 0.15); color: #6366f1; }
         .badge-gray   { background: var(--bg-secondary); color: var(--text-muted); border: 1px solid var(--border-subtle); }
 
-        /* Filters */
         .lt-filters-container {
           display: flex; flex-direction: column; gap: 14px;
           margin-bottom: 24px;
@@ -2103,7 +2058,6 @@ export default function SupervisorTeams() {
         }
         .lt-clear-filters-btn:hover { background: var(--bg-hover); color: var(--accent-primary); }
 
-        /* Members grid */
         .members-grid {
           display: grid;
           grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -2227,7 +2181,6 @@ export default function SupervisorTeams() {
           color: var(--text-primary); margin: 8px 0 4px;
         }
 
-        /* Pagination */
         .pagination {
           display: flex; justify-content: center; gap: 8px;
           margin-top: 24px; flex-wrap: wrap;
@@ -2251,7 +2204,6 @@ export default function SupervisorTeams() {
         }
         .pagination-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-        /* Responsive */
         @media (max-width: 768px) {
           .lt-filters-container { padding: 14px 16px; gap: 12px; }
           .lt-filter-controls { flex-direction: column; align-items: stretch; gap: 10px; }
