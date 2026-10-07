@@ -54,6 +54,8 @@ export default function LeadNotifications() {
   // between fetchData / markAsRead / markAllRead / deleteNotification.
   const userId = user?.id || user?.u_id;
   const userRole = user?.role || 'member';
+  // NEW: the registration timestamp acts as a lower bound for notifications.
+  const userCreatedAt = user?.created_at || null;
 
   const readKey = `read_notifications_${userId ?? 'anon'}`;
   const deletedKey = `deleted_notifications_${userId ?? 'anon'}`;
@@ -69,7 +71,8 @@ export default function LeadNotifications() {
           taskService.getTasks(),
           teamService.getTeamMembers(),
           userService.getUsers(),
-          notificationService.getNotifications(userId, userRole),
+          // Pass userCreatedAt so a brand-new user gets an empty inbox.
+          notificationService.getNotifications(userId, userRole, userCreatedAt),
         ]);
 
       const projectsList  = projectsData?.data || projectsData || [];
@@ -99,6 +102,7 @@ export default function LeadNotifications() {
         projects: projectsList.length,
         tasks: tasksList.length,
         notifications: notificationsList.length,
+        userCreatedAt,
       });
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -108,7 +112,7 @@ export default function LeadNotifications() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [userId, userRole, readKey, deletedKey]);
+  }, [userId, userRole, userCreatedAt, readKey, deletedKey]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -221,13 +225,6 @@ export default function LeadNotifications() {
     return past.toLocaleDateString();
   };
 
-  /**
-   * Resolve a target route for a notification.
-   *
-   * Because notificationService generates notifications client-side with
-   * `entity_type` and `entity_id` baked in, we can always route to a
-   * sensible page — including for team members and leads.
-   */
   const getNotificationRoute = (notification) => {
     const type = notification.type || '';
     const entityType = notification.entity_type;

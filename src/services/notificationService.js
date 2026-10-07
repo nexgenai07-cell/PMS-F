@@ -23,8 +23,13 @@ class NotificationService {
    *  - Manager/Supervisor → sees ONLY projects they created OR supervise OR are PTeam members of.
    *  - Lead/Member      → sees ONLY projects they created OR are PTeam members of.
    *  - New user (no projects, no tasks, no PTeam) → sees NOTHING.
+   *
+   * ADDITIONALLY: only activities created ON OR AFTER the user's own
+   * `created_at` are shown. A freshly registered user therefore starts
+   * with an empty inbox, even if they happen to share a name with an
+   * existing TeamMember profile.
    */
-  async getNotifications(userId = null, userRole = null) {
+  async getNotifications(userId = null, userRole = null, userCreatedAt = null) {
     try {
       const currentUserId = Number(userId);
       const role = (userRole || '').toLowerCase();
@@ -282,8 +287,23 @@ class NotificationService {
         }
       });
 
+      // ═══════════════════════════════════════════════════════════
+      // 7) NEW USER CUTOFF
+      //    Hide anything that happened before this user registered.
+      //    This is what stops a brand-new account from inheriting
+      //    historical activity via name-based TeamMember matching.
+      // ═══════════════════════════════════════════════════════════
+      const cutoffTs = userCreatedAt ? new Date(userCreatedAt).getTime() : 0;
+
+      const visibleActivities = cutoffTs
+        ? activities.filter(a => {
+            const ts = new Date(a.created_at || 0).getTime();
+            return ts >= cutoffTs;
+          })
+        : activities;
+
       // ─── Sort newest first ───
-      activities.sort((a, b) => {
+      visibleActivities.sort((a, b) => {
         const da = new Date(a.created_at || 0).getTime();
         const db = new Date(b.created_at || 0).getTime();
         return db - da;
@@ -292,10 +312,12 @@ class NotificationService {
       console.log(
         `📬 notificationService: user=${userName || currentUserId} role=${role}`,
         `visibleProjects=${userProjectIds.size}`,
-        `activities=${activities.length}`
+        `rawActivities=${activities.length}`,
+        `visibleActivities=${visibleActivities.length}`,
+        cutoffTs ? `cutoff=${new Date(cutoffTs).toISOString()}` : 'cutoff=none'
       );
 
-      return { success: true, data: activities };
+      return { success: true, data: visibleActivities };
     } catch (error) {
       console.error('NotificationService: Error fetching activities:', error);
       return { success: false, data: [] };
@@ -366,11 +388,11 @@ class NotificationService {
     } catch { return new Set(); }
   }
 
-  async getUnreadCount(userId = null, userRole = null) {
+  async getUnreadCount(userId = null, userRole = null, userCreatedAt = null) {
     try {
       const deleted = this.getDeletedSet(userId);
       const read = this.getReadSet(userId);
-      const res = await this.getNotifications(userId, userRole);
+      const res = await this.getNotifications(userId, userRole, userCreatedAt);
       const all = this._asArray(res?.data);
 
       const visible = all.filter(n => !deleted.has(n.n_id || n.id));

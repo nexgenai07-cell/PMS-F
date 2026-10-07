@@ -50,6 +50,9 @@ export default function SupervisorNotifications() {
   const [filterType, setFilterType] = useState('all');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
 
+  // NEW: user registration timestamp acts as the notification lower bound.
+  const userCreatedAt = user?.created_at || null;
+
   /* ─────────── Data fetch ─────────── */
   const fetchData = useCallback(async () => {
     try {
@@ -62,7 +65,8 @@ export default function SupervisorNotifications() {
         taskService.getTasks(),
         teamService.getTeamMembers(),
         userService.getUsers(),
-        notificationService.getNotifications(userId, userRole),
+        // Pass userCreatedAt so a brand-new supervisor gets an empty inbox.
+        notificationService.getNotifications(userId, userRole, userCreatedAt),
       ]);
 
       const projectsList = projectsData?.data || projectsData || [];
@@ -73,11 +77,11 @@ export default function SupervisorNotifications() {
 
       // Filter out locally-deleted + locally-read notifications
       const readItems = JSON.parse(
-  localStorage.getItem(`read_notifications_${userId}`) || '[]'
-);
-const deletedItems = JSON.parse(
-  localStorage.getItem(`deleted_notifications_${userId}`) || '[]'
-);
+        localStorage.getItem(`read_notifications_${userId}`) || '[]'
+      );
+      const deletedItems = JSON.parse(
+        localStorage.getItem(`deleted_notifications_${userId}`) || '[]'
+      );
 
       const notificationsList = (Array.isArray(rawNotifs) ? rawNotifs : [])
         .filter(n => !deletedItems.includes(n.n_id || n.id))
@@ -96,6 +100,7 @@ const deletedItems = JSON.parse(
         projects: projectsList.length,
         tasks: tasksList.length,
         notifications: notificationsList.length,
+        userCreatedAt,
         sample: notificationsList[0],
       });
     } catch (error) {
@@ -106,7 +111,7 @@ const deletedItems = JSON.parse(
       setLoading(false);
       setRefreshing(false);
     }
-  }, [user?.id, user?.u_id, user?.role]);
+  }, [user?.id, user?.u_id, user?.role, userCreatedAt]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -118,41 +123,38 @@ const deletedItems = JSON.parse(
 
   /* ─────────── Actions ─────────── */
 
-  // In markAllRead:
-const markAllRead = async () => {
-  try {
-    const ids = notifications.map(n => n.n_id || n.id);
-    await notificationService.markAllRead(ids, user?.id || user?.u_id);
-    setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
-    toast.success('All notifications marked as read');
-  } catch (error) {
-    toast.error('Failed to mark all as read');
-  }
-};
+  const markAllRead = async () => {
+    try {
+      const ids = notifications.map(n => n.n_id || n.id);
+      await notificationService.markAllRead(ids, user?.id || user?.u_id);
+      setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+      toast.success('All notifications marked as read');
+    } catch (error) {
+      toast.error('Failed to mark all as read');
+    }
+  };
 
-// In markAsRead:
-const markAsRead = async (id) => {
-  try {
-    await notificationService.markAsRead(id, user?.id || user?.u_id);
-    setNotifications(prev => prev.map(n =>
-      (n.n_id || n.id) === id ? { ...n, is_read: true } : n
-    ));
-  } catch (error) {
-    console.error('markAsRead failed:', error);
-  }
-};
+  const markAsRead = async (id) => {
+    try {
+      await notificationService.markAsRead(id, user?.id || user?.u_id);
+      setNotifications(prev => prev.map(n =>
+        (n.n_id || n.id) === id ? { ...n, is_read: true } : n
+      ));
+    } catch (error) {
+      console.error('markAsRead failed:', error);
+    }
+  };
 
-// In deleteNotification:
-const deleteNotification = async (id) => {
-  try {
-    await notificationService.deleteNotification(id, user?.id || user?.u_id);
-    setNotifications(prev => prev.filter(n => (n.n_id || n.id) !== id));
-    setShowDeleteConfirm(null);
-    toast.success('Notification deleted');
-  } catch (error) {
-    toast.error('Failed to delete notification');
-  }
-};
+  const deleteNotification = async (id) => {
+    try {
+      await notificationService.deleteNotification(id, user?.id || user?.u_id);
+      setNotifications(prev => prev.filter(n => (n.n_id || n.id) !== id));
+      setShowDeleteConfirm(null);
+      toast.success('Notification deleted');
+    } catch (error) {
+      toast.error('Failed to delete notification');
+    }
+  };
 
   /* ─────────── Helpers ─────────── */
 
@@ -191,18 +193,6 @@ const deleteNotification = async (id) => {
     return labels[type] || (type ? type.replace(/_/g, ' ') : 'Notification');
   };
 
-  /**
-   * Resolve the target route for a notification.
-   *
-   * Because notificationService builds these client-side, every item
-   * already has `entity_type` and `entity_id`:
-   *   - entity_type = 'project' → route to project detail
-   *   - entity_type = 'task'    → route to task detail (nested under project)
-   *   - entity_type = 'team_member' → route to team members page
-   *
-   * For tasks we need the parent project ID. If the notification doesn't
-   * already carry it, look it up from the fetched tasks list.
-   */
   const getNotificationRoute = (notification) => {
     const type = notification.type || '';
     const entityType = notification.entity_type;
@@ -221,8 +211,6 @@ const deleteNotification = async (id) => {
       if (projectId) {
         return `/supervisor/projects/${projectId}/tasks/${entityId}`;
       }
-      // Fallback: some task-related notifications may carry project in `u`
-      // or we can go to the project page if we can find one
       return null;
     }
 
@@ -239,9 +227,6 @@ const deleteNotification = async (id) => {
     return null;
   };
 
-  /**
-   * Human-readable name of the entity the notification refers to.
-   */
   const getEntityName = (notification) => {
     const entityType = notification.entity_type;
     const entityId = notification.entity_id;
@@ -281,7 +266,6 @@ const deleteNotification = async (id) => {
     if (route) {
       navigate(route);
     } else {
-      // No route — subtle hint so users know why nothing happened
       toast('This activity has no linked page', { icon: 'ℹ️' });
     }
   };

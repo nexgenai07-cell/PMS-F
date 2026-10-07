@@ -1804,6 +1804,24 @@ export default function LeadProjectDetail() {
         .ring-value { font-size: 18px; font-weight: 800; color: var(--text-primary); line-height: 1; }
         .ring-label { font-size: 8px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
 
+        .overview-info {
+  flex: 1;
+  min-width: 0;          /* already there — keep it */
+  max-width: 100%;
+  overflow: hidden;      /* NEW */
+}
+
+.overview-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0;
+  overflow-wrap: anywhere;   /* NEW — breaks long unbroken strings */
+  word-break: break-word;    /* NEW — fallback for older browsers */
+  white-space: normal;       /* NEW — explicit, in case a parent sets nowrap */
+  max-width: 100%;           /* NEW */
+}
+  
         .info-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
         .info-stat { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--bg-secondary); border-radius: 8px; }
         .info-stat-icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }

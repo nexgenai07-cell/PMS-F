@@ -1912,6 +1912,24 @@ export default function SupervisorProjectDetail() {
         .confirm-title { font-size: 18px; font-weight: 800; color: var(--text-primary); margin: 0 0 6px; }
         .confirm-desc { font-size: 13px; color: var(--text-muted); margin: 0 0 16px; }
 
+        .overview-info {
+  flex: 1;
+  min-width: 0;          /* already there — keep it */
+  max-width: 100%;
+  overflow: hidden;      /* NEW */
+}
+
+.overview-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0;
+  overflow-wrap: anywhere;   /* NEW — breaks long unbroken strings */
+  word-break: break-word;    /* NEW — fallback for older browsers */
+  white-space: normal;       /* NEW — explicit, in case a parent sets nowrap */
+  max-width: 100%;           /* NEW */
+}
+  
         /* ─── NEW: Subtasks section inside Create Task modal ─── */
         .add-subtasks-block {
           margin-top: 8px;
