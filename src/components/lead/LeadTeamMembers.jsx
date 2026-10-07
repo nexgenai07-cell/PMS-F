@@ -351,6 +351,44 @@ export default function LeadTeamMembers() {
     return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
   };
 
+  /* ─────────── Dynamic role options ───────────
+   Derive the filter dropdown from the roles actually present on the
+   loaded members, so any custom role a user types when adding a member
+   immediately becomes filterable. The hardcoded list is kept as a
+   fallback for the empty state. */
+const DEFAULT_ROLE_OPTIONS = [
+  'Frontend', 'Backend', 'Full Stack', 'Designer',
+  'Developer', 'QA', 'DevOps',
+];
+
+const roleOptions = useMemo(() => {
+  const seen = new Map();  // normalized -> original display form
+
+  members.forEach(m => {
+    const raw = (m.role || '').trim();
+    if (!raw) return;
+    const key = raw.toLowerCase();
+    if (!seen.has(key)) seen.set(key, raw);
+  });
+
+  // Merge in defaults that aren't already present (case-insensitive)
+  DEFAULT_ROLE_OPTIONS.forEach(r => {
+    const key = r.toLowerCase();
+    if (!seen.has(key)) seen.set(key, r);
+  });
+
+  // Sort alphabetically by the display form
+  return Array.from(seen.values()).sort((a, b) =>
+    a.localeCompare(b)
+  );
+}, [members]);
+
+useEffect(() => {
+  if (filterRole !== 'all' && !roleOptions.includes(filterRole)) {
+    setFilterRole('all');
+  }
+}, [roleOptions, filterRole]);
+
   /* ─────────── Form validation ─────────── */
   const formErrors = useMemo(() => ({
     name: validators.name(form.name),
@@ -637,7 +675,9 @@ export default function LeadTeamMembers() {
       role.toLowerCase().includes(search.toLowerCase()) ||
       skills.toLowerCase().includes(search.toLowerCase());
 
-    const roleMatch = filterRole === 'all' || role.toLowerCase() === filterRole.toLowerCase();
+    const roleMatch =
+  filterRole === 'all' ||
+  (m.role || '').trim().toLowerCase() === filterRole.trim().toLowerCase();
 
     let expMatch = true;
     if (filterExperience === '0-1') expMatch = experience >= 0 && experience <= 1;
@@ -727,18 +767,18 @@ export default function LeadTeamMembers() {
 
           <div className="lt-filter-controls">
             <div className="lt-filter-group">
-              <div className="lt-filter-label"><Briefcase size={12} /><span>Role</span></div>
-              <select className="lt-filter-select" value={filterRole} onChange={e => setFilterRole(e.target.value)}>
-                <option value="all">All Roles</option>
-                <option value="frontend">🎨 Frontend</option>
-                <option value="backend">⚙️ Backend</option>
-                <option value="full stack">🔄 Full Stack</option>
-                <option value="designer">✏️ Designer</option>
-                <option value="developer">💻 Developer</option>
-                <option value="qa">🧪 QA</option>
-                <option value="devops">🔧 DevOps</option>
-              </select>
-            </div>
+  <div className="lt-filter-label"><Briefcase size={12} /><span>Role</span></div>
+  <select
+    className="lt-filter-select"
+    value={filterRole}
+    onChange={e => setFilterRole(e.target.value)}
+  >
+    <option value="all">All Roles</option>
+    {roleOptions.map(role => (
+      <option key={role} value={role}>{role}</option>
+    ))}
+  </select>
+</div>
 
             <div className="lt-filter-group">
               <div className="lt-filter-label"><Award size={12} /><span>Experience</span></div>
