@@ -3,7 +3,7 @@
   "routes": [
     {
       "src": "/api/(.*)",
-      "dest": "https://pms-backend-fawn-pi.vercel.app/api/$1"
+      "dest": "https://pms-b.vercel.app/api/$1"
     },
     {
       "handle": "filesystem"
