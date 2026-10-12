@@ -148,46 +148,47 @@ class ProjectTeamService {
    * This is the "add this lead as a team member" path.
    */
   async addLeadAsTeamMember(projectId, leadUser, existingTeamMembers = []) {
-    try {
-      // 1. Does a TeamMember profile already exist for this Lead (by name)?
-      const nameLower = (leadUser?.u_name || leadUser?.name || '').toLowerCase().trim();
-      let teamMemberId = null;
+  try {
+    // 1. Does a TeamMember profile already exist for this Lead (by name)?
+    const nameLower = (leadUser?.u_name || leadUser?.name || '').toLowerCase().trim();
+    let teamMemberId = null;
 
-      const byName = existingTeamMembers.find(m =>
-        (m.name || '').toLowerCase().trim() === nameLower
-      );
-      if (byName) {
-        teamMemberId = Number(byName.id);
-      }
-
-      // 2. If not, create one via the team-members endpoint.
-      if (!teamMemberId) {
-        console.log(`📤 Creating TeamMember profile for Lead "${leadUser.u_name || leadUser.name}"`);
-
-        const created = await api.post(endpoints.teamMembers.list, {
-          name: leadUser.u_name || leadUser.name,
-          role: 'Lead',
-          email: leadUser.email || '',
-          added_by: leadUser.id,
-        });
-
-        const createdData = created.data?.data || created.data;
-        teamMemberId = Number(createdData?.id);
-      }
-
-      if (!teamMemberId) throw new Error('Could not resolve TeamMember id for lead');
-
-      // 3. Add them to the project's team (PTeam).
-      const linkResponse = await api.post(endpoints.pteam.add, {
-        p: projectId,
-        tm: teamMemberId,
-      });
-      return linkResponse.data;
-    } catch (error) {
-      console.error('ProjectTeamService: Error adding lead as team member:', error);
-      throw error;
+    const byName = existingTeamMembers.find(m =>
+      (m.name || '').toLowerCase().trim() === nameLower
+    );
+    if (byName) {
+      teamMemberId = Number(byName.id);
     }
+
+    // 2. If not, create one via the team-members endpoint.
+    if (!teamMemberId) {
+      console.log(`📤 Creating TeamMember profile for Lead "${leadUser.u_name || leadUser.name}"`);
+
+      const created = await api.post(endpoints.teamMembers.list, {
+        name: leadUser.u_name || leadUser.name,
+        role: 'Lead',
+        email: leadUser.email || '',
+        added_by: leadUser.id,
+        linked_user: leadUser.id,          // ← NEW: mark as project-scoped
+      });
+
+      const createdData = created.data?.data || created.data;
+      teamMemberId = Number(createdData?.id);
+    }
+
+    if (!teamMemberId) throw new Error('Could not resolve TeamMember id for lead');
+
+    // 3. Add them to the project's team (PTeam).
+    const linkResponse = await api.post(endpoints.pteam.add, {
+      p: projectId,
+      tm: teamMemberId,
+    });
+    return linkResponse.data;
+  } catch (error) {
+    console.error('ProjectTeamService: Error adding lead as team member:', error);
+    throw error;
   }
+}
 
   handleError(error) {
     if (error.response) {

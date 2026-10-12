@@ -1146,11 +1146,20 @@ export default function LeadProjectDetail() {
     );
   }
 
-  const creatorName = project.created_by_name || 'Project Lead';
-  const additionalLeads = asArray(projectLeadsFinal).filter(
-    m => Number(m.userId) !== Number(project.created_by)
-  );
-  const totalLeadCount = 1 + additionalLeads.length;
+  // The "Project Lead" section should show actual Leads — a Supervisor who
+// created the project is not a Lead. Only count the creator as the Lead
+// when they actually hold a Lead-role (i.e. their role is one of LEAD_ROLES
+// on their matched TeamMember record, or their User.role is 'member').
+const creatorUserId = Number(project.created_by);
+const creatorUser = asArray(users).find(u => Number(u.id) === creatorUserId);
+const creatorUserRole = (creatorUser?.role || '').toLowerCase();
+const creatorIsLead = LEAD_ROLES.includes(creatorUserRole);   // 'lead' or 'member'
+
+const creatorName = project.created_by_name || (creatorIsLead ? 'Project Lead' : 'Project Creator');
+const additionalLeads = asArray(projectLeadsFinal).filter(
+  m => Number(m.userId) !== creatorUserId
+);
+const totalLeadCount = (creatorIsLead ? 1 : 0) + additionalLeads.length;
 
   return (
     <div className="project-detail-page">
@@ -1679,17 +1688,27 @@ export default function LeadProjectDetail() {
                   </div>
                 </div>
                 <div className="team-section-list">
-                  <div className="team-member-item lead-item">
-                    <Avatar name={creatorName} size="sm" />
-                    <div className="team-member-info">
-                      <span className="team-member-name">
-                        {creatorName}
-                        <span className="lead-badge"><Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} /></span>
-                      </span>
-                      <span className="team-member-role">Team Lead (Creator)</span>
-                    </div>
-                  </div>
-                  {additionalLeads.map((m, idx) => (
+  {creatorIsLead ? (
+    <div className="team-member-item lead-item">
+      <Avatar name={creatorName} size="sm" />
+      <div className="team-member-info">
+        <span className="team-member-name">
+          {creatorName}
+          <span className="lead-badge"><Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} /></span>
+        </span>
+        <span className="team-member-role">Team Lead (Creator)</span>
+      </div>
+    </div>
+  ) : (
+    <div className="team-member-item" style={{ padding: '8px 10px' }}>
+      <Avatar name={creatorName} size="sm" />
+      <div className="team-member-info">
+        <span className="team-member-name">{creatorName}</span>
+        <span className="team-member-role">Created by (not a Project Lead)</span>
+      </div>
+    </div>
+  )}
+  {additionalLeads.map((m, idx) => (
                     <div key={m.id || `lead-${idx}`} className="team-member-item lead-item">
                       <Avatar name={m.name || 'Lead'} size="sm" />
                       <div className="team-member-info">
