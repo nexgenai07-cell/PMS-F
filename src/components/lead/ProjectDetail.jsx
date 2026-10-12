@@ -1151,15 +1151,33 @@ export default function LeadProjectDetail() {
 // when they actually hold a Lead-role (i.e. their role is one of LEAD_ROLES
 // on their matched TeamMember record, or their User.role is 'member').
 const creatorUserId = Number(project.created_by);
-const creatorUser = asArray(users).find(u => Number(u.id) === creatorUserId);
+const creatorUser   = asArray(users).find(u => Number(u.id) === creatorUserId);
 const creatorUserRole = (creatorUser?.role || '').toLowerCase();
-const creatorIsLead = LEAD_ROLES.includes(creatorUserRole);   // 'lead' or 'member'
 
-const creatorName = project.created_by_name || (creatorIsLead ? 'Project Lead' : 'Project Creator');
+// A User's auth role decides which section their "created by" entry lives in.
+// "member" (aka Lead) → Project Lead section
+// "manager"/"supervisor"/"admin" → Supervisors section
+// anything else → Team Members section
+const creatorIsLead       = creatorUserRole === 'member';
+const creatorIsSupervisor = SUPERVISOR_ROLES.includes(creatorUserRole);
+
+const creatorName = project.created_by_name || creatorUser?.u_name || 'Unknown';
+
+// Leads listed in the Project Lead section = actual project Leads +
+// (the creator if they're a Lead themselves). The creator-as-Lead entry is
+// rendered separately below, so we only need the "additional" leads here.
 const additionalLeads = asArray(projectLeadsFinal).filter(
   m => Number(m.userId) !== creatorUserId
 );
 const totalLeadCount = (creatorIsLead ? 1 : 0) + additionalLeads.length;
+
+// Same idea for the Supervisors section: the creator's name is shown inline
+// with a "Created by" tag when they're a supervisor. All other supervisors
+// come from projectSupervisors, minus the creator if they're in that list.
+const additionalSupervisors = asArray(projectSupervisors).filter(
+  s => Number(s.userId) !== creatorUserId
+);
+const totalSupervisorCount = (creatorIsSupervisor ? 1 : 0) + additionalSupervisors.length;
 
   return (
     <div className="project-detail-page">
@@ -1688,7 +1706,7 @@ const totalLeadCount = (creatorIsLead ? 1 : 0) + additionalLeads.length;
                   </div>
                 </div>
                 <div className="team-section-list">
-  {creatorIsLead ? (
+  {creatorIsLead && (
     <div className="team-member-item lead-item">
       <Avatar name={creatorName} size="sm" />
       <div className="team-member-info">
@@ -1699,69 +1717,87 @@ const totalLeadCount = (creatorIsLead ? 1 : 0) + additionalLeads.length;
         <span className="team-member-role">Team Lead (Creator)</span>
       </div>
     </div>
-  ) : (
-    <div className="team-member-item" style={{ padding: '8px 10px' }}>
-      <Avatar name={creatorName} size="sm" />
-      <div className="team-member-info">
-        <span className="team-member-name">{creatorName}</span>
-        <span className="team-member-role">Created by (not a Project Lead)</span>
-      </div>
-    </div>
   )}
+
   {additionalLeads.map((m, idx) => (
-                    <div key={m.id || `lead-${idx}`} className="team-member-item lead-item">
-                      <Avatar name={m.name || 'Lead'} size="sm" />
-                      <div className="team-member-info">
-                        <span className="team-member-name">
-                          {m.name || `User ${m.id}`}
-                          <span className="lead-badge"><Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} /></span>
-                        </span>
-                        <span className="team-member-role">Project Lead</span>
-                      </div>
-                      <button className="task-action-btn danger" title={`Remove ${m.name || 'lead'}`} onClick={() => promptRemoveMember(m)}>
-                        <UserMinus size={11} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
+    <div key={m.id || `lead-${idx}`} className="team-member-item lead-item">
+      <Avatar name={m.name || 'Lead'} size="sm" />
+      <div className="team-member-info">
+        <span className="team-member-name">
+          {m.name || `User ${m.id}`}
+          <span className="lead-badge"><Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} /></span>
+        </span>
+        <span className="team-member-role">Project Lead</span>
+      </div>
+      <button className="task-action-btn danger" title={`Remove ${m.name || 'lead'}`} onClick={() => promptRemoveMember(m)}>
+        <UserMinus size={11} />
+      </button>
+    </div>
+  ))}
+
+  {!creatorIsLead && additionalLeads.length === 0 && (
+    <div className="team-section-empty">No project lead assigned</div>
+  )}
+</div>
 
               {/* Supervisors */}
               <div className="team-section team-section-supervisors">
-                <div className="team-section-header">
-                  <div className="team-section-title">
-                    <Crown size={13} style={{ color: '#f59e0b' }} />
-                    <span>Supervisors</span>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span className="team-section-count">{asArray(projectSupervisors).length}</span>
-                    <button className="team-add-btn" title="Add supervisor" onClick={() => setAddSupervisorOpen(true)}>
-                      <Plus size={11} />
-                    </button>
-                  </div>
-                </div>
-                {asArray(projectSupervisors).length === 0 ? (
-                  <div className="team-section-empty">No supervisors assigned</div>
-                ) : (
-                  <div className="team-section-list">
-                    {projectSupervisors.map((m, idx) => (
-                      <div key={m.id || `sup-${idx}`} className="team-member-item supervisor-item">
-                        <Avatar name={m.name || 'Supervisor'} size="sm" />
-                        <div className="team-member-info">
-                          <span className="team-member-name">
-                            {m.name || `User ${m.id}`}
-                            <span className="supervisor-badge"><Crown size={12} style={{ color: '#f59e0b', marginLeft: 4 }} /></span>
-                          </span>
-                          <span className="team-member-role">Supervisor</span>
-                        </div>
-                        <button className="task-action-btn danger" title={`Remove ${m.name || 'supervisor'}`} onClick={() => promptRemoveMember(m)}>
-                          <UserMinus size={11} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+  <div className="team-section-header">
+    <div className="team-section-title">
+      <Crown size={13} style={{ color: '#f59e0b' }} />
+      <span>Supervisors</span>
+    </div>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <span className="team-section-count">{totalSupervisorCount}</span>
+      <button className="team-add-btn" title="Add supervisor" onClick={() => setAddSupervisorOpen(true)}>
+        <Plus size={11} />
+      </button>
+    </div>
+  </div>
+
+  {(creatorIsSupervisor ? 1 : 0) + additionalSupervisors.length === 0 ? (
+    <div className="team-section-empty">No supervisors assigned</div>
+  ) : (
+    <div className="team-section-list">
+      {creatorIsSupervisor && (
+        <div className="team-member-item supervisor-item">
+          <Avatar name={creatorName} size="sm" />
+          <div className="team-member-info">
+            <span className="team-member-name">
+              {creatorName}
+              <span className="supervisor-badge">
+                <Crown size={12} style={{ color: '#f59e0b', marginLeft: 4 }} />
+              </span>
+            </span>
+            <span className="team-member-role">Supervisor (Creator)</span>
+          </div>
+        </div>
+      )}
+
+      {additionalSupervisors.map((m, idx) => (
+        <div key={m.id || `sup-${idx}`} className="team-member-item supervisor-item">
+          <Avatar name={m.name || 'Supervisor'} size="sm" />
+          <div className="team-member-info">
+            <span className="team-member-name">
+              {m.name || `User ${m.id}`}
+              <span className="supervisor-badge">
+                <Crown size={12} style={{ color: '#f59e0b', marginLeft: 4 }} />
+              </span>
+            </span>
+            <span className="team-member-role">Supervisor</span>
+          </div>
+          <button
+            className="task-action-btn danger"
+            title={`Remove ${m.name || 'supervisor'}`}
+            onClick={() => promptRemoveMember(m)}
+          >
+            <UserMinus size={11} />
+          </button>
+        </div>
+      ))}
+    </div>
+  )}
+</div>
 
               {/* Team Members */}
               <div className="team-section team-section-members">

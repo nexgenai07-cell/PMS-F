@@ -411,7 +411,6 @@ export default function SupervisorProjectDetail() {
   const [addMemberSaving, setAddMemberSaving]         = useState(false);
   const [addLeadSaving, setAddLeadSaving]             = useState(false);
 
-  // Lead candidates + their Lead/Member assignment mode for the add-lead modal
   const [leadCandidates, setLeadCandidates] = useState([]);
   const [addLeadAssignments, setAddLeadAssignments] = useState({});
 
@@ -1043,7 +1042,6 @@ export default function SupervisorProjectDetail() {
     try {
       const currentSupervisorIds = asArray(project?.supervisors).map(Number);
 
-      // 1. Promote all Lead-mode leads to project supervisors in a single PATCH.
       const leadsToPromote = entries
         .filter(([, mode]) => mode === 'lead')
         .map(([id]) => Number(id));
@@ -1064,7 +1062,6 @@ export default function SupervisorProjectDetail() {
         });
       }
 
-      // 2. Add all Member-mode leads as regular team members.
       const leadsAsMembers = entries
         .filter(([, mode]) => mode === 'member')
         .map(([id]) => Number(id));
@@ -1146,20 +1143,29 @@ export default function SupervisorProjectDetail() {
     );
   }
 
-  // The "Project Lead" section should show actual Leads — a Supervisor who
-// created the project is not a Lead. Only count the creator as the Lead
-// when they actually hold a Lead-role (i.e. their role is one of LEAD_ROLES
-// on their matched TeamMember record, or their User.role is 'member').
-const creatorUserId = Number(project.created_by);
-const creatorUser = asArray(users).find(u => Number(u.id) === creatorUserId);
-const creatorUserRole = (creatorUser?.role || '').toLowerCase();
-const creatorIsLead = LEAD_ROLES.includes(creatorUserRole);   // 'lead' or 'member'
+  /* ─── Creator derivation ───
+     A project's "Project Lead" section shows actual Leads only. The
+     project creator is only shown there if their User.role is 'member'
+     (i.e. they're a Lead). A Supervisor/admin who creates a project shows
+     in the Supervisors section with a "Supervisor (Creator)" tag. */
+  const creatorUserId   = Number(project.created_by);
+  const creatorUser     = asArray(users).find(u => Number(u.id) === creatorUserId);
+  const creatorUserRole = (creatorUser?.role || '').toLowerCase();
 
-const creatorName = project.created_by_name || (creatorIsLead ? 'Project Lead' : 'Project Creator');
-const additionalLeads = asArray(projectLeadsFinal).filter(
-  m => Number(m.userId) !== creatorUserId
-);
-const totalLeadCount = (creatorIsLead ? 1 : 0) + additionalLeads.length;
+  const creatorIsLead       = creatorUserRole === 'member';
+  const creatorIsSupervisor = SUPERVISOR_ROLES.includes(creatorUserRole);
+
+  const creatorName = project.created_by_name || creatorUser?.u_name || 'Unknown';
+
+  const additionalLeads = asArray(projectLeadsFinal).filter(
+    m => Number(m.userId) !== creatorUserId
+  );
+  const totalLeadCount = (creatorIsLead ? 1 : 0) + additionalLeads.length;
+
+  const additionalSupervisors = asArray(projectSupervisors).filter(
+    s => Number(s.userId) !== creatorUserId
+  );
+  const totalSupervisorCount = (creatorIsSupervisor ? 1 : 0) + additionalSupervisors.length;
 
   return (
     <div className="project-detail-page">
@@ -1688,27 +1694,20 @@ const totalLeadCount = (creatorIsLead ? 1 : 0) + additionalLeads.length;
                   </div>
                 </div>
                 <div className="team-section-list">
-  {creatorIsLead ? (
-    <div className="team-member-item lead-item">
-      <Avatar name={creatorName} size="sm" />
-      <div className="team-member-info">
-        <span className="team-member-name">
-          {creatorName}
-          <span className="lead-badge"><Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} /></span>
-        </span>
-        <span className="team-member-role">Team Lead (Creator)</span>
-      </div>
-    </div>
-  ) : (
-    <div className="team-member-item" style={{ padding: '8px 10px' }}>
-      <Avatar name={creatorName} size="sm" />
-      <div className="team-member-info">
-        <span className="team-member-name">{creatorName}</span>
-        <span className="team-member-role">Created by (not a Project Lead)</span>
-      </div>
-    </div>
-  )}
-  {additionalLeads.map((m, idx) => (
+                  {creatorIsLead && (
+                    <div className="team-member-item lead-item">
+                      <Avatar name={creatorName} size="sm" />
+                      <div className="team-member-info">
+                        <span className="team-member-name">
+                          {creatorName}
+                          <span className="lead-badge"><Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} /></span>
+                        </span>
+                        <span className="team-member-role">Team Lead (Creator)</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {additionalLeads.map((m, idx) => (
                     <div key={m.id || `lead-${idx}`} className="team-member-item lead-item">
                       <Avatar name={m.name || 'Lead'} size="sm" />
                       <div className="team-member-info">
@@ -1723,6 +1722,10 @@ const totalLeadCount = (creatorIsLead ? 1 : 0) + additionalLeads.length;
                       </button>
                     </div>
                   ))}
+
+                  {!creatorIsLead && additionalLeads.length === 0 && (
+                    <div className="team-section-empty">No project lead assigned</div>
+                  )}
                 </div>
               </div>
 
@@ -1734,27 +1737,49 @@ const totalLeadCount = (creatorIsLead ? 1 : 0) + additionalLeads.length;
                     <span>Supervisors</span>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span className="team-section-count">{asArray(projectSupervisors).length}</span>
+                    <span className="team-section-count">{totalSupervisorCount}</span>
                     <button className="team-add-btn" title="Add supervisor" onClick={() => setAddSupervisorOpen(true)}>
                       <Plus size={11} />
                     </button>
                   </div>
                 </div>
-                {asArray(projectSupervisors).length === 0 ? (
+
+                {totalSupervisorCount === 0 ? (
                   <div className="team-section-empty">No supervisors assigned</div>
                 ) : (
                   <div className="team-section-list">
-                    {projectSupervisors.map((m, idx) => (
+                    {creatorIsSupervisor && (
+                      <div className="team-member-item supervisor-item">
+                        <Avatar name={creatorName} size="sm" />
+                        <div className="team-member-info">
+                          <span className="team-member-name">
+                            {creatorName}
+                            <span className="supervisor-badge">
+                              <Crown size={12} style={{ color: '#f59e0b', marginLeft: 4 }} />
+                            </span>
+                          </span>
+                          <span className="team-member-role">Supervisor (Creator)</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {additionalSupervisors.map((m, idx) => (
                       <div key={m.id || `sup-${idx}`} className="team-member-item supervisor-item">
                         <Avatar name={m.name || 'Supervisor'} size="sm" />
                         <div className="team-member-info">
                           <span className="team-member-name">
                             {m.name || `User ${m.id}`}
-                            <span className="supervisor-badge"><Crown size={12} style={{ color: '#f59e0b', marginLeft: 4 }} /></span>
+                            <span className="supervisor-badge">
+                              <Crown size={12} style={{ color: '#f59e0b', marginLeft: 4 }} />
+                            </span>
                           </span>
                           <span className="team-member-role">Supervisor</span>
                         </div>
-                        <button className="task-action-btn danger" title={`Remove ${m.name || 'supervisor'}`} onClick={() => promptRemoveMember(m)}>
+                        <button
+                          className="task-action-btn danger"
+                          title={`Remove ${m.name || 'supervisor'}`}
+                          onClick={() => promptRemoveMember(m)}
+                        >
                           <UserMinus size={11} />
                         </button>
                       </div>
@@ -1885,7 +1910,7 @@ const totalLeadCount = (creatorIsLead ? 1 : 0) + additionalLeads.length;
         )}
       </AnimatePresence>
 
-      {/* ═════════ ADD LEAD MODAL — now with Lead/Member toggle ═════════ */}
+      {/* ═════════ ADD LEAD MODAL — with Lead/Member toggle ═════════ */}
       <AnimatePresence>
         {addLeadOpen && (
           <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
