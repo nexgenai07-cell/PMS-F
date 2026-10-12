@@ -206,6 +206,100 @@ function MemberMultiPicker({ selected = [], onChange, members = [], label = "Mem
   );
 }
 
+/* ─── Lead picker with Lead/Member toggle ─── */
+function LeadPicker({
+  leads = [],
+  assignments = {},
+  onAssign,
+  onUnassign,
+  alreadyLeadIds = [],
+  saving = false,
+  onConfirm,
+}) {
+  const isSelected = (id) => assignments[id] != null;
+
+  const toggleLead = (lead) => {
+    if (isSelected(lead.id)) {
+      onUnassign(lead.id);
+    } else {
+      onAssign(lead.id, 'lead');
+    }
+  };
+
+  return (
+    <>
+      <div className="modal-body">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 380, overflowY: 'auto' }}>
+          {leads.length === 0 ? (
+            <p style={{ padding: '12px 4px', color: 'var(--text-muted)', fontSize: 13 }}>
+              No leads available. Ask an admin to create Lead accounts.
+            </p>
+          ) : leads.map(l => {
+            const name = l.u_name || l.name || `User ${l.id}`;
+            const selected = isSelected(l.id);
+            const mode = assignments[l.id];
+            const alreadyLead = alreadyLeadIds.includes(Number(l.id));
+
+            return (
+              <div key={l.id} className="lead-add-row">
+                <button
+                  type="button"
+                  className={`add-picker-row lead-add-btn ${selected ? 'selected' : ''}`}
+                  onClick={() => toggleLead(l)}
+                  style={{ flex: 1 }}
+                >
+                  <Avatar name={name} size="sm" />
+                  <div style={{ flex: 1, textAlign: 'left' }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>
+                      {name}
+                      {alreadyLead && <span className="lead-already-badge">already a Lead</span>}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                      {l.email || 'Lead'}
+                    </div>
+                  </div>
+                  {selected && <CheckCircle2 size={14} style={{ color: 'var(--accent-primary)' }} />}
+                </button>
+
+                {selected && (
+                  <div className="lead-mode-toggle" onClick={e => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      className={`lead-mode-btn ${mode === 'lead' ? 'active' : ''}`}
+                      onClick={() => onAssign(l.id, 'lead')}
+                      title="Add as Project Lead (co-supervisor of this project)"
+                    >
+                      Lead
+                    </button>
+                    <button
+                      type="button"
+                      className={`lead-mode-btn ${mode === 'member' ? 'active' : ''}`}
+                      onClick={() => onAssign(l.id, 'member')}
+                      title="Add as a regular Team Member on this project"
+                    >
+                      Member
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="modal-footer">
+        <button
+          className="btn btn-primary btn-sm"
+          onClick={onConfirm}
+          disabled={saving || Object.keys(assignments).length === 0}
+        >
+          {saving ? <><Loader2 size={13} className="spin" /> Adding...</> : 'Add Selected Leads'}
+        </button>
+      </div>
+    </>
+  );
+}
+
 /* ─── Inline "add subtask to draft" row used inside the Create Task modal ─── */
 function SubtaskDraftRow({ onAdd, members, disabled }) {
   const [draft, setDraft] = useState({
@@ -317,6 +411,10 @@ export default function SupervisorProjectDetail() {
   const [addMemberSaving, setAddMemberSaving]         = useState(false);
   const [addLeadSaving, setAddLeadSaving]             = useState(false);
 
+  // Lead candidates + their Lead/Member assignment mode for the add-lead modal
+  const [leadCandidates, setLeadCandidates] = useState([]);
+  const [addLeadAssignments, setAddLeadAssignments] = useState({});
+
   const addTaskTitleRef  = useRef(null);
   const editTaskTitleRef = useRef(null);
   const editTaskDescRef  = useRef(null);
@@ -326,7 +424,6 @@ export default function SupervisorProjectDetail() {
     completionRate: 0, onTimeRate: 0, membersCount: 0, avgProgress: 0
   });
 
-  // subtasksDraft holds not-yet-saved subtasks for the task being created
   const [newTask, setNewTask] = useState({
     title: "", desc: "", priority: "medium", status: "todo",
     progress: 0, assignees: [], dueDate: "",
@@ -423,7 +520,6 @@ export default function SupervisorProjectDetail() {
     return () => clearTimeout(t);
   }, [showAddTask]);
 
-  // Keyed on task id only — prevents focus from being yanked on every keystroke
   useEffect(() => {
     if (!editTask) return;
     const t = setTimeout(() => editTaskTitleRef.current?.focus(), 60);
@@ -451,13 +547,14 @@ export default function SupervisorProjectDetail() {
   const fetchProjectData = async () => {
     try {
       setLoading(true);
-      const [projectData, tasksData, membersData, usersData, pteamData, statsData] = await Promise.all([
+      const [projectData, tasksData, membersData, usersData, pteamData, statsData, leadsData] = await Promise.all([
         projectService.getProject(projectId).catch(() => ({ data: null })),
         taskService.getTasks().catch(() => ({ data: [] })),
         teamService.getTeamMembers().catch(() => ({ data: [] })),
         userService.getUsers().catch(() => ({ data: [] })),
         projectTeamService.getProjectTeams().catch(() => ({ data: [] })),
         projectService.getProjectStats(projectId).catch(() => ({ data: {} })),
+        projectService.getLeadCandidates().catch(() => ({ data: [] })),
       ]);
 
       const projectItem   = projectData?.data || projectData || null;
@@ -466,11 +563,13 @@ export default function SupervisorProjectDetail() {
       const usersList     = asArray(usersData?.data || usersData);
       const pteamList     = asArray(pteamData?.data || pteamData);
       const statsResponse = statsData?.data || statsData || {};
+      const leadsList     = asArray(leadsData?.data || leadsData);
 
       setProject(projectItem);
       setAllTeamMembers(membersList);
       setUsers(usersList);
       setPteamEntries(pteamList);
+      setLeadCandidates(leadsList);
 
       setStats({
         totalTasks:      Number(statsResponse.totalTasks) || 0,
@@ -648,7 +747,7 @@ export default function SupervisorProjectDetail() {
     }
   };
 
-  /* ─── Add task (also saves draft subtasks) ─── */
+  /* ─── Add task ─── */
   const handleAddTask = async () => {
     setAddTaskSubmitAttempted(true);
     if (!isAddTaskValid) {
@@ -676,7 +775,6 @@ export default function SupervisorProjectDetail() {
       const createdTask = response?.data || response;
       const createdId = createdTask?.t_id || createdTask?.id;
 
-      // Persist any draft subtasks against the freshly created parent
       let subtaskFailures = 0;
       if (createdId && asArray(newTask.subtasksDraft).length > 0) {
         for (const sub of newTask.subtasksDraft) {
@@ -887,7 +985,7 @@ export default function SupervisorProjectDetail() {
     return "Unassigned";
   };
 
-  /* ─── Add supervisor / lead / member ─── */
+  /* ─── Add supervisor ─── */
   const handleAddSupervisor = async (userId) => {
     if (!userId) return;
     setAddSupervisorSaving(true);
@@ -913,21 +1011,94 @@ export default function SupervisorProjectDetail() {
     }
   };
 
-  const handleAddLead = async (teamMemberId) => {
-    if (!teamMemberId) return;
+  /* ─── Lead assignment helpers ─── */
+  const assignLeadMode = (leadId, mode) => {
+    setAddLeadAssignments(prev => ({ ...prev, [leadId]: mode }));
+  };
+  const unassignLeadMode = (leadId) => {
+    setAddLeadAssignments(prev => {
+      const next = { ...prev };
+      delete next[leadId];
+      return next;
+    });
+  };
+
+  const openAddLeadModal = () => {
+    setAddLeadAssignments({});
+    setAddLeadOpen(true);
+  };
+
+  const closeAddLeadModal = () => {
+    if (addLeadSaving) return;
+    setAddLeadOpen(false);
+    setAddLeadAssignments({});
+  };
+
+  /* ─── Confirm add leads (handles both Lead and Member modes) ─── */
+  const handleConfirmAddLeads = async () => {
+    const entries = Object.entries(addLeadAssignments);
+    if (entries.length === 0) return;
+
     setAddLeadSaving(true);
     try {
-      await projectTeamService.addMemberToProject(projectId, Number(teamMemberId));
-      toast.success('Project Lead added');
+      const currentSupervisorIds = asArray(project?.supervisors).map(Number);
+
+      // 1. Promote all Lead-mode leads to project supervisors in a single PATCH.
+      const leadsToPromote = entries
+        .filter(([, mode]) => mode === 'lead')
+        .map(([id]) => Number(id));
+
+      if (leadsToPromote.length > 0) {
+        const nextSupervisorIds = Array.from(new Set([
+          ...currentSupervisorIds,
+          ...leadsToPromote,
+        ]));
+        await projectService.updateProject(projectId, {
+          name: project.p_name || project.name,
+          description: project.desc || '',
+          priority: project.priority,
+          status: project.status,
+          startDate: project.start_at || null,
+          deadline: project.deadline || null,
+          supervisors: nextSupervisorIds,
+        });
+      }
+
+      // 2. Add all Member-mode leads as regular team members.
+      const leadsAsMembers = entries
+        .filter(([, mode]) => mode === 'member')
+        .map(([id]) => Number(id));
+
+      for (const leadId of leadsAsMembers) {
+        const lead = leadCandidates.find(l => Number(l.id) === leadId)
+          || users.find(u => Number(u.id) === leadId);
+        if (!lead) continue;
+        try {
+          await projectTeamService.addLeadAsTeamMember(projectId, lead, allTeamMembers);
+        } catch (e) {
+          console.warn(`Could not add lead ${leadId} as team member:`, e);
+        }
+      }
+
+      const total = leadsToPromote.length + leadsAsMembers.length;
+      toast.success(
+        `Added ${total} ${total === 1 ? 'lead' : 'leads'} to the project`
+      );
+
       setAddLeadOpen(false);
+      setAddLeadAssignments({});
       await fetchProjectData();
-    } catch {
-      toast.error('Failed to add project lead');
+    } catch (error) {
+      console.error('Error adding leads:', error);
+      const rawMsg = error?.response?.data?.message || error?.response?.data?.detail;
+      const errorMsg = typeof rawMsg === 'string' ? rawMsg : 'Failed to add leads';
+      toast.error(errorMsg);
     } finally {
       setAddLeadSaving(false);
     }
   };
 
+  /* ─── Add team member (regular) ─── */
   const handleAddTeamMember = async (teamMemberId) => {
     if (!teamMemberId) return;
     setAddMemberSaving(true);
@@ -1108,7 +1279,7 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* ═══ ADD TASK MODAL — with Subtasks section ═══ */}
+      {/* ═══ ADD TASK MODAL ═══ */}
       <AnimatePresence>
         {showAddTask && (
           <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setShowAddTask(false); resetAddTaskTouched(); }}>
@@ -1189,7 +1360,6 @@ export default function SupervisorProjectDetail() {
                   <input type="range" min={0} max={100} className="range-input" value={newTask.progress} onChange={(e) => setNewTask(prev => ({ ...prev, progress: Number(e.target.value) }))} />
                 </div>
 
-                {/* ─── Subtasks section ─── */}
                 <div className="add-subtasks-block">
                   <div className="add-subtasks-header">
                     <label className="form-label" style={{ margin: 0 }}>
@@ -1503,7 +1673,7 @@ export default function SupervisorProjectDetail() {
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <span className="team-section-count">{totalLeadCount}</span>
-                    <button className="team-add-btn" title="Add project lead" onClick={() => setAddLeadOpen(true)}>
+                    <button className="team-add-btn" title="Add project lead" onClick={openAddLeadModal}>
                       <Plus size={11} />
                     </button>
                   </div>
@@ -1696,36 +1866,33 @@ export default function SupervisorProjectDetail() {
         )}
       </AnimatePresence>
 
-      {/* ═════════ ADD LEAD MODAL ═════════ */}
+      {/* ═════════ ADD LEAD MODAL — now with Lead/Member toggle ═════════ */}
       <AnimatePresence>
         {addLeadOpen && (
           <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            onClick={() => !addLeadSaving && setAddLeadOpen(false)}>
+            onClick={closeAddLeadModal}>
             <motion.div className="modal-box" initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
-              onClick={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
+              onClick={e => e.stopPropagation()} style={{ maxWidth: 500 }}>
               <div className="modal-header">
-                <h2 className="modal-title"><Shield size={16} /> Add Project Lead</h2>
-                <button className="modal-close-btn" onClick={() => setAddLeadOpen(false)} disabled={addLeadSaving}><X size={16} /></button>
-              </div>
-              <div className="modal-body">
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
-                  {asArray(allTeamMembers)
-                    .filter(m => m.is_deleted !== 1)
-                    .filter(m => LEAD_ROLES.includes((m.role || '').toLowerCase()))
-                    .filter(m => !asArray(projectMembers).some(pm => Number(pm.userId) === Number(m.id)))
-                    .map(m => (
-                      <button key={m.id} className="add-picker-row" onClick={() => handleAddLead(m.id)} disabled={addLeadSaving}>
-                        <Avatar name={m.name || 'Lead'} size="sm" />
-                        <div style={{ flex: 1, textAlign: 'left' }}>
-                          <div style={{ fontSize: 13, fontWeight: 600 }}>{m.name || `User ${m.id}`}</div>
-                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{m.role || 'Lead'}</div>
-                        </div>
-                        <Plus size={14} style={{ color: '#6366f1' }} />
-                      </button>
-                    ))
-                  }
+                <div>
+                  <h2 className="modal-title"><Shield size={16} /> Add Project Lead</h2>
+                  <p style={{ fontSize: 11.5, color: 'var(--text-muted)', margin: '4px 0 0' }}>
+                    Choose <strong>Lead</strong> to make them a co-supervisor, or <strong>Member</strong> to add them as a regular team member.
+                  </p>
                 </div>
+                <button className="modal-close-btn" onClick={closeAddLeadModal} disabled={addLeadSaving}><X size={16} /></button>
               </div>
+              <LeadPicker
+                leads={leadCandidates.filter(l =>
+                  !asArray(projectMembers).some(pm => Number(pm.userId) === Number(l.id))
+                )}
+                assignments={addLeadAssignments}
+                onAssign={assignLeadMode}
+                onUnassign={unassignLeadMode}
+                alreadyLeadIds={asArray(projectSupervisors).map(s => Number(s.userId))}
+                saving={addLeadSaving}
+                onConfirm={handleConfirmAddLeads}
+              />
             </motion.div>
           </motion.div>
         )}
@@ -1791,9 +1958,23 @@ export default function SupervisorProjectDetail() {
 
         .project-overview-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 20px 24px; }
         .overview-header { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
-        .overview-info { flex: 1; min-width: 0; }
+        .overview-info {
+          flex: 1;
+          min-width: 0;
+          max-width: 100%;
+          overflow: hidden;
+        }
         .overview-title { font-size: 22px; font-weight: 800; color: var(--text-primary); margin: 0 0 6px; }
-        .overview-desc { font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin: 0; }
+        .overview-desc {
+          font-size: 13px;
+          color: var(--text-secondary);
+          line-height: 1.6;
+          margin: 0;
+          overflow-wrap: anywhere;
+          word-break: break-word;
+          white-space: normal;
+          max-width: 100%;
+        }
         .overview-progress-ring { flex-shrink: 0; }
         .ring-container { position: relative; width: 90px; height: 90px; }
         .ring-svg { transform: rotate(-90deg); width: 100%; height: 100%; }
@@ -1912,25 +2093,51 @@ export default function SupervisorProjectDetail() {
         .confirm-title { font-size: 18px; font-weight: 800; color: var(--text-primary); margin: 0 0 6px; }
         .confirm-desc { font-size: 13px; color: var(--text-muted); margin: 0 0 16px; }
 
-        .overview-info {
-  flex: 1;
-  min-width: 0;          /* already there — keep it */
-  max-width: 100%;
-  overflow: hidden;      /* NEW */
-}
+        /* ─── Lead picker rows (Lead vs Member toggle) ─── */
+        .lead-add-row {
+          display: flex;
+          align-items: stretch;
+          gap: 6px;
+        }
+        .lead-add-row .lead-add-btn {
+          flex: 1;
+        }
+        .lead-add-row .lead-add-btn.selected {
+          border-color: var(--accent-primary);
+          background: color-mix(in srgb, var(--accent-primary) 8%, var(--bg-secondary));
+        }
+        .lead-already-badge {
+          display: inline-block;
+          margin-left: 6px;
+          font-size: 10px;
+          font-weight: 500;
+          color: var(--text-muted);
+          font-style: italic;
+        }
+        .lead-mode-toggle {
+          display: inline-flex;
+          gap: 2px;
+          padding: 2px;
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-subtle);
+          border-radius: 8px;
+          align-self: center;
+        }
+        .lead-mode-btn {
+          font-size: 10.5px;
+          font-weight: 600;
+          padding: 5px 10px;
+          border: none;
+          border-radius: 6px;
+          background: transparent;
+          color: var(--text-muted);
+          cursor: pointer;
+          transition: all 0.12s;
+        }
+        .lead-mode-btn:hover { color: var(--text-primary); }
+        .lead-mode-btn.active { background: var(--accent-primary); color: #fff; }
 
-.overview-desc {
-  font-size: 13px;
-  color: var(--text-secondary);
-  line-height: 1.6;
-  margin: 0;
-  overflow-wrap: anywhere;   /* NEW — breaks long unbroken strings */
-  word-break: break-word;    /* NEW — fallback for older browsers */
-  white-space: normal;       /* NEW — explicit, in case a parent sets nowrap */
-  max-width: 100%;           /* NEW */
-}
-  
-        /* ─── NEW: Subtasks section inside Create Task modal ─── */
+        /* ─── Subtasks section ─── */
         .add-subtasks-block {
           margin-top: 8px;
           padding: 12px;

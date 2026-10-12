@@ -32,7 +32,6 @@ const TASK_STATUS_OPTIONS = ['todo', 'in_progress', 'review', 'done'];
 
 const SUPERVISOR_ROLES = ['manager', 'admin', 'supervisor'];
 
-/* ─────────── Safe array helper ─────────── */
 const asArray = (v) => (Array.isArray(v) ? v : []);
 
 /* ─────────── Resolve TeamMember id → user-like object ─────────── */
@@ -318,6 +317,123 @@ function MemberPicker({ selected = [], onChange, label = 'Members', members = []
   );
 }
 
+/* ─── Lead picker with "Lead vs Member" toggle ─── */
+function LeadPicker({
+  leads = [],
+  assignments = {},
+  onAssign,
+  onUnassign,
+  label = 'Project Leads',
+  assignedLeadIds = [],
+}) {
+  const [open, setOpen] = useState(false);
+
+  const isSelected = (id) => assignments[id] != null;
+
+  const toggleLead = (lead) => {
+    if (isSelected(lead.id)) {
+      onUnassign(lead.id);
+    } else {
+      onAssign(lead.id, 'lead');
+    }
+  };
+
+  const selectedLeads = leads.filter(l => isSelected(l.id));
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <label className="lp-label">
+        <Crown size={13} style={{ display: 'inline', marginRight: 4, verticalAlign: 'text-bottom' }} />
+        {label}
+      </label>
+      <div className="lp-member-trigger" onClick={() => setOpen(o => !o)} style={{ cursor: 'pointer' }}>
+        {selectedLeads.length === 0 ? (
+          <span style={{ color: 'var(--text-muted)' }}>Select leads…</span>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', flex: 1 }}>
+            {selectedLeads.map(l => {
+              const mode = assignments[l.id];
+              return (
+                <span key={l.id} className="lp-member-chip" title={`Assigned as: ${mode}`}>
+                  <span className="lp-member-avatar-sm">{(l.u_name || l.name || '?')[0].toUpperCase()}</span>
+                  {l.u_name || l.name}
+                  <span className={`lp-lead-mode-pill ${mode}`}>{mode === 'lead' ? 'Lead' : 'Member'}</span>
+                  <button
+                    type="button"
+                    className="lp-chip-remove"
+                    title={`Remove ${l.u_name || l.name}`}
+                    onClick={e => { e.stopPropagation(); onUnassign(l.id); }}
+                  >
+                    <X size={10} />
+                  </button>
+                </span>
+              );
+            })}
+          </div>
+        )}
+        <ChevronDown size={14} style={{ flexShrink: 0, color: 'var(--text-muted)', marginLeft: 'auto', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />
+      </div>
+
+      {open && (
+        <>
+          <div className="lp-picker-backdrop" onClick={() => setOpen(false)} />
+          <div className="lp-member-dropdown">
+            {leads.length === 0 ? (
+              <p style={{ padding: '12px 16px', color: 'var(--text-muted)', fontSize: 13 }}>
+                No leads available. Ask a supervisor to create Lead accounts.
+              </p>
+            ) : leads.map(l => {
+              const name = l.u_name || l.name || `User ${l.id}`;
+              const selected = isSelected(l.id);
+              const mode = assignments[l.id];
+              return (
+                <div key={l.id} className="lp-lead-option-row">
+                  <button
+                    type="button"
+                    className={`lp-member-option ${selected ? 'selected' : ''}`}
+                    onClick={() => toggleLead(l)}
+                    style={{ flex: 1 }}
+                  >
+                    <span className="lp-member-avatar">{(name || '?')[0].toUpperCase()}</span>
+                    <span style={{ flex: 1, fontSize: 13, fontWeight: 500, textAlign: 'left' }}>
+                      {name}
+                      {assignedLeadIds.includes(Number(l.id)) && (
+                        <span className="lp-lead-existing">already a Lead</span>
+                      )}
+                    </span>
+                    {selected && <Check size={14} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />}
+                  </button>
+
+                  {selected && (
+                    <div className="lp-lead-mode-toggle" onClick={e => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        className={`lp-lead-mode-btn ${mode === 'lead' ? 'active' : ''}`}
+                        onClick={() => onAssign(l.id, 'lead')}
+                        title="Add as Project Lead (co-supervisor of this project)"
+                      >
+                        Lead
+                      </button>
+                      <button
+                        type="button"
+                        className={`lp-lead-mode-btn ${mode === 'member' ? 'active' : ''}`}
+                        onClick={() => onAssign(l.id, 'member')}
+                        title="Add as a regular Team Member on this project"
+                      >
+                        Member
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ProjectMembersPanel({ members, onEdit, onRemove }) {
   return (
     <div className="lp-members-panel">
@@ -377,6 +493,8 @@ export default function SupervisorProjects() {
 
   const [supervisorOptions, setSupervisorOptions] = useState([]);
   const [memberOptions, setMemberOptions] = useState([]);
+  const [allLeads, setAllLeads] = useState([]);
+  const [leadAssignments, setLeadAssignments] = useState({});
 
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
@@ -476,7 +594,7 @@ export default function SupervisorProjects() {
       if (editTask) { setEditTask(null); setEditTaskTouched({}); setEditTaskSubmitAttempted(false); return; }
       if (selectedTask) { setSelectedTask(null); return; }
       if (taskAddModal) { setTaskAddModal(null); setTaskTouched({}); setTaskSubmitAttempted(false); return; }
-      if (projectModal) { setProjectModal(false); setEditProject(null); setProjectTouched({}); setProjectSubmitAttempted(false); return; }
+      if (projectModal) { setProjectModal(false); setEditProject(null); setLeadAssignments({}); setProjectTouched({}); setProjectSubmitAttempted(false); return; }
       if (taskListModal) { setTaskListModal(null); setEditMembersFor(null); return; }
     };
     window.addEventListener('keydown', onKey);
@@ -505,11 +623,8 @@ export default function SupervisorProjects() {
     const regularMembers = [];
 
     asArray(members).forEach(m => {
-      let role = (m.role || '').toLowerCase();
-      if (!role || role === 'member') {
-        const userObj = asArray(users).find(u => Number(u.id) === Number(m.id));
-        if (userObj) role = (userObj.role || '').toLowerCase();
-      }
+      if (m._placeholder) return;
+      const role = (m.role || '').trim().toLowerCase();
       const isSupervisor = SUPERVISOR_ROLES.includes(role);
       if (isSupervisor) supervisors.push({ ...m, role: role || 'supervisor' });
       else regularMembers.push({ ...m, role: role || 'member' });
@@ -518,17 +633,29 @@ export default function SupervisorProjects() {
     return { supervisors, regularMembers };
   };
 
+  const assignLead = (leadId, mode) => {
+    setLeadAssignments(prev => ({ ...prev, [leadId]: mode }));
+  };
+  const unassignLead = (leadId) => {
+    setLeadAssignments(prev => {
+      const next = { ...prev };
+      delete next[leadId];
+      return next;
+    });
+  };
+
   const fetchData = async () => {
     console.log('🚀 [SupervisorProjects] fetchData STARTED');
     try {
       setLoading(true);
 
-      const [projectsData, tasksData, membersData, usersData, pteamData] = await Promise.all([
+      const [projectsData, tasksData, membersData, usersData, pteamData, leadsData] = await Promise.all([
         projectService.getProjects().catch(e => { console.error('❌ getProjects:', e); return { data: [] }; }),
         taskService.getTasks().catch(e => { console.error('❌ getTasks:', e); return { data: [] }; }),
         teamService.getTeamMembers().catch(e => { console.error('❌ getTeamMembers:', e); return { data: [] }; }),
         userService.getUsers().catch(e => { console.error('❌ getUsers:', e); return { data: [] }; }),
         projectTeamService.getProjectTeams().catch(e => { console.error('❌ getProjectTeams:', e); return { data: [] }; }),
+        projectService.getLeadCandidates().catch(e => { console.error('❌ getLeadCandidates:', e); return { data: [] }; }),
       ]);
 
       const projectsList = asArray(projectsData?.data || projectsData);
@@ -536,6 +663,7 @@ export default function SupervisorProjects() {
       const membersList = asArray(membersData?.data || membersData);
       const usersList = asArray(usersData?.data || usersData);
       const pteamList = asArray(pteamData?.data || pteamData);
+      const leadsList = asArray(leadsData?.data || leadsData);
 
       console.log('✅ [SupervisorProjects] Normalized:', {
         projects: projectsList.length,
@@ -543,30 +671,22 @@ export default function SupervisorProjects() {
         members: membersList.length,
         users: usersList.length,
         pteam: pteamList.length,
+        leads: leadsList.length,
       });
 
+      setAllLeads(leadsList);
+
       // Only real, non-deleted team members
-      let activeMembersList = membersList.filter(m => m.is_deleted !== 1);
+      const activeMembersList = membersList.filter(m => m.is_deleted !== 1);
       const userId = user?.id || user?.u_id;
 
-      if (activeMembersList.length > 0) {
-        activeMembersList = activeMembersList.filter(m => {
-          const userById = usersList.find(u => Number(u.id) === Number(m.id));
-          const userByName = usersList.find(u => {
-            const userName = (u.u_name || u.name || '').toLowerCase().trim();
-            const memberName = (m.name || '').toLowerCase().trim();
-            return userName && memberName && userName === memberName;
-          });
-          return !!(userById || userByName);
-        });
-      }
-
-      // Add current user as a placeholder ONLY for supervisor picker
+      // Add current user as a supervisor-picker placeholder only
       const currentUserInMembers = activeMembersList.some(m => Number(m.id) === Number(userId));
+      const augmentedMembersList = [...activeMembersList];
       if (!currentUserInMembers && userId) {
         const userObj = usersList.find(u => Number(u.id) === Number(userId));
         if (userObj) {
-          activeMembersList.push({
+          augmentedMembersList.push({
             id: userId,
             name: userObj.u_name || userObj.name || 'User',
             email: userObj.email,
@@ -588,15 +708,14 @@ export default function SupervisorProjects() {
         }));
 
       const supIdSetForOptions = new Set(allSupervisorUsers.map(s => Number(s.id)));
-      activeMembersList.forEach(m => {
-        const userObj = usersList.find(u => Number(u.id) === Number(m.id));
-        const role = (m.role || userObj?.role || '').toLowerCase();
+      augmentedMembersList.forEach(m => {
+        const role = (m.role || '').toLowerCase();
         if (SUPERVISOR_ROLES.includes(role) && !supIdSetForOptions.has(Number(m.id))) {
           supIdSetForOptions.add(Number(m.id));
           allSupervisorUsers.push({
             id: m.id,
-            name: m.name || userObj?.u_name || 'Unknown',
-            email: m.email || userObj?.email,
+            name: m.name || 'Unknown',
+            email: m.email,
             role: role || 'supervisor',
           });
         }
@@ -610,20 +729,13 @@ export default function SupervisorProjects() {
       setMemberOptions(memberList);
       setTeamMembers(activeMembersList);
 
-      // ─────────────────────────────────────────────────────────────
-      // Projects: use the backend-filtered list as-is.
-      // The backend decides visibility based on:
-      //   - created_by = user
-      //   - user in project.supervisors M2M
-      //   - user linked via PTeam (after the backend fix)
-      // ─────────────────────────────────────────────────────────────
+      // Projects: use backend-filtered list as-is
       const projectsWithMembers = projectsList.map(project => {
         const projectId = project.p_id || project.id;
         const projectPteamEntries = pteamList.filter(entry => getPteamProjectId(entry) === Number(projectId));
 
         const memberMap = new Map();
 
-        // Only PTeam members
         projectPteamEntries.forEach(entry => {
           const tmId = getPteamTmId(entry);
           if (!Number.isFinite(tmId)) return;
@@ -640,7 +752,6 @@ export default function SupervisorProjects() {
 
         const projectMembersRaw = Array.from(memberMap.values());
 
-        // Supervisors from the backend M2M
         const supervisorIds = asArray(project.supervisors).map(Number);
         const supervisorNames = asArray(project.supervisor_names);
 
@@ -706,6 +817,7 @@ export default function SupervisorProjects() {
       setUsers([]);
       setSupervisorOptions([]);
       setMemberOptions([]);
+      setAllLeads([]);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -748,6 +860,7 @@ export default function SupervisorProjects() {
       members: [],
       supervisors: []
     });
+    setLeadAssignments({});
     resetProjectTouched();
     setProjectModal(true);
   };
@@ -755,6 +868,7 @@ export default function SupervisorProjects() {
   const closeProjectModal = () => {
     setProjectModal(false);
     setEditProject(null);
+    setLeadAssignments({});
     resetProjectTouched();
   };
 
@@ -791,15 +905,17 @@ export default function SupervisorProjects() {
       const uniqueMembers = [...new Set(form.members.map(Number))];
 
       let createdProject;
+      let projectIdForLeads;
+
       if (editProject) {
         const updated = await projectService.updateProject(
           editProject.p_id || editProject.id,
           projectData
         );
         createdProject = updated?.data || updated;
-        const projectId = createdProject.p_id || createdProject.id;
+        projectIdForLeads = createdProject.p_id || createdProject.id;
 
-        const currentPteam = asArray(pteamEntries).filter(entry => getPteamProjectId(entry) === Number(projectId));
+        const currentPteam = asArray(pteamEntries).filter(entry => getPteamProjectId(entry) === Number(projectIdForLeads));
         const currentMemberIds = [...new Set(currentPteam.map(entry => getPteamTmId(entry)))];
 
         // Add supervisors as team members too (so they show in PTeam)
@@ -808,7 +924,7 @@ export default function SupervisorProjects() {
           if (!realTmId) continue;
           if (currentMemberIds.includes(realTmId)) continue;
           try {
-            await projectTeamService.addMemberToProject(projectId, realTmId);
+            await projectTeamService.addMemberToProject(projectIdForLeads, realTmId);
             currentMemberIds.push(realTmId);
           } catch (e) {
             console.warn(`Could not add supervisor ${supId} to PTeam:`, e);
@@ -821,7 +937,7 @@ export default function SupervisorProjects() {
           if (!realTmId) continue;
           if (currentMemberIds.includes(realTmId)) continue;
           try {
-            await projectTeamService.addMemberToProject(projectId, realTmId);
+            await projectTeamService.addMemberToProject(projectIdForLeads, realTmId);
             currentMemberIds.push(realTmId);
           } catch (e) {
             console.warn(`Could not add member ${memberId} to PTeam:`, e);
@@ -847,14 +963,14 @@ export default function SupervisorProjects() {
       } else {
         const newProject = await projectService.createProject(projectData);
         createdProject = newProject?.data || newProject;
-        const projectId = createdProject.p_id || createdProject.id;
+        projectIdForLeads = createdProject.p_id || createdProject.id;
 
         // Add supervisors to PTeam
         for (const supId of finalSupervisors) {
           const realTmId = findRealTeamMemberId(supId, teamMembers, users);
           if (!realTmId) continue;
           try {
-            await projectTeamService.addMemberToProject(projectId, realTmId);
+            await projectTeamService.addMemberToProject(projectIdForLeads, realTmId);
           } catch (e) {
             console.warn(`Could not add supervisor ${supId} to PTeam:`, e);
           }
@@ -865,13 +981,61 @@ export default function SupervisorProjects() {
           const realTmId = findRealTeamMemberId(memberId, teamMembers, users);
           if (!realTmId) continue;
           try {
-            await projectTeamService.addMemberToProject(projectId, realTmId);
+            await projectTeamService.addMemberToProject(projectIdForLeads, realTmId);
           } catch (e) {
             console.warn(`Could not add member ${memberId} to PTeam:`, e);
           }
         }
 
         toast.success('Project created successfully');
+      }
+
+      // ─── Apply lead assignments ───
+      const currentSupervisorIds = Array.isArray(createdProject?.supervisors)
+        ? createdProject.supervisors.map(Number)
+        : [...finalSupervisors];
+
+      const leadsToPromote = Object.entries(leadAssignments)
+        .filter(([, mode]) => mode === 'lead')
+        .map(([id]) => Number(id));
+
+      const nextSupervisorIds = Array.from(new Set([
+        ...currentSupervisorIds,
+        ...leadsToPromote,
+      ]));
+
+      if (leadsToPromote.length > 0) {
+        try {
+          await projectService.updateProject(projectIdForLeads, {
+            name: projectData.name,
+            description: projectData.description,
+            priority: projectData.priority,
+            status: projectData.status,
+            startDate: projectData.startDate,
+            deadline: projectData.deadline,
+            supervisors: nextSupervisorIds,
+          });
+        } catch (e) {
+          console.warn('Could not promote leads:', e);
+        }
+      }
+
+      const leadsAsMembers = Object.entries(leadAssignments)
+        .filter(([, mode]) => mode === 'member')
+        .map(([id]) => Number(id));
+
+      for (const leadId of leadsAsMembers) {
+        const lead = allLeads.find(l => Number(l.id) === leadId);
+        if (!lead) continue;
+        try {
+          await projectTeamService.addLeadAsTeamMember(
+            projectIdForLeads,
+            lead,
+            teamMembers,
+          );
+        } catch (e) {
+          console.warn(`Could not add lead ${leadId} as team member:`, e);
+        }
       }
 
       closeProjectModal();
@@ -1083,6 +1247,23 @@ export default function SupervisorProjects() {
       members: memberIds,
       supervisors: supervisorIds
     });
+
+    // Seed lead assignments from existing project state
+    const seeded = {};
+    asArray(allLeads).forEach(lead => {
+      const isSup = supervisorIds.includes(Number(lead.id));
+      if (isSup) {
+        seeded[lead.id] = 'lead';
+        return;
+      }
+      const nameLower = (lead.u_name || lead.name || '').toLowerCase().trim();
+      const matchingMember = asArray(project.regularMembers).find(
+        m => (m.name || '').toLowerCase().trim() === nameLower
+      );
+      if (matchingMember) seeded[lead.id] = 'member';
+    });
+    setLeadAssignments(seeded);
+
     resetProjectTouched();
     setProjectModal(true);
   };
@@ -2008,6 +2189,19 @@ export default function SupervisorProjects() {
                 </div>
               </div>
 
+              <LeadPicker
+                leads={allLeads}
+                assignments={leadAssignments}
+                onAssign={assignLead}
+                onUnassign={unassignLead}
+                label={`Project Leads (${allLeads.length} available)`}
+                assignedLeadIds={
+                  editProject
+                    ? (editProject.supervisorMembers || []).map(s => Number(s.id))
+                    : []
+                }
+              />
+
               <MemberPicker
                 selected={form.members}
                 onChange={ids => setForm({ ...form, members: ids })}
@@ -2168,7 +2362,7 @@ export default function SupervisorProjects() {
         .lp-member-trigger { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 42px; padding: 8px 12px; border-radius: 9px; border: 1px solid rgba(99, 102, 241, 0.25); background: rgba(99, 102, 241, 0.03); color: var(--text-primary); cursor: pointer; text-align: left; font-size: 13px; transition: border-color 0.15s; flex-wrap: wrap; }
         .lp-member-trigger:hover, .lp-member-trigger:focus { border-color: var(--accent-primary); outline: none; }
         .lp-picker-backdrop { position: fixed; inset: 0; z-index: 10; }
-        .lp-member-dropdown { position: absolute; top: calc(100% + 6px); left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.2); z-index: 20; overflow: hidden; max-height: 220px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border-default) transparent; }
+        .lp-member-dropdown { position: absolute; top: calc(100% + 6px); left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.2); z-index: 20; overflow: hidden; max-height: 260px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border-default) transparent; }
         .lp-member-option { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 14px; border: none; background: transparent; color: var(--text-primary); cursor: pointer; transition: background 0.12s; text-align: left; }
         .lp-member-option:hover { background: var(--bg-secondary); }
         .lp-member-option.selected { background: color-mix(in srgb, var(--accent-primary) 8%, transparent); }
@@ -2181,6 +2375,20 @@ export default function SupervisorProjects() {
         .lp-members-panel-header { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 12px; }
         .lp-members-list { display: flex; flex-direction: column; gap: 8px; }
         .lp-member-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; background: var(--bg-card); border: 1px solid var(--border-subtle); }
+
+        /* ─── Lead picker specific ─── */
+        .lp-lead-mode-pill { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 8px; margin-left: 4px; text-transform: uppercase; letter-spacing: 0.3px; }
+        .lp-lead-mode-pill.lead { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+        .lp-lead-mode-pill.member { background: rgba(99, 102, 241, 0.15); color: #6366f1; }
+        .lp-lead-option-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px 4px 0; }
+        .lp-lead-option-row:hover { background: var(--bg-secondary); }
+        .lp-lead-option-row .lp-member-option { padding: 8px 8px; }
+        .lp-lead-existing { font-size: 10px; font-weight: 500; color: var(--text-muted); margin-left: 6px; font-style: italic; }
+        .lp-lead-mode-toggle { display: inline-flex; gap: 2px; padding: 2px; background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: 8px; flex-shrink: 0; }
+        .lp-lead-mode-btn { font-size: 10.5px; font-weight: 600; padding: 3px 10px; border: none; border-radius: 6px; background: transparent; color: var(--text-muted); cursor: pointer; transition: all 0.12s; }
+        .lp-lead-mode-btn:hover { color: var(--text-primary); }
+        .lp-lead-mode-btn.active { background: var(--accent-primary); color: #fff; }
+
         @media (max-width: 768px) {
           .lp-filters-container { padding: 14px 16px; gap: 12px; }
           .lp-filter-controls { flex-direction: column; align-items: stretch; gap: 10px; }
