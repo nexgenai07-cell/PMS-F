@@ -61,8 +61,6 @@ class ProjectService {
     try {
       const response = await api.get(endpoints.projects.list);
       const allProjects = response.data?.data || response.data || [];
-
-      // Backend now filters by role/supervisor/membership — return as-is.
       return { data: allProjects };
     } catch (error) {
       console.error('ProjectService: Error fetching user projects:', error);
@@ -79,7 +77,6 @@ class ProjectService {
         status: projectData.status || 'planning',
         deadline: projectData.deadline || null,
         start_at: projectData.startDate || null,
-        // 🆕 Always send supervisors array (backend validates Lead must send ≥1)
         supervisors: Array.isArray(projectData.supervisors)
           ? projectData.supervisors.map(Number)
           : [],
@@ -106,7 +103,6 @@ class ProjectService {
         start_at: projectData.startDate || null,
       };
 
-      // Only send supervisors on PATCH if explicitly provided
       if (Array.isArray(projectData.supervisors)) {
         payload.supervisors = projectData.supervisors.map(Number);
       }
@@ -169,6 +165,25 @@ class ProjectService {
     } catch (error) {
       console.error(`ProjectService: Error fetching stats for project ${projectId}:`, error);
       return { data: null };
+    }
+  }
+
+  /**
+   * Returns all User accounts whose role is "member" — i.e. Leads in this
+   * system's terminology (the `User.role` enum maps "member" → "Lead" in
+   * the UI). Excludes soft-deleted users.
+   */
+  async getLeadCandidates() {
+    try {
+      const response = await api.get(endpoints.users.list);
+      const users = response.data?.data || response.data || [];
+      const leads = users.filter(u =>
+        !u.is_deleted && (u.role || '').toLowerCase() === 'member'
+      );
+      return { data: leads };
+    } catch (error) {
+      console.error('ProjectService: Error fetching lead candidates:', error);
+      return { data: [] };
     }
   }
 
