@@ -17,6 +17,7 @@ import projectService from "../../services/projectService";
 import taskService from "../../services/taskService";
 import teamService from "../../services/teamService";
 import commentService from "../../services/commentService";
+import projectTeamService from "../../services/projectTeamService";
 import { useAuth } from "../../context/AuthContext";
 import NotificationHelper from '../../services/notificationHelper';
 
@@ -226,6 +227,7 @@ export default function SupervisorTaskDetail() {
   const [task, setTask]             = useState(null);
   const [assignees, setAssignees]   = useState([]);
   const [teamMembers, setTeamMembers] = useState([]);
+  const [projectMemberIds, setProjectMemberIds] = useState(new Set());
   const [comments, setComments]     = useState([]);
 
   const [newComment, setNewComment] = useState("");
@@ -271,6 +273,16 @@ export default function SupervisorTaskDetail() {
     progress: validators.progress(newSubtask.progress),
   }), [newSubtask]);
 
+  /* ─── Project-scoped assignable members ───
+     Restrict the assignee dropdown to TeamMembers who are on THIS project
+     (via PTeam). Falls back to all team members when the project-scoped
+     list hasn't loaded, so the picker is never empty unexpectedly. */
+  const assignableMembers = useMemo(() => {
+    const all = asArray(teamMembers);
+    if (!projectMemberIds || projectMemberIds.size === 0) return all;
+    return all.filter(m => projectMemberIds.has(Number(m.id)));
+  }, [teamMembers, projectMemberIds]);
+
   const commentError = validators.comment(newComment);
   const isEditValid = Object.values(editErrors).every(e => e === '');
   const isSubtaskValid = Object.values(subtaskErrors).every(e => e === '');
@@ -286,22 +298,31 @@ export default function SupervisorTaskDetail() {
   const fetchTaskData = async () => {
     try {
       setLoading(true);
-      const [projectData, taskData, membersData, subtasksData] = await Promise.all([
+      const [projectData, taskData, membersData, subtasksData, projectMembersData] = await Promise.all([
         projectService.getProject(projectId),
         taskService.getTask(tId),
         teamService.getTeamMembers(),
         taskService.getSubtasks(tId).catch(() => ({ data: [] })),
+        projectTeamService.getProjectMembers(projectId).catch(() => ({ data: [] })),
       ]);
 
       const projectItem = projectData?.data || projectData;
       const taskItem = taskData?.data || taskData;
       const membersList = membersData?.data || membersData || [];
       const subsList = subtasksData?.data || subtasksData || [];
+      const projectMembersList = projectMembersData?.data || projectMembersData || [];
 
       setProject(projectItem);
       setTask(taskItem);
       setTeamMembers(membersList);
       setSubtasks(subsList);
+
+      const pmIds = new Set(
+        asArray(projectMembersList)
+          .map(m => Number(m.id ?? m.tmId ?? m.tm))
+          .filter(Number.isFinite)
+      );
+      setProjectMemberIds(pmIds);
 
       const assigneeIds = Array.isArray(taskItem?.assignees) && taskItem.assignees.length > 0
         ? taskItem.assignees.map(Number)
@@ -683,7 +704,7 @@ export default function SupervisorTaskDetail() {
                   <MemberMultiPicker
                     selected={editForm.assignees}
                     onChange={(ids) => setEditForm(prev => ({ ...prev, assignees: ids }))}
-                    members={teamMembers}
+                    members={assignableMembers}
                     disabled={savingEdit}
                   />
                 </div>
@@ -780,7 +801,6 @@ export default function SupervisorTaskDetail() {
             )}
           </div>
 
-          {/* Progress card */}
           <div className="progress-card">
             <div className="progress-header">
               <span className="progress-title"><Target size={14} style={{ marginRight: 6 }} />Task Progress</span>
@@ -884,7 +904,7 @@ export default function SupervisorTaskDetail() {
                     <MemberMultiPicker
                       selected={newSubtask.assignees}
                       onChange={(ids) => setNewSubtask(prev => ({ ...prev, assignees: ids }))}
-                      members={teamMembers}
+                      members={assignableMembers}
                       disabled={subtaskSubmitting}
                     />
                   </div>

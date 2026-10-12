@@ -17,6 +17,7 @@ import projectService from "../../services/projectService";
 import taskService from "../../services/taskService";
 import teamService from "../../services/teamService";
 import commentService from "../../services/commentService";
+import projectTeamService from "../../services/projectTeamService";
 import { useAuth } from "../../context/AuthContext";
 import NotificationHelper from '../../services/notificationHelper';
 
@@ -90,7 +91,6 @@ function FieldError({ message }) {
   );
 }
 
-/* ─── Multi-assignee picker ─── */
 function MemberMultiPicker({ selected = [], onChange, members = [], disabled = false }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -226,6 +226,7 @@ export default function LeadTaskDetail() {
   const [task, setTask]             = useState(null);
   const [assignees, setAssignees]   = useState([]);
   const [teamMembers, setTeamMembers] = useState([]);
+  const [projectMemberIds, setProjectMemberIds] = useState(new Set());
   const [comments, setComments]     = useState([]);
 
   const [newComment, setNewComment] = useState("");
@@ -243,7 +244,6 @@ export default function LeadTaskDetail() {
 
   const editTitleRef = useRef(null);
 
-  /* ─── Subtasks ─── */
   const [subtasks, setSubtasks] = useState([]);
   const [showAddSubtask, setShowAddSubtask] = useState(false);
   const [newSubtask, setNewSubtask] = useState({
@@ -271,6 +271,13 @@ export default function LeadTaskDetail() {
     progress: validators.progress(newSubtask.progress),
   }), [newSubtask]);
 
+  /* Project-scoped assignable members */
+  const assignableMembers = useMemo(() => {
+    const all = asArray(teamMembers);
+    if (!projectMemberIds || projectMemberIds.size === 0) return all;
+    return all.filter(m => projectMemberIds.has(Number(m.id)));
+  }, [teamMembers, projectMemberIds]);
+
   const commentError = validators.comment(newComment);
   const isEditValid = Object.values(editErrors).every(e => e === '');
   const isSubtaskValid = Object.values(subtaskErrors).every(e => e === '');
@@ -286,24 +293,32 @@ export default function LeadTaskDetail() {
   const fetchTaskData = async () => {
     try {
       setLoading(true);
-      const [projectData, taskData, membersData, subtasksData] = await Promise.all([
+      const [projectData, taskData, membersData, subtasksData, projectMembersData] = await Promise.all([
         projectService.getProject(projectId),
         taskService.getTask(tId),
         teamService.getTeamMembers(),
         taskService.getSubtasks(tId).catch(() => ({ data: [] })),
+        projectTeamService.getProjectMembers(projectId).catch(() => ({ data: [] })),
       ]);
 
       const projectItem = projectData?.data || projectData;
       const taskItem = taskData?.data || taskData;
       const membersList = membersData?.data || membersData || [];
       const subsList = subtasksData?.data || subtasksData || [];
+      const projectMembersList = projectMembersData?.data || projectMembersData || [];
 
       setProject(projectItem);
       setTask(taskItem);
       setTeamMembers(membersList);
       setSubtasks(subsList);
 
-      // Resolve assignees (M2M if present, else single FK)
+      const pmIds = new Set(
+        asArray(projectMembersList)
+          .map(m => Number(m.id ?? m.tmId ?? m.tm))
+          .filter(Number.isFinite)
+      );
+      setProjectMemberIds(pmIds);
+
       const assigneeIds = Array.isArray(taskItem?.assignees) && taskItem.assignees.length > 0
         ? taskItem.assignees.map(Number)
         : (taskItem?.assign_to ? [Number(taskItem.assign_to)] : []);
@@ -350,7 +365,6 @@ export default function LeadTaskDetail() {
     toast.success("Task refreshed");
   };
 
-  /* ─── Comments ─── */
   const handleAddComment = async () => {
     setCommentTouched(true);
     if (commentError) { toast.error(commentError); return; }
@@ -397,7 +411,6 @@ export default function LeadTaskDetail() {
     } catch { toast.error("Failed to delete comment"); }
   };
 
-  /* ─── Update task ─── */
   const handleUpdateTask = async () => {
     setEditSubmitAttempted(true);
     if (!isEditValid) { toast.error('Please fix the highlighted errors'); return; }
@@ -439,7 +452,6 @@ export default function LeadTaskDetail() {
     }
   };
 
-  /* ─── Add subtask ─── */
   const handleAddSubtask = async () => {
     setSubtaskSubmitAttempted(true);
     if (!isSubtaskValid) { toast.error('Please fix the highlighted errors'); return; }
@@ -532,7 +544,6 @@ export default function LeadTaskDetail() {
     return () => clearTimeout(t);
   }, [showAddSubtask]);
 
-  /* ─── Loading / Not found ─── */
   if (loading) {
     return (
       <div>
@@ -620,7 +631,6 @@ export default function LeadTaskDetail() {
       />
 
       <div className="task-detail-page">
-        {/* LEFT */}
         <div className="task-detail-left">
           <button className="back-button" onClick={() => navigate(`/lead/projects/${projectId}`)}>
             <ArrowLeft size={16} /><span>Back to Project</span>
@@ -647,7 +657,6 @@ export default function LeadTaskDetail() {
                   <FieldError message={showEditError('title')} />
                 </div>
 
-                {/* Description typing bug fixed: controlled by editForm.desc with functional setState. */}
                 <div className="edit-form-group">
                   <label className="edit-label">Description</label>
                   <textarea
@@ -686,7 +695,7 @@ export default function LeadTaskDetail() {
                   <MemberMultiPicker
                     selected={editForm.assignees}
                     onChange={(ids) => setEditForm(prev => ({ ...prev, assignees: ids }))}
-                    members={teamMembers}
+                    members={assignableMembers}
                     disabled={savingEdit}
                   />
                 </div>
@@ -783,7 +792,6 @@ export default function LeadTaskDetail() {
             )}
           </div>
 
-          {/* ─── Progress card ─── */}
           <div className="progress-card">
             <div className="progress-header">
               <span className="progress-title"><Target size={14} style={{ marginRight: 6 }} />Task Progress</span>
@@ -802,7 +810,6 @@ export default function LeadTaskDetail() {
             </div>
           </div>
 
-          {/* ─── SUBTASKS ─── */}
           <div className="subtasks-card">
             <div className="subtasks-header">
               <h3 className="subtasks-title">
@@ -887,7 +894,7 @@ export default function LeadTaskDetail() {
                     <MemberMultiPicker
                       selected={newSubtask.assignees}
                       onChange={(ids) => setNewSubtask(prev => ({ ...prev, assignees: ids }))}
-                      members={teamMembers}
+                      members={assignableMembers}
                       disabled={subtaskSubmitting}
                     />
                   </div>
@@ -962,7 +969,6 @@ export default function LeadTaskDetail() {
             </div>
           </div>
 
-          {/* ─── Comments ─── */}
           <div className="comments-card">
             <div className="comments-header">
               <h3 className="comments-title">
@@ -1039,7 +1045,6 @@ export default function LeadTaskDetail() {
           </div>
         </div>
 
-        {/* RIGHT */}
         <div className="task-detail-right">
           <div className="sidebar-card">
             <h4 className="sidebar-card-title"><Sparkles size={14} />Task Details</h4>
@@ -1147,7 +1152,6 @@ export default function LeadTaskDetail() {
         .progress-track { width: 100%; height: 8px; background: var(--border-subtle); border-radius: 10px; overflow: hidden; }
         .progress-fill { height: 100%; border-radius: 10px; }
 
-        /* ─── Subtasks ─── */
         .subtasks-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 18px 20px; }
         .subtasks-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
         .subtasks-title { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; color: var(--text-primary); margin: 0; }
@@ -1173,7 +1177,6 @@ export default function LeadTaskDetail() {
         .subtask-meta span { display: inline-flex; align-items: center; gap: 4px; }
         .subtask-actions { display: flex; gap: 4px; flex-shrink: 0; }
 
-        /* ─── Comments ─── */
         .comments-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 20px 24px; }
         .comments-header { display: flex; align-items: center; margin-bottom: 16px; }
         .comments-title { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; color: var(--text-primary); margin: 0; }
@@ -1198,7 +1201,6 @@ export default function LeadTaskDetail() {
         .icon-btn:hover { color: var(--accent-primary); border-color: var(--accent-primary); }
         .icon-btn.danger:hover { color: #f87171; border-color: #f87171; }
 
-        /* ─── Edit form ─── */
         .edit-form { display: flex; flex-direction: column; gap: 12px; }
         .edit-form-group { display: flex; flex-direction: column; gap: 4px; }
         .edit-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
@@ -1212,7 +1214,6 @@ export default function LeadTaskDetail() {
         .lt-input-error { border-color: #f87171 !important; background: rgba(248, 113, 113, 0.04) !important; }
         .lt-field-error { display: flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 500; color: #f87171; margin-top: 4px; }
 
-        /* ─── Picker ─── */
         .lt-picker-trigger { display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 8px 12px; border-radius: 9px; border: 1px solid var(--border-default); background: var(--bg-secondary); cursor: pointer; }
         .lt-picker-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 20px; font-size: 12px; }
         .lt-picker-chip button { background: transparent; border: none; color: var(--text-muted); cursor: pointer; }
@@ -1231,7 +1232,6 @@ export default function LeadTaskDetail() {
         .lt-picker-check { color: var(--accent-primary); }
         .lt-picker-empty { padding: 20px; text-align: center; font-size: 13px; color: var(--text-muted); }
 
-        /* ─── Sidebar ─── */
         .sidebar-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 16px 18px; }
         .sidebar-card-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--text-primary); margin: 0 0 12px; }
         .detail-item { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border-subtle); }
