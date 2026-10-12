@@ -1,4 +1,4 @@
-// components/lead/LeadProjectDetail.jsx
+// components/lead/ProjectDetail.jsx
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, useNavigate, useOutletContext } from "react-router-dom";
 import {
@@ -370,7 +370,7 @@ function SubtaskDraftRow({ onAdd, members, disabled }) {
 /* ═══════════════════════════════════════════════════════════
    MAIN COMPONENT
    ═══════════════════════════════════════════════════════════ */
-export default function LeadProjectDetail() {
+export default function ProjectDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { onMenuClick } = useOutletContext();
@@ -411,7 +411,6 @@ export default function LeadProjectDetail() {
   const [addMemberSaving, setAddMemberSaving]         = useState(false);
   const [addLeadSaving, setAddLeadSaving]             = useState(false);
 
-  // Lead candidates + their Lead/Member assignment mode for the add-lead modal
   const [leadCandidates, setLeadCandidates] = useState([]);
   const [addLeadAssignments, setAddLeadAssignments] = useState({});
 
@@ -1043,7 +1042,6 @@ export default function LeadProjectDetail() {
     try {
       const currentSupervisorIds = asArray(project?.supervisors).map(Number);
 
-      // 1. Promote all Lead-mode leads to project supervisors in a single PATCH.
       const leadsToPromote = entries
         .filter(([, mode]) => mode === 'lead')
         .map(([id]) => Number(id));
@@ -1064,7 +1062,6 @@ export default function LeadProjectDetail() {
         });
       }
 
-      // 2. Add all Member-mode leads as regular team members.
       const leadsAsMembers = entries
         .filter(([, mode]) => mode === 'member')
         .map(([id]) => Number(id));
@@ -1146,38 +1143,24 @@ export default function LeadProjectDetail() {
     );
   }
 
-  // The "Project Lead" section should show actual Leads — a Supervisor who
-// created the project is not a Lead. Only count the creator as the Lead
-// when they actually hold a Lead-role (i.e. their role is one of LEAD_ROLES
-// on their matched TeamMember record, or their User.role is 'member').
-const creatorUserId = Number(project.created_by);
-const creatorUser   = asArray(users).find(u => Number(u.id) === creatorUserId);
-const creatorUserRole = (creatorUser?.role || '').toLowerCase();
+  const creatorUserId = Number(project.created_by);
+  const creatorUser   = asArray(users).find(u => Number(u.id) === creatorUserId);
+  const creatorUserRole = (creatorUser?.role || '').toLowerCase();
 
-// A User's auth role decides which section their "created by" entry lives in.
-// "member" (aka Lead) → Project Lead section
-// "manager"/"supervisor"/"admin" → Supervisors section
-// anything else → Team Members section
-const creatorIsLead       = creatorUserRole === 'member';
-const creatorIsSupervisor = SUPERVISOR_ROLES.includes(creatorUserRole);
+  const creatorIsLead       = creatorUserRole === 'member';
+  const creatorIsSupervisor = SUPERVISOR_ROLES.includes(creatorUserRole);
 
-const creatorName = project.created_by_name || creatorUser?.u_name || 'Unknown';
+  const creatorName = project.created_by_name || creatorUser?.u_name || 'Unknown';
 
-// Leads listed in the Project Lead section = actual project Leads +
-// (the creator if they're a Lead themselves). The creator-as-Lead entry is
-// rendered separately below, so we only need the "additional" leads here.
-const additionalLeads = asArray(projectLeadsFinal).filter(
-  m => Number(m.userId) !== creatorUserId
-);
-const totalLeadCount = (creatorIsLead ? 1 : 0) + additionalLeads.length;
+  const additionalLeads = asArray(projectLeadsFinal).filter(
+    m => Number(m.userId) !== creatorUserId
+  );
+  const totalLeadCount = (creatorIsLead ? 1 : 0) + additionalLeads.length;
 
-// Same idea for the Supervisors section: the creator's name is shown inline
-// with a "Created by" tag when they're a supervisor. All other supervisors
-// come from projectSupervisors, minus the creator if they're in that list.
-const additionalSupervisors = asArray(projectSupervisors).filter(
-  s => Number(s.userId) !== creatorUserId
-);
-const totalSupervisorCount = (creatorIsSupervisor ? 1 : 0) + additionalSupervisors.length;
+  const additionalSupervisors = asArray(projectSupervisors).filter(
+    s => Number(s.userId) !== creatorUserId
+  );
+  const totalSupervisorCount = (creatorIsSupervisor ? 1 : 0) + additionalSupervisors.length;
 
   return (
     <div className="project-detail-page">
@@ -1515,7 +1498,6 @@ const totalSupervisorCount = (creatorIsSupervisor ? 1 : 0) + additionalSuperviso
       {/* ═══ PROJECT BODY ═══ */}
       <div className="project-body">
         <div className="project-left">
-
           {/* OVERVIEW */}
           <div className="project-overview-card">
             <div className="overview-header">
@@ -1706,98 +1688,99 @@ const totalSupervisorCount = (creatorIsSupervisor ? 1 : 0) + additionalSuperviso
                   </div>
                 </div>
                 <div className="team-section-list">
-  {creatorIsLead && (
-    <div className="team-member-item lead-item">
-      <Avatar name={creatorName} size="sm" />
-      <div className="team-member-info">
-        <span className="team-member-name">
-          {creatorName}
-          <span className="lead-badge"><Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} /></span>
-        </span>
-        <span className="team-member-role">Team Lead (Creator)</span>
-      </div>
-    </div>
-  )}
+                  {creatorIsLead && (
+                    <div className="team-member-item lead-item">
+                      <Avatar name={creatorName} size="sm" />
+                      <div className="team-member-info">
+                        <span className="team-member-name">
+                          {creatorName}
+                          <span className="lead-badge"><Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} /></span>
+                        </span>
+                        <span className="team-member-role">Team Lead (Creator)</span>
+                      </div>
+                    </div>
+                  )}
 
-  {additionalLeads.map((m, idx) => (
-    <div key={m.id || `lead-${idx}`} className="team-member-item lead-item">
-      <Avatar name={m.name || 'Lead'} size="sm" />
-      <div className="team-member-info">
-        <span className="team-member-name">
-          {m.name || `User ${m.id}`}
-          <span className="lead-badge"><Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} /></span>
-        </span>
-        <span className="team-member-role">Project Lead</span>
-      </div>
-      <button className="task-action-btn danger" title={`Remove ${m.name || 'lead'}`} onClick={() => promptRemoveMember(m)}>
-        <UserMinus size={11} />
-      </button>
-    </div>
-  ))}
+                  {additionalLeads.map((m, idx) => (
+                    <div key={m.id || `lead-${idx}`} className="team-member-item lead-item">
+                      <Avatar name={m.name || 'Lead'} size="sm" />
+                      <div className="team-member-info">
+                        <span className="team-member-name">
+                          {m.name || `User ${m.id}`}
+                          <span className="lead-badge"><Shield size={12} style={{ color: '#6366f1', marginLeft: 4 }} /></span>
+                        </span>
+                        <span className="team-member-role">Project Lead</span>
+                      </div>
+                      <button className="task-action-btn danger" title={`Remove ${m.name || 'lead'}`} onClick={() => promptRemoveMember(m)}>
+                        <UserMinus size={11} />
+                      </button>
+                    </div>
+                  ))}
 
-  {!creatorIsLead && additionalLeads.length === 0 && (
-    <div className="team-section-empty">No project lead assigned</div>
-  )}
-</div>
+                  {!creatorIsLead && additionalLeads.length === 0 && (
+                    <div className="team-section-empty">No project lead assigned</div>
+                  )}
+                </div>
+              </div>
 
               {/* Supervisors */}
               <div className="team-section team-section-supervisors">
-  <div className="team-section-header">
-    <div className="team-section-title">
-      <Crown size={13} style={{ color: '#f59e0b' }} />
-      <span>Supervisors</span>
-    </div>
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-      <span className="team-section-count">{totalSupervisorCount}</span>
-      <button className="team-add-btn" title="Add supervisor" onClick={() => setAddSupervisorOpen(true)}>
-        <Plus size={11} />
-      </button>
-    </div>
-  </div>
+                <div className="team-section-header">
+                  <div className="team-section-title">
+                    <Crown size={13} style={{ color: '#f59e0b' }} />
+                    <span>Supervisors</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span className="team-section-count">{totalSupervisorCount}</span>
+                    <button className="team-add-btn" title="Add supervisor" onClick={() => setAddSupervisorOpen(true)}>
+                      <Plus size={11} />
+                    </button>
+                  </div>
+                </div>
 
-  {(creatorIsSupervisor ? 1 : 0) + additionalSupervisors.length === 0 ? (
-    <div className="team-section-empty">No supervisors assigned</div>
-  ) : (
-    <div className="team-section-list">
-      {creatorIsSupervisor && (
-        <div className="team-member-item supervisor-item">
-          <Avatar name={creatorName} size="sm" />
-          <div className="team-member-info">
-            <span className="team-member-name">
-              {creatorName}
-              <span className="supervisor-badge">
-                <Crown size={12} style={{ color: '#f59e0b', marginLeft: 4 }} />
-              </span>
-            </span>
-            <span className="team-member-role">Supervisor (Creator)</span>
-          </div>
-        </div>
-      )}
+                {totalSupervisorCount === 0 ? (
+                  <div className="team-section-empty">No supervisors assigned</div>
+                ) : (
+                  <div className="team-section-list">
+                    {creatorIsSupervisor && (
+                      <div className="team-member-item supervisor-item">
+                        <Avatar name={creatorName} size="sm" />
+                        <div className="team-member-info">
+                          <span className="team-member-name">
+                            {creatorName}
+                            <span className="supervisor-badge">
+                              <Crown size={12} style={{ color: '#f59e0b', marginLeft: 4 }} />
+                            </span>
+                          </span>
+                          <span className="team-member-role">Supervisor (Creator)</span>
+                        </div>
+                      </div>
+                    )}
 
-      {additionalSupervisors.map((m, idx) => (
-        <div key={m.id || `sup-${idx}`} className="team-member-item supervisor-item">
-          <Avatar name={m.name || 'Supervisor'} size="sm" />
-          <div className="team-member-info">
-            <span className="team-member-name">
-              {m.name || `User ${m.id}`}
-              <span className="supervisor-badge">
-                <Crown size={12} style={{ color: '#f59e0b', marginLeft: 4 }} />
-              </span>
-            </span>
-            <span className="team-member-role">Supervisor</span>
-          </div>
-          <button
-            className="task-action-btn danger"
-            title={`Remove ${m.name || 'supervisor'}`}
-            onClick={() => promptRemoveMember(m)}
-          >
-            <UserMinus size={11} />
-          </button>
-        </div>
-      ))}
-    </div>
-  )}
-</div>
+                    {additionalSupervisors.map((m, idx) => (
+                      <div key={m.id || `sup-${idx}`} className="team-member-item supervisor-item">
+                        <Avatar name={m.name || 'Supervisor'} size="sm" />
+                        <div className="team-member-info">
+                          <span className="team-member-name">
+                            {m.name || `User ${m.id}`}
+                            <span className="supervisor-badge">
+                              <Crown size={12} style={{ color: '#f59e0b', marginLeft: 4 }} />
+                            </span>
+                          </span>
+                          <span className="team-member-role">Supervisor</span>
+                        </div>
+                        <button
+                          className="task-action-btn danger"
+                          title={`Remove ${m.name || 'supervisor'}`}
+                          onClick={() => promptRemoveMember(m)}
+                        >
+                          <UserMinus size={11} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               {/* Team Members */}
               <div className="team-section team-section-members">
@@ -1921,7 +1904,7 @@ const totalSupervisorCount = (creatorIsSupervisor ? 1 : 0) + additionalSuperviso
         )}
       </AnimatePresence>
 
-      {/* ═════════ ADD LEAD MODAL — with Lead/Member toggle ═════════ */}
+      {/* ═════════ ADD LEAD MODAL ═════════ */}
       <AnimatePresence>
         {addLeadOpen && (
           <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -2148,141 +2131,32 @@ const totalSupervisorCount = (creatorIsSupervisor ? 1 : 0) + additionalSuperviso
         .confirm-title { font-size: 18px; font-weight: 800; color: var(--text-primary); margin: 0 0 6px; }
         .confirm-desc { font-size: 13px; color: var(--text-muted); margin: 0 0 16px; }
 
-        /* ─── Lead picker rows (Lead vs Member toggle) ─── */
-        .lead-add-row {
-          display: flex;
-          align-items: stretch;
-          gap: 6px;
-        }
-        .lead-add-row .lead-add-btn {
-          flex: 1;
-        }
+        .lead-add-row { display: flex; align-items: stretch; gap: 6px; }
+        .lead-add-row .lead-add-btn { flex: 1; }
         .lead-add-row .lead-add-btn.selected {
           border-color: var(--accent-primary);
           background: color-mix(in srgb, var(--accent-primary) 8%, var(--bg-secondary));
         }
-        .lead-already-badge {
-          display: inline-block;
-          margin-left: 6px;
-          font-size: 10px;
-          font-weight: 500;
-          color: var(--text-muted);
-          font-style: italic;
-        }
-        .lead-mode-toggle {
-          display: inline-flex;
-          gap: 2px;
-          padding: 2px;
-          background: var(--bg-secondary);
-          border: 1px solid var(--border-subtle);
-          border-radius: 8px;
-          align-self: center;
-        }
-        .lead-mode-btn {
-          font-size: 10.5px;
-          font-weight: 600;
-          padding: 5px 10px;
-          border: none;
-          border-radius: 6px;
-          background: transparent;
-          color: var(--text-muted);
-          cursor: pointer;
-          transition: all 0.12s;
-        }
+        .lead-already-badge { display: inline-block; margin-left: 6px; font-size: 10px; font-weight: 500; color: var(--text-muted); font-style: italic; }
+        .lead-mode-toggle { display: inline-flex; gap: 2px; padding: 2px; background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: 8px; align-self: center; }
+        .lead-mode-btn { font-size: 10.5px; font-weight: 600; padding: 5px 10px; border: none; border-radius: 6px; background: transparent; color: var(--text-muted); cursor: pointer; transition: all 0.12s; }
         .lead-mode-btn:hover { color: var(--text-primary); }
         .lead-mode-btn.active { background: var(--accent-primary); color: #fff; }
 
-        /* ─── Subtasks section ─── */
-        .add-subtasks-block {
-          margin-top: 8px;
-          padding: 12px;
-          background: var(--bg-secondary);
-          border: 1px solid var(--border-subtle);
-          border-radius: 10px;
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-        }
-        .add-subtasks-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 8px;
-        }
-        .add-subtasks-count {
-          display: inline-block;
-          margin-left: 6px;
-          font-size: 10px;
-          font-weight: 700;
-          padding: 1px 8px;
-          border-radius: 10px;
-          background: var(--accent-primary);
-          color: #fff;
-        }
-        .add-subtasks-hint {
-          font-size: 10.5px;
-          color: var(--text-muted);
-          font-style: italic;
-        }
-        .add-subtasks-list {
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
-        .add-subtask-chip {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          padding: 6px 10px;
-          background: var(--bg-card);
-          border: 1px solid var(--border-subtle);
-          border-radius: 8px;
-          font-size: 12.5px;
-        }
-        .add-subtask-chip-title {
-          flex: 1;
-          min-width: 0;
-          font-weight: 500;
-          color: var(--text-primary);
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-        .add-subtask-chip-meta {
-          font-size: 11px;
-          color: var(--text-muted);
-          flex-shrink: 0;
-        }
-        .add-subtask-chip-remove {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          width: 20px;
-          height: 20px;
-          border-radius: 6px;
-          border: 1px solid var(--border-subtle);
-          background: transparent;
-          color: var(--text-muted);
-          cursor: pointer;
-          flex-shrink: 0;
-        }
+        .add-subtasks-block { margin-top: 8px; padding: 12px; background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: 10px; display: flex; flex-direction: column; gap: 10px; }
+        .add-subtasks-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .add-subtasks-count { display: inline-block; margin-left: 6px; font-size: 10px; font-weight: 700; padding: 1px 8px; border-radius: 10px; background: var(--accent-primary); color: #fff; }
+        .add-subtasks-hint { font-size: 10.5px; color: var(--text-muted); font-style: italic; }
+        .add-subtasks-list { display: flex; flex-direction: column; gap: 6px; }
+        .add-subtask-chip { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 8px; font-size: 12.5px; }
+        .add-subtask-chip-title { flex: 1; min-width: 0; font-weight: 500; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .add-subtask-chip-meta { font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
+        .add-subtask-chip-remove { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 6px; border: 1px solid var(--border-subtle); background: transparent; color: var(--text-muted); cursor: pointer; flex-shrink: 0; }
         .add-subtask-chip-remove:hover { color: #f87171; border-color: #f87171; }
-        .subtask-draft-row {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-        .subtask-draft-inputs {
-          display: grid;
-          grid-template-columns: 1fr 120px;
-          gap: 8px;
-        }
+        .subtask-draft-row { display: flex; flex-direction: column; gap: 8px; }
+        .subtask-draft-inputs { display: grid; grid-template-columns: 1fr 120px; gap: 8px; }
         .subtask-draft-select { min-width: 0; }
-        .subtask-draft-actions {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
+        .subtask-draft-actions { display: flex; flex-direction: column; gap: 8px; }
         .subtask-draft-actions .btn { align-self: flex-end; }
 
         @media (max-width: 1024px) { .project-body { grid-template-columns: 1fr 280px; padding: 16px 20px; } }
