@@ -266,7 +266,6 @@ export default function SupervisorTeams() {
               tasks: local.tasks,
             };
           } catch (err) {
-            // keep local stats on error
           }
         })
       );
@@ -344,18 +343,14 @@ export default function SupervisorTeams() {
     return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
   };
 
-  /* ─────────── Dynamic role options ───────────
-   Derive the filter dropdown from the roles actually present on the
-   loaded members, so any custom role a user types when adding a member
-   immediately becomes filterable. The hardcoded list is kept as a
-   fallback for the empty state. */
+  /* ─────────── Dynamic role options ───────────*/
 const DEFAULT_ROLE_OPTIONS = [
   'Frontend', 'Backend', 'Full Stack', 'Designer',
   'Developer', 'QA', 'DevOps',
 ];
 
 const roleOptions = useMemo(() => {
-  const seen = new Map();  // normalized -> original display form
+  const seen = new Map();  
 
   members.forEach(m => {
     const raw = (m.role || '').trim();
@@ -364,13 +359,11 @@ const roleOptions = useMemo(() => {
     if (!seen.has(key)) seen.set(key, raw);
   });
 
-  // Merge in defaults that aren't already present (case-insensitive)
   DEFAULT_ROLE_OPTIONS.forEach(r => {
     const key = r.toLowerCase();
     if (!seen.has(key)) seen.set(key, r);
   });
 
-  // Sort alphabetically by the display form
   return Array.from(seen.values()).sort((a, b) =>
     a.localeCompare(b)
   );

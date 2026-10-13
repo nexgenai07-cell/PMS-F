@@ -47,21 +47,12 @@ const SORT_OPTIONS = [
   { value: 'name-desc',        label: 'Name (Z–A)' },
 ];
 
-/**
- * Map a backend lead-stats row into the shape the UI expects.
- *
- * Two scopes are unpacked:
- *   - PERSONAL  → d.personal.*    (the lead's own tasks)
- *   - PROJECT   → d.project.*     (all tasks in the lead's projects)
- */
 function mapLeadRow(row) {
   const pTotal    = Number(row.personalTotalTasks) || 0;
   const pCompRate = Number(row.personalCompletionRate) || 0;
 
   // The performance verdict is based on PERSONAL completion, not project.
-  // A lead who runs a large project but does zero work themselves isn't
-  // "excellent" — they're "managing". A lead with no personal tasks at
-  // all is "New" only if they also have no projects.
+  // A lead who runs a large project but does zero work themselves isn't "excellent" — they're "managing". A lead with no personal tasks at all is "New" only if they also have no projects.
   const projectTotal = Number(row.totalTasks) || 0;
   const performance =
     pTotal === 0 && projectTotal === 0 ? 'New' :
@@ -170,10 +161,7 @@ function PerformanceBadge({ performance, color, size = 'sm' }) {
   );
 }
 
-/**
- * A single scoped stat row: { Done / Active / To Do / Total } +
- * a header label and a completion-rate pill on the right.
- */
+/* A single scoped stat row: { Done / Active / To Do / Total }*/
 function ScopedStatRow({ scope, label, rate, rateColor, icon: Icon }) {
   return (
     <div className="scope-block">

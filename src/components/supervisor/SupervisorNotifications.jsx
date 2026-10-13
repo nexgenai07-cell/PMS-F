@@ -75,7 +75,6 @@ export default function SupervisorNotifications() {
       const usersList    = usersData?.data || usersData || [];
       const rawNotifs    = notificationsData?.data || [];
 
-      // Filter out locally-deleted + locally-read notifications
       const readItems = JSON.parse(
         localStorage.getItem(`read_notifications_${userId}`) || '[]'
       );

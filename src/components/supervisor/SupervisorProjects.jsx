@@ -615,7 +615,6 @@ export default function SupervisorProjects() {
 
   useEffect(() => {
     fetchData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const categorizeMembers = (members, users) => {
@@ -645,7 +644,7 @@ export default function SupervisorProjects() {
   };
 
   const fetchData = async () => {
-    console.log('🚀 [SupervisorProjects] fetchData STARTED');
+    console.log('[SupervisorProjects] fetchData STARTED');
     try {
       setLoading(true);
 
@@ -665,7 +664,7 @@ export default function SupervisorProjects() {
       const pteamList = asArray(pteamData?.data || pteamData);
       const leadsList = asArray(leadsData?.data || leadsData);
 
-      console.log('✅ [SupervisorProjects] Normalized:', {
+      console.log('[SupervisorProjects] Normalized:', {
         projects: projectsList.length,
         tasks: tasksList.length,
         members: membersList.length,
@@ -676,7 +675,6 @@ export default function SupervisorProjects() {
 
       setAllLeads(leadsList);
 
-      // Only real, non-deleted team members
       const activeMembersList = membersList.filter(m => m.is_deleted !== 1);
       const userId = user?.id || user?.u_id;
 

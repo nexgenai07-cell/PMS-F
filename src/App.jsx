@@ -64,7 +64,6 @@ function ProtectedRoute({ children, role }) {
 
   if (!user) {
     console.log('🔵 ProtectedRoute: ❌ no user, redirecting to login');
-    // Clear sessionStorage (tokens live there now, not localStorage)
     sessionStorage.removeItem('access_token');
     sessionStorage.removeItem('token');
     sessionStorage.removeItem('refresh_token');

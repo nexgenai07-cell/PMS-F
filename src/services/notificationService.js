@@ -16,18 +16,7 @@ class NotificationService {
   }
 
   /**
-   * GET activities filtered STRICTLY by the user's actual membership.
-   *
-   * Rules:
-   *  - Admin            → sees everything.
-   *  - Manager/Supervisor → sees ONLY projects they created OR supervise OR are PTeam members of.
-   *  - Lead/Member      → sees ONLY projects they created OR are PTeam members of.
-   *  - New user (no projects, no tasks, no PTeam) → sees NOTHING.
-   *
-   * ADDITIONALLY: only activities created ON OR AFTER the user's own
-   * `created_at` are shown. A freshly registered user therefore starts
-   * with an empty inbox, even if they happen to share a name with an
-   * existing TeamMember profile.
+   * GET activities filtered by the user's actual membership.
    */
   async getNotifications(userId = null, userRole = null, userCreatedAt = null) {
     try {

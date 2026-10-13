@@ -6,7 +6,6 @@
   padding: 0;
 }
 
-/* ── DARK MODE (default) ── */
 :root {
   --bg-primary: #080b12;
   --bg-secondary: #0d1017;

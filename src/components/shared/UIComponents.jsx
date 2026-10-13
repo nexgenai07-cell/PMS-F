@@ -14,7 +14,6 @@ export function PriorityBadge({ priority }) {
   );
 }
 
-// ✅ Updated StatusBadge with better handling
 export function StatusBadge({ status }) {
   // Normalize status to lowercase
   const normalizedStatus = String(status || '').toLowerCase().trim();

@@ -4,12 +4,6 @@ import api, { endpoints } from '../utils/api';
 const asArray = (v) => (Array.isArray(v) ? v : []);
 
 class TaskService {
-  /**
-   * GET /api/task
-   *
-   * Returns the raw task list, enriched with full detail from each task's
-   * detail endpoint when the list is missing critical fields.
-   */
   async getTasks() {
     try {
       const response = await api.get(endpoints.tasks.list);

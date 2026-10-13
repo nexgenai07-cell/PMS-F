@@ -168,11 +168,6 @@ class ProjectService {
     }
   }
 
-  /**
-   * Returns all User accounts whose role is "member" — i.e. Leads in this
-   * system's terminology (the `User.role` enum maps "member" → "Lead" in
-   * the UI). Excludes soft-deleted users.
-   */
   async getLeadCandidates() {
     try {
       const response = await api.get(endpoints.users.list);

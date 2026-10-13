@@ -2,7 +2,7 @@
 import api, { endpoints } from '../utils/api';
 
 class ProjectTeamService {
-  // Get all PTeam entries (optionally filter by project)
+  // Get all PTeam entries 
   async getProjectTeams(projectId = null) {
     try {
       let url = endpoints.pteam.list;
@@ -112,14 +112,7 @@ class ProjectTeamService {
   }
 
   /**
-   * Promote a Lead to be a Project Lead (supervisor role on this project).
-   *
-   * Uses the existing PATCH /api/projects/<id> endpoint with the `supervisors`
-   * array — the backend already validates this field and uses it to grant
-   * project visibility.
-   *
-   * `existingSupervisorIds` should be the current list of supervisor user ids
-   * on the project so we don't drop anyone when we merge.
+   * Promote a Lead to be a Project Lead (supervisor role on this project)
    */
   async promoteLeadOnProject(projectId, leadUserId, existingSupervisorIds = []) {
     try {
@@ -140,13 +133,6 @@ class ProjectTeamService {
     }
   }
 
-  /**
-   * Ensure a Lead also exists as a TeamMember row for this project, by
-   * converting their User account into a TeamMember (if not already done)
-   * and then creating a PTeam link.
-   *
-   * This is the "add this lead as a team member" path.
-   */
   async addLeadAsTeamMember(projectId, leadUser, existingTeamMembers = []) {
   try {
     // 1. Does a TeamMember profile already exist for this Lead (by name)?
@@ -169,7 +155,7 @@ class ProjectTeamService {
         role: 'Lead',
         email: leadUser.email || '',
         added_by: leadUser.id,
-        linked_user: leadUser.id,          // ← NEW: mark as project-scoped
+        linked_user: leadUser.id,          
       });
 
       const createdData = created.data?.data || created.data;

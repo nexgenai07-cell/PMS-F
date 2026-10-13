@@ -21,10 +21,7 @@ class AuthService {
     }
   }
 
-  /**
-   * Login — purely an API call.
-   * ⚠️ Does NOT write to storage. AuthContext owns persistence.
-   */
+  /*Login*/
   async login(credentials) {
     try {
       console.log('AuthService: Logging in user:', credentials.email);
@@ -42,10 +39,7 @@ class AuthService {
     }
   }
 
-  /**
-   * Logout — API call only.
-   * ⚠️ Does NOT touch storage. AuthContext owns cleanup.
-   */
+  /*Logout*/
   async logout() {
     try {
       await api.post(endpoints.auth.logout);
@@ -54,10 +48,7 @@ class AuthService {
     }
   }
 
-  /**
-   * Verify email with uid + token from the link.
-   * POST /api/auth/verify-email
-   */
+  /* Verify email*/
   async verifyEmail(uid, token) {
     try {
       const response = await api.post(endpoints.auth.verifyEmail, { uid, token });
@@ -67,10 +58,7 @@ class AuthService {
     }
   }
 
-  /**
-   * Resend verification email.
-   * POST /api/auth/resend-verification
-   */
+  /*Resend verification email*/
   async resendVerification(email) {
     try {
       const response = await api.post(endpoints.auth.resendVerification, { email });
@@ -89,7 +77,7 @@ class AuthService {
     }
   }
 
-  // ✅ Update current user profile
+  // Update current user profile
   async updateProfile(userData) {
     try {
       const payload = {
@@ -108,17 +96,7 @@ class AuthService {
     }
   }
 
-  /**
-   * ⬇️ NEW: Request a password change.
-   *
-   * POST /api/auth/request-password-change
-   * body: { current, new }
-   *
-   * This does NOT change the password. It asks the backend to
-   * verify the current password and send a confirmation link
-   * to the user's inbox. The change only happens when the user
-   * clicks that link.
-   */
+  /*Request a password change*/
   async requestPasswordChange({ current, newPassword }) {
     try {
       const response = await api.post(endpoints.auth.requestPasswordChange, {
@@ -132,12 +110,7 @@ class AuthService {
     }
   }
 
-  /**
-   * ⬇️ NEW: Confirm a password change with the emailed token.
-   *
-   * POST /api/auth/confirm-password-change
-   * body: { uid, token, new_password }
-   */
+  /*Confirm a password change with the emailed token*/
   async confirmPasswordChange({ uid, token, newPassword }) {
     try {
       const response = await api.post(endpoints.auth.confirmPasswordChange, {
@@ -152,23 +125,19 @@ class AuthService {
     }
   }
 
-  // ⚠️ Reads from sessionStorage
   isAuthenticated() {
     return !!(
       sessionStorage.getItem('access_token') || sessionStorage.getItem('token')
     );
   }
 
-  // ⚠️ Reads from sessionStorage
   getStoredUser() {
     const user =
       sessionStorage.getItem('user') || sessionStorage.getItem('pms_user');
     return user ? JSON.parse(user) : null;
   }
 
-  /**
-   * Normalize backend error shapes into a consistent object.
-   */
+
   handleError(error) {
     if (error.response) {
       const d = error.response.data || {};

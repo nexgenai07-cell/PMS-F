@@ -6,8 +6,7 @@ import toast from 'react-hot-toast';
 const AuthContext = createContext(null);
 
 // ---------------------------------------------------------------------------
-// Storage helpers — sessionStorage only.
-// Tokens vanish when the browser tab closes.
+// Storage helpers 
 // ---------------------------------------------------------------------------
 const AUTH_KEYS = [
   'access_token',
@@ -28,7 +27,6 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
   const [notifications, setNotifications] = useState([]);
 
-  // Load user from sessionStorage on mount
   useEffect(() => {
     const loadUser = () => {
       console.log('🔵 AuthProvider: Loading user from sessionStorage...');
@@ -69,9 +67,6 @@ export function AuthProvider({ children }) {
   // -------------------------------------------------------------------------
   // Login
   // -------------------------------------------------------------------------
-  // authService.login() returns the raw API payload. This context:
-  //   1. Normalizes the user object
-  //   2. Writes tokens + user to sessionStorage
   const login = async (email, password) => {
     try {
       setLoading(true);
@@ -100,7 +95,6 @@ export function AuthProvider({ children }) {
         ...userData,
       };
 
-      // ✅ Persist to sessionStorage
       if (accessToken) {
         sessionStorage.setItem('access_token', accessToken);
         sessionStorage.setItem('token', accessToken);
@@ -125,7 +119,7 @@ export function AuthProvider({ children }) {
   };
 
   // -------------------------------------------------------------------------
-  // Logout — clears sessionStorage
+  // Logout 
   // -------------------------------------------------------------------------
   const logout = async () => {
     try {

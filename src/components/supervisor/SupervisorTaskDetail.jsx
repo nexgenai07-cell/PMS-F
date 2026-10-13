@@ -273,10 +273,6 @@ export default function SupervisorTaskDetail() {
     progress: validators.progress(newSubtask.progress),
   }), [newSubtask]);
 
-  /* ─── Project-scoped assignable members ───
-     Restrict the assignee dropdown to TeamMembers who are on THIS project
-     (via PTeam). Falls back to all team members when the project-scoped
-     list hasn't loaded, so the picker is never empty unexpectedly. */
   const assignableMembers = useMemo(() => {
     const all = asArray(teamMembers);
     if (!projectMemberIds || projectMemberIds.size === 0) return all;

@@ -48,9 +48,9 @@ import taskService from '../../services/taskService';
 import teamService from '../../services/teamService';
 import toast from 'react-hot-toast';
 
-/* ─────────── Pure UI components (no logic changes) ─────────── */
+/* ─────────── UI components ─────────── */
 
-// Smooth count-up animation — purely visual
+// animation 
 const AnimatedNumber = ({ value, duration = 900, decimals = 0, suffix = "" }) => {
   const [display, setDisplay] = useState(0);
   const fromRef = useRef(0);
@@ -78,7 +78,7 @@ const AnimatedNumber = ({ value, duration = 900, decimals = 0, suffix = "" }) =>
   return <>{display}{suffix}</>;
 };
 
-// Self-contained animated ring for the hero
+// animated ring for the hero
 const HeroRing = ({ value }) => {
   const R = 42;
   const C = 2 * Math.PI * R;
@@ -111,7 +111,6 @@ const EmptyState = ({ icon: Icon = Inbox }) => (
   </div>
 );
 
-// Moved to module scope (was re-created every render — smoother tooltips, same output)
 const CustomTooltip = ({ active, payload, label }) =>
   active && payload?.length ? (
     <div className="chart-tooltip">
@@ -883,24 +882,12 @@ export default function LeadDashboard() {
       const membersList = membersData?.data || membersData || [];
 
       // ═══════════════════════════════════════════════════════════
-      // PROJECT VISIBILITY (FIXED)
-      //
-      // The backend `/api/projects/` endpoint already filters projects
-      // by the current user's visibility:
-      //   1. They created the project (created_by)
-      //   2. They are in project.supervisors M2M
-      //   3. They are linked via PTeam (added as a member/lead)
-      //
-      // We trust it — no client-side re-filtering needed.
-      // Previously the dashboard only looked at created_by and task
-      // assignments, which hid any project where the user was added
-      // as a member/lead but had no assigned tasks yet.
+      // PROJECT VISIBILITY
       // ═══════════════════════════════════════════════════════════
       const userProjects = allProjects;
 
       const userProjectIds = userProjects.map(p => Number(p.p_id || p.id));
 
-      // Tasks scoped to visible projects only
       const userTasks = tasksList.filter(t =>
         userProjectIds.includes(Number(t.p_id || t.p))
       );
@@ -1047,7 +1034,7 @@ export default function LeadDashboard() {
     }
   ];
 
-  // Task trend data (simplified for lead)
+  // Task trend data (for lead)
   const taskTrendData = [
     { month: 'Week 1', tasks: tasks.length > 0 ? Math.round(tasks.length * 0.2) : 0 },
     { month: 'Week 2', tasks: tasks.length > 0 ? Math.round(tasks.length * 0.35) : 0 },
@@ -1055,7 +1042,7 @@ export default function LeadDashboard() {
     { month: 'Week 4', tasks: tasks.length > 0 ? Math.round(tasks.length * 0.6) : 0 }
   ];
 
-  // Upcoming deadlines - only from user's tasks
+  // Upcoming deadlines - from user's tasks
   const upcoming = tasks
     .filter(t => t.status !== 'done' && t.status !== 'completed' && (t.due_date || t.deadline))
     .sort((a, b) => {

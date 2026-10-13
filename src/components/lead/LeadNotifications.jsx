@@ -50,11 +50,8 @@ export default function LeadNotifications() {
   const [filterType, setFilterType] = useState('all');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
 
-  // Convenience — the "user-scoped" localStorage keys must be consistent
-  // between fetchData / markAsRead / markAllRead / deleteNotification.
   const userId = user?.id || user?.u_id;
   const userRole = user?.role || 'member';
-  // NEW: the registration timestamp acts as a lower bound for notifications.
   const userCreatedAt = user?.created_at || null;
 
   const readKey = `read_notifications_${userId ?? 'anon'}`;
@@ -128,16 +125,13 @@ export default function LeadNotifications() {
     const prev = notifications;
     const ids = notifications.map(n => n.n_id || n.id);
 
-    // Optimistic update
     setNotifications(notifications.map(n => ({ ...n, is_read: true })));
 
     try {
-      // Merge into user-scoped read set
       const existing = JSON.parse(localStorage.getItem(readKey) || '[]');
       const merged = [...new Set([...existing, ...ids])];
       localStorage.setItem(readKey, JSON.stringify(merged));
 
-      // Also call service (which writes to same key)
       await notificationService.markAllRead(ids, userId);
 
       toast.success('All notifications marked as read');

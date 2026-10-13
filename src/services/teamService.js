@@ -7,7 +7,7 @@ class TeamService {
       const response = await api.get(endpoints.teamMembers.list);
       const data = response.data;
       
-      // ✅ Ensure IDs are numbers
+      // Ensure IDs are numbers
       if (data?.data && Array.isArray(data.data)) {
         data.data = data.data.map(member => ({
           ...member,
@@ -68,7 +68,7 @@ class TeamService {
     try {
       const payload = {
   name: memberData.name,
-  email: memberData.email || '',         // ← must be present
+  email: memberData.email || '',         
   desc: memberData.description || '',
   skills: memberData.skills || '',
   role: memberData.role || 'Member',

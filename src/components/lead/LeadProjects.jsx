@@ -705,7 +705,7 @@ export default function LeadProjects() {
       setMemberOptions(memberList);
       setTeamMembers(activeMembersList);
 
-      // Projects — backend already filters.
+      // Projects 
       const projectsWithMembers = projectsList.map(project => {
         const projectId = project.p_id || project.id;
         const projectPteamEntries = pteamList.filter(entry => getPteamProjectId(entry) === Number(projectId));

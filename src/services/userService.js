@@ -7,7 +7,7 @@ class UserService {
       const response = await api.get(endpoints.users.list);
       const data = response.data;
       
-      // ✅ Ensure IDs are numbers
+      // Ensure IDs are numbers
       if (data?.data && Array.isArray(data.data)) {
         data.data = data.data.map(user => ({
           ...user,

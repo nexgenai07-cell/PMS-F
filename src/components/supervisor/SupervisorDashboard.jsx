@@ -180,7 +180,7 @@ const buildTrendData = (allTasks, range) => {
   return out;
 };
 
-/* ─────────── Pure UI components (no logic changes) ─────────── */
+/* ─────────── UI components ─────────── */
 
 const AnimatedNumber = ({ value, duration = 900, decimals = 0, suffix = "" }) => {
   const [display, setDisplay] = useState(0);
@@ -1009,7 +1009,7 @@ export default function SupervisorDashboard() {
     activeProjects: 0,
     totalTasks: 0,
     doneTasks: 0,
-    completionPercent: 0,   // now = weighted avgProgress across all tasks
+    completionPercent: 0,  
     totalMembers: 0,
     totalLeads: 0,
     inProgressTasks: 0,
@@ -1062,7 +1062,7 @@ export default function SupervisorDashboard() {
 
       console.log('👤 Current user:', userName, 'TeamMember ID:', teamMemberId);
 
-      // ═══════════════ PROJECT VISIBILITY (FIXED) ═══════════════
+      // ═══════════════ PROJECT VISIBILITY ═══════════════
       // A supervisor should see projects where they are:
       //  1. The creator (created_by)
       //  2. Listed in the supervisors array
@@ -1128,12 +1128,12 @@ export default function SupervisorDashboard() {
         p.status === "active" || p.status === "in-progress" || p.status === "in_progress"
       ).length;
 
-      // ⭐ Completion percent = weighted average of per-project avgProgress.
+      // Completion percent = weighted average of per-project avgProgress.
       // This matches exactly what each project page shows.
       const completionPercent = totalTaskCountForAvg > 0
         ? Math.round(totalProgressWeighted / totalTaskCountForAvg)
         : (() => {
-            // Fallback: compute from the raw task list when stats are unavailable.
+            // Fallback
             if (userTasks.length === 0) return 0;
             const total = userTasks.reduce((sum, t) => sum + computeTaskProgress(t), 0);
             return Math.round(total / userTasks.length);
@@ -1254,7 +1254,6 @@ export default function SupervisorDashboard() {
       setTeamProductivity(productivityData);
 
       // ─── Project Health ───
-      // Prefer backend avgProgress; fall back to client-side computation.
       const healthData = userProjects.slice(0, 8).map(project => {
         const projectId = project.p_id || project.id;
         const projectStats = statsMap[projectId] || {};

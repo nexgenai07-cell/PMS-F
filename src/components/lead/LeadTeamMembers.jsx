@@ -235,9 +235,6 @@ export default function LeadTeamMembers() {
 
       if (!Array.isArray(rawMembers)) rawMembers = [];
 
-      // Show every active TeamMember row. Do NOT drop members based on a
-      // name/email collision with a User account — that silently hides real
-      // team members whenever a Lead/Supervisor happens to share a name.
       const filteredMembers = rawMembers.filter(m => m.is_deleted !== 1);
 
       setMembers(filteredMembers);
@@ -351,18 +348,14 @@ export default function LeadTeamMembers() {
     return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
   };
 
-  /* ─────────── Dynamic role options ───────────
-   Derive the filter dropdown from the roles actually present on the
-   loaded members, so any custom role a user types when adding a member
-   immediately becomes filterable. The hardcoded list is kept as a
-   fallback for the empty state. */
+  /* ─────────── Dynamic role options ───────────*/
 const DEFAULT_ROLE_OPTIONS = [
   'Frontend', 'Backend', 'Full Stack', 'Designer',
   'Developer', 'QA', 'DevOps',
 ];
 
 const roleOptions = useMemo(() => {
-  const seen = new Map();  // normalized -> original display form
+  const seen = new Map();  
 
   members.forEach(m => {
     const raw = (m.role || '').trim();
@@ -371,7 +364,6 @@ const roleOptions = useMemo(() => {
     if (!seen.has(key)) seen.set(key, raw);
   });
 
-  // Merge in defaults that aren't already present (case-insensitive)
   DEFAULT_ROLE_OPTIONS.forEach(r => {
     const key = r.toLowerCase();
     if (!seen.has(key)) seen.set(key, r);
@@ -465,7 +457,7 @@ useEffect(() => {
     }
   };
 
-  /* ─────────── Edit member — prefills the previous email ─────────── */
+  /* ─────────── Edit member ─────────── */
   const openEdit = (member) => {
     setSelected(member);
     const prevEmail = getMemberEmail(member);

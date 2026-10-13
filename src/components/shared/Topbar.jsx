@@ -7,7 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import api, { endpoints } from '../../utils/api';
 
-// Static lookup tables — defined once, not recreated on every render.
+// Static lookup tables 
 const AVATAR_COLORS = ['#6366f1', '#2dd4bf', '#f43f5e', '#f59e0b', '#10b981'];
 
 const ROLE_COLORS = {
@@ -71,8 +71,6 @@ export default function Topbar({ title, actions, onMenuClick, searchBar, actionB
   const firstMenuItemRef = useRef(null);
   const menuId = useId();
 
-  // Local unread count — derived from the same client-side activity list
-  // the notification pages use, minus locally-read and locally-deleted ones.
   const [unreadCount, setUnreadCount] = useState(authUnreadCount || 0);
 
   const userName = user?.u_name || user?.name || 'User';
@@ -92,11 +90,6 @@ export default function Topbar({ title, actions, onMenuClick, searchBar, actionB
 
   // ---------------------------------------------------------------------
   // Fetch unread count from the API + fallback to local activity list.
-  //
-  // We try the backend endpoint first (works if you ever wire up the
-  // `Notification` table). If it returns 0 or fails, we compute the
-  // count client-side from the same activity feed the notification page
-  // uses — that guarantees the badge matches what the user sees.
   // ---------------------------------------------------------------------
   useEffect(() => {
     if (!user) {
@@ -341,7 +334,7 @@ export default function Topbar({ title, actions, onMenuClick, searchBar, actionB
               )}
             </AnimatePresence>
 
-            {/* Soft pulsing ring to draw attention (only when unread) */}
+            {/* pulsing ring (only when unread) */}
             {hasUnread && <span className="tb-notif-pulse" aria-hidden="true" />}
           </button>
 
